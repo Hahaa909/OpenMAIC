@@ -2003,6 +2003,122 @@ describe('asset entry lifecycle with PGlite', () => {
       expect((await lifecycleOf(id))?.unreferenced_at).toBeNull();
     });
 
+    /** `queryable`, recording the text of every statement it is asked to run. */
+    const recording = (queryable: Queryable, log: string[]): Queryable => ({
+      query: <TRow extends Record<string, unknown> = Record<string, unknown>>(
+        text: string,
+        params?: unknown[],
+      ): Promise<QueryResult<TRow>> => {
+        log.push(text);
+        return queryable.query<TRow>(text, params);
+      },
+    });
+
+    test('malformed input and a root named twice are refused before any SQL runs', async () => {
+      const id = await store.put(PRINCIPAL, new Blob(['untouched']));
+      const one = { rootKind: 'material', rootId: 'material-a', assetIds: [id] };
+      const refused: ChangeAssetRootsInput[] = [
+        { principals, add: [one, one] },
+        { principals, remove: [one, one] },
+        { principals, add: [one], remove: [one] },
+        { principals: [], add: [one] },
+        { principals, add: [{ ...one, rootKind: '' }] },
+        { principals, add: [{ ...one, assetIds: 'not-a-list' as unknown as string[] }] },
+      ];
+      for (const input of refused) {
+        const log: string[] = [];
+        await expect(changeAssetRoots(recording(db, log), input)).rejects.toBeInstanceOf(
+          AssetRootInputError,
+        );
+        expect(log).toEqual([]);
+      }
+    });
+
+    test('a missing or foreign target writes nothing, even when the transaction then commits', async () => {
+      const own = await store.put(PRINCIPAL, new Blob(['own']));
+      const foreign = await store.put({ key: 'someone-else' }, new Blob(['foreign']));
+      await root('material-own', own);
+      await db.query(
+        `INSERT INTO asset_root_refs (root_kind, root_id, asset_id)
+         VALUES ('material', 'material-foreign', $1)`,
+        [foreign],
+      );
+      const rootsBefore = await rootRows();
+      const ownBefore = await lifecycleOf(own);
+      const foreignBefore = await lifecycleOf(foreign);
+      const refused: Omit<ChangeAssetRootsInput, 'principals'>[] = [
+        { add: [{ rootKind: 'material', rootId: 'material-new', assetIds: [own, 'missing'] }] },
+        { add: [{ rootKind: 'material', rootId: 'material-new', assetIds: [own, foreign] }] },
+        { remove: [{ rootKind: 'material', rootId: 'material-foreign', assetIds: [foreign] }] },
+        // A valid removal in the same call as a bad addition must not happen either.
+        {
+          remove: [{ rootKind: 'material', rootId: 'material-own', assetIds: [own] }],
+          add: [{ rootKind: 'material', rootId: 'material-new', assetIds: ['missing'] }],
+        },
+      ];
+
+      for (const input of refused) {
+        const log: string[] = [];
+        // The refusal is caught INSIDE the transaction, which then commits: a
+        // write made before the refusal would survive, instead of being
+        // hidden by the rollback of a failed transaction.
+        await db.transaction(async (tx: Queryable) => {
+          await expect(
+            changeAssetRoots(recording(tx, log), { principals, ...input }),
+          ).rejects.toBeInstanceOf(AssetRootTargetError);
+        });
+        // Only the lock read ran.
+        expect(log.length).toBeGreaterThan(0);
+        expect(log.every((text) => text.trimStart().startsWith('SELECT'))).toBe(true);
+      }
+
+      expect(await rootRows()).toEqual(rootsBefore);
+      expect(await lifecycleOf(own)).toEqual(ownBefore);
+      expect(await lifecycleOf(foreign)).toEqual(foreignBefore);
+    });
+
+    test('a rooted entry carrying a stale stamp reaches the final check and is kept', async () => {
+      const id = await store.put(PRINCIPAL, new Blob(['kept by its root']));
+      await root('material-1', id);
+      // A stamp that should not be there -- restored out of band, say -- long
+      // past grace: the entry passes every column-based filter, so only the
+      // release's own reference check stands between it and deletion.
+      await db.query(
+        `UPDATE asset_entries SET unreferenced_at = now() - interval '2 days' WHERE id = $1`,
+        [id],
+      );
+      const released: { text: string; params?: unknown[] }[] = [];
+      const recordedTransactions: WithTransaction = (body) =>
+        db.transaction((tx: Queryable) =>
+          body({
+            query: <TRow extends Record<string, unknown> = Record<string, unknown>>(
+              text: string,
+              params?: unknown[],
+            ): Promise<QueryResult<TRow>> => {
+              released.push({ text, params });
+              return tx.query<TRow>(text, params);
+            },
+          }),
+        );
+
+      const pass = await collector({
+        graceMs: 60 * 60 * 1000,
+        withTransaction: recordedTransactions,
+      }).collectPass();
+
+      expect(pass.entriesCollected).toBe(0);
+      expect(await entryExists(id)).toBe(true);
+      expect(await rootRows()).toEqual([{ root_id: 'material-1', asset_id: id }]);
+      // It got as far as the release's separate, post-lock reference check.
+      expect(
+        released.some(
+          (statement) =>
+            statement.text.includes('FROM asset_root_refs WHERE asset_id = $1') &&
+            statement.params?.[0] === id,
+        ),
+      ).toBe(true);
+    });
+
     test('removing a root row that is not there changes no lifecycle column', async () => {
       const pending = await store.put(PRINCIPAL, new Blob(['pending']));
       const before = await lifecycleOf(pending);

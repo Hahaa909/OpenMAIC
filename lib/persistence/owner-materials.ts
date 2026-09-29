@@ -156,7 +156,8 @@ END
 $$;
 
 -- Library columns. All nullable: a process that predates them still inserts
--- rows without them. Nothing reads them yet.
+-- rows without them. Only a claim reads or writes folder_id so far
+-- (reassignMaterialFolders); nothing reads asset_id or display_name yet.
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS asset_id TEXT;
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS folder_id TEXT;
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS display_name TEXT;

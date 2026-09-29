@@ -1876,6 +1876,30 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
         now: () => now,
       }).collectPass();
 
+    const backendPid = async (queryable: Queryable): Promise<number> =>
+      Number(
+        (await queryable.query<{ pid: number | string }>('SELECT pg_backend_pid() AS pid')).rows[0]!
+          .pid,
+      );
+
+    /**
+     * Wait until some backend is blocked by THIS holder's locks. Narrower than
+     * waitForLockWaiter, which any lock wait anywhere in the database would
+     * satisfy -- another suite's, say -- and so could let a test go on before
+     * its own second transaction had actually queued behind its holder.
+     */
+    const waitUntilBlockedBy = async (holderPid: number): Promise<void> => {
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const blocked = await pool.query(
+          `SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
+          [holderPid],
+        );
+        if (blocked.rows.length > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error('nothing queued behind the holder: the operations never contended');
+    };
+
     /**
      * Run `first` in a transaction held open, start `second` in its own, prove
      * `second` is waiting on a lock `first` holds, then commit `first` and let
@@ -1889,9 +1913,10 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
       const holder = await pool.connect();
       try {
         await holder.query('BEGIN');
+        const holderPid = await backendPid(holder as Queryable);
         await first(holder as Queryable);
         const waiting = transactionFor(pool)((queryable) => second(queryable));
-        await waitForLockWaiter(pool);
+        await waitUntilBlockedBy(holderPid);
         await holder.query('COMMIT');
         await waiting;
       } catch (error) {
@@ -1973,9 +1998,10 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
       const holder = await pool.connect();
       try {
         await holder.query('BEGIN');
+        const holderPid = await backendPid(holder as Queryable);
         await change(holder as Queryable, addTo('material-1', id));
         const releasing = passAt(new Date());
-        await waitForLockWaiter(pool);
+        await waitUntilBlockedBy(holderPid);
         await holder.query('COMMIT');
         expect((await releasing).entriesCollected).toBe(0);
       } finally {
@@ -2001,10 +2027,12 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
       const mayCommit = new Promise<void>((resolve) => {
         allowCommit = resolve;
       });
+      let releasePid = 0;
       const holdAfterRelease: WithTransaction = async (body) => {
         const client = await pool.connect();
         try {
           await client.query('BEGIN');
+          const pid = await backendPid(client as Queryable);
           let released = false;
           const result = await body({
             async query<TRow extends Record<string, unknown> = Record<string, unknown>>(
@@ -2016,6 +2044,7 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
             },
           });
           if (released) {
+            releasePid = pid;
             signalDeleted();
             await mayCommit;
           }
@@ -2043,13 +2072,65 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
         () => undefined,
         (error: unknown) => error,
       );
-      await waitForLockWaiter(pool);
+      await waitUntilBlockedBy(releasePid);
       allowCommit();
 
       expect((await releasing).entriesCollected).toBe(1);
       expect(await rooting).toBeInstanceOf(AssetRootTargetError);
       expect(await entryExists(id)).toBe(false);
       expect(await rootsOf(id)).toEqual([]);
+    });
+
+    test('the legacy mark and the standing sweep do not stamp a rooted entry', async () => {
+      // Roots written directly, bypassing changeAssetRoots, so each entry keeps
+      // the exact state the collector predicate under test selects on.
+      const legacy = await assets.put(principal, new Blob(['legacy rooted']));
+      await pool.query(
+        'UPDATE asset_entries SET committed_at = NULL, expires_at = NULL WHERE id = $1',
+        [legacy],
+      );
+      const swept = await assets.put(principal, new Blob(['swept rooted']));
+      await pool.query(
+        'UPDATE asset_entries SET committed_at = now(), expires_at = NULL WHERE id = $1',
+        [swept],
+      );
+      await pool.query(
+        `INSERT INTO asset_root_refs (root_kind, root_id, asset_id)
+         VALUES ('material', 'legacy-owner', $1), ('material', 'swept-owner', $2)`,
+        [legacy, swept],
+      );
+
+      // First pass: the (empty) walk completes and the legacy entry is marked.
+      // Second pass: the standing sweep reaches the committed ones.
+      expect((await passAt(new Date())).legacyEntriesCommitted).toBe(1);
+      await passAt(new Date());
+
+      for (const id of [legacy, swept]) {
+        const row = await pool.query<{ committed_at: Date | null; unreferenced_at: Date | null }>(
+          'SELECT committed_at, unreferenced_at FROM asset_entries WHERE id = $1',
+          [id],
+        );
+        expect(row.rows[0]?.committed_at).not.toBeNull();
+        expect(row.rows[0]?.unreferenced_at).toBeNull();
+      }
+      expect((await passAt(new Date(Date.now() + 3 * 24 * HOUR))).entriesCollected).toBe(0);
+      expect(await entryExists(legacy)).toBe(true);
+      expect(await entryExists(swept)).toBe(true);
+    });
+
+    test('a rooted entry carrying a stale stamp reaches the final check and is kept', async () => {
+      const id = await assets.put(principal, new Blob(['kept by its root']));
+      await transactionFor(pool)((queryable) => change(queryable, addTo('material-1', id)));
+      // Past grace on the column alone: only the release's post-lock
+      // reference check can keep it.
+      await pool.query(
+        `UPDATE asset_entries SET unreferenced_at = now() - interval '2 days' WHERE id = $1`,
+        [id],
+      );
+
+      expect((await passAt(new Date(), HOUR)).entriesCollected).toBe(0);
+      expect(await entryExists(id)).toBe(true);
+      expect(await rootsOf(id)).toEqual(['material-1']);
     });
 
     test('a course withdrawal and a root being added serialize, in either order', async () => {

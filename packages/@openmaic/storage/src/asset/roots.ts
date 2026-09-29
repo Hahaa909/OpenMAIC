@@ -69,9 +69,11 @@
  *
  * A host that fences its owners' writes (an identity lock a merge of two
  * owners takes exclusively) takes that fence first in the same transaction,
- * then the record's row lock, then calls this -- the one order in which a
- * root write, a merge and the collector cannot wait on each other in a cycle
- * -- and passes only the owner's own partition as `principals`, never a
+ * then the row locks of every record the call touches -- all of them in ONE
+ * `SELECT … ORDER BY id FOR UPDATE`, so two writers covering overlapping
+ * records queue rather than deadlock -- then calls this: the one order in
+ * which a root write, a merge and the collector cannot wait on each other in
+ * a cycle. It passes only the owner's own partition as `principals`, never a
  * partition every owner shares.
  */
 import {
