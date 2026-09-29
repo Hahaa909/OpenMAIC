@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PROVIDER_PRESETS } from '@/lib/config/provider-presets';
 import { parseModelConfig } from '@/lib/server/model-config/openmaic-yml';
 import {
   SlotResolutionError,
@@ -266,6 +267,31 @@ describe('resolveSlot', () => {
     }
   });
 
+  it("resolves a provider-only reference to the provider's default model", () => {
+    const search: ModelConfigLayer = {
+      source: 'deployment',
+      config: { providers: { tv: { preset: 'tavily', apiKey: 'k' } }, slots: { webSearch: 'tv' } },
+    };
+    const resolved = resolveSlot('webSearch', [search]);
+    expect(resolved).toMatchObject({ status: 'assigned', registryId: 'tavily', apiKey: 'k' });
+    expect(resolved).not.toHaveProperty('modelId');
+  });
+
+  it("resolves a provider-only reference to a token plan's own default model", () => {
+    const plan = PROVIDER_PRESETS.find(
+      (preset) => preset.kind === 'token-plan' && preset.capabilities.video?.defaultModel,
+    )!;
+    for (const slot of ['video', 'image', 'tts'] as const) {
+      const expected = plan.capabilities[slot]?.defaultModel;
+      if (!expected) continue;
+      const layer: ModelConfigLayer = {
+        source: 'deployment',
+        config: { providers: { p: { preset: plan.id, apiKey: 'k' } }, slots: { [slot]: 'p' } },
+      };
+      expect(resolveSlot(slot, [layer])).toMatchObject({ status: 'assigned', modelId: expected });
+    }
+  });
+
   it('reports a malformed reference by path, without echoing it', () => {
     const secret = 'sk-misplaced-key-9c1e';
     for (const [slots, path] of [
@@ -280,7 +306,11 @@ describe('resolveSlot', () => {
       const run = () =>
         resolveSlot(slots === undefined ? 'llm' : (Object.keys(slots)[0] as 'llm'), [malformed]);
       expect(run).toThrow(SlotResolutionError);
-      expect(run).toThrow(`${path}: invalid model reference`);
+      // A key shaped like a provider id reads as a bare reference; either way
+      // the error names the path and not the value.
+      expect(run).toThrow(
+        new RegExp(`^${path.replace('.', '\\.')}: (invalid model reference|a chat model needs)`),
+      );
       try {
         run();
       } catch (error) {

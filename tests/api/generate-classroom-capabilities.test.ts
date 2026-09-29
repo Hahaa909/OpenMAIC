@@ -35,11 +35,31 @@ afterEach(() => {
   config.mediaProviders = [];
 });
 
+/** The deployment's slots behind the capabilities these tests expect. */
+async function configureSlots(slots: Record<string, unknown>) {
+  (await import('@/lib/server/model-config/runtime')).setDeploymentConfigForTests({
+    layer: {
+      source: 'deployment',
+      config: {
+        providers: {
+          tv: { preset: 'tavily', apiKey: 'k' },
+          mm: { preset: 'minimax-tts', apiKey: 'k' },
+        },
+        slots,
+      } as never,
+    },
+    defaults: null,
+    notices: [],
+  });
+}
 const mimesOf = (formats: Array<{ mime: string }>) => formats.map((format) => format.mime);
+const capabilitiesRequest = () =>
+  new NextRequest('http://localhost/api/generate-classroom/capabilities');
 
 describe('GET /api/generate-classroom/capabilities', () => {
   it('reports the server capabilities and the extractable upload formats', async () => {
-    const response = await getCapabilities();
+    await configureSlots({ webSearch: 'tv', tts: 'mm', image: null });
+    const response = await getCapabilities(capabilitiesRequest());
     expect(response.status).toBe(200);
     const body = await response.json();
 
@@ -81,9 +101,20 @@ describe('GET /api/generate-classroom/capabilities', () => {
     });
   });
 
-  it('adds the formats of a configured extraction service, within the upload whitelist', async () => {
-    config.pdf = { 'mineru-cloud': {} };
-    const body = await (await getCapabilities()).json();
+  it("adds the formats of the document slot's service, within the upload whitelist", async () => {
+    const runtime = await import('@/lib/server/model-config/runtime');
+    runtime.setDeploymentConfigForTests({
+      layer: {
+        source: 'deployment',
+        config: {
+          providers: { mc: { preset: 'mineru-cloud', apiKey: 'k' } },
+          slots: { document: 'mc' },
+        },
+      },
+      defaults: null,
+      notices: [],
+    });
+    const body = await (await getCapabilities(capabilitiesRequest())).json();
     const mimes = mimesOf(body.materials.formats);
     expect(mimes).toEqual(
       expect.arrayContaining([
@@ -108,15 +139,16 @@ describe('GET /api/generate-classroom/capabilities', () => {
         extract: vi.fn(),
       },
     ];
-    const body = await (await getCapabilities()).json();
+    const body = await (await getCapabilities(capabilitiesRequest())).json();
     const mimes = mimesOf(body.materials.formats);
     expect(mimes).toContain('video/mp4');
     expect(mimes).not.toContain('audio/mpeg');
   });
 
   it('reports the same capabilities as /api/health', async () => {
+    await configureSlots({ webSearch: 'tv', tts: 'mm', image: null });
     const [capabilities, health] = await Promise.all([
-      getCapabilities().then((response) => response.json()),
+      getCapabilities(capabilitiesRequest()).then((response) => response.json()),
       getHealth().then((response) => response.json()),
     ]);
     expect(capabilities.capabilities).toEqual(health.capabilities);
@@ -128,5 +160,30 @@ describe('GET /api/generate-classroom/capabilities', () => {
       new NextRequest('http://localhost/api/generate-classroom/capabilities'),
     );
     expect(gated.status).toBe(401);
+  });
+
+  it('answers a refused credential or workspace service as the owner routes do, not 500', async () => {
+    const runtime = await import('@/lib/server/model-config/runtime');
+    const { InvalidOwnerCredentialError } = await import('@/lib/server/identity/resolve');
+    await configureSlots({});
+    const spy = vi.spyOn(runtime, 'requestWorkspaceId');
+    try {
+      spy.mockRejectedValueOnce(new InvalidOwnerCredentialError());
+      expect((await getCapabilities(capabilitiesRequest())).status).toBe(401);
+
+      vi.stubEnv('DATABASE_URL', 'postgres://test');
+      runtime.setWorkspaceLayerLoaderForTests(async () => ({
+        source: 'workspace',
+        config: {
+          providers: { mc: { preset: 'mineru-cloud', apiKey: 'k', baseUrl: 'https://1.1.1.1' } },
+          slots: { document: 'mc' },
+        },
+      }));
+      spy.mockResolvedValueOnce('user:alice');
+      expect((await getCapabilities(capabilitiesRequest())).status).toBe(403);
+    } finally {
+      runtime.setWorkspaceLayerLoaderForTests();
+      spy.mockRestore();
+    }
   });
 });

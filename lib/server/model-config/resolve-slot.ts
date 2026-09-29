@@ -58,7 +58,10 @@ export interface ResolvedModelTarget {
   /** Multi-part credentials for vendors without a single key. */
   credentials?: Record<string, string>;
   proxy?: string;
-  modelId: string;
+  /** The base URL is the provider's own, not the preset's or registry's. */
+  customBaseUrl?: true;
+  /** Absent: the provider's default model (never for chat). */
+  modelId?: string;
 }
 
 export interface RequirementCheck {
@@ -135,13 +138,16 @@ function resolveTarget(
   layers: readonly ModelConfigLayer[],
   at: string,
 ): ResolvedModelTarget {
-  let parsed: { providerId: string; modelId: string };
+  let parsed: { providerId: string; modelId?: string };
   try {
     parsed = parseModelRef(ref);
   } catch {
     throw new SlotResolutionError(`${at}: invalid model reference`);
   }
   const { providerId, modelId } = parsed;
+  if (modelId === undefined && capability === 'chat') {
+    throw new SlotResolutionError(`${at}: a chat model needs "providerId:modelId"`);
+  }
   const found = findProvider(providerId, layers);
   // Errors name the path, never a value taken from the reference: a key pasted
   // into the provider position must not end up in a log.
@@ -161,10 +167,15 @@ function resolveTarget(
     presetId: preset.id,
     registryId: target.registryId,
     baseUrl: provider.baseUrl ?? target.baseUrl,
+    ...(provider.baseUrl !== undefined ? { customBaseUrl: true as const } : {}),
     ...(provider.apiKey !== undefined ? { apiKey: provider.apiKey } : {}),
     ...(provider.credentials !== undefined ? { credentials: provider.credentials } : {}),
     ...(provider.proxy !== undefined ? { proxy: provider.proxy } : {}),
-    modelId,
+    // A provider-only reference means the preset's own default (a token
+    // plan's), else the registry's, which the adapter applies.
+    ...((modelId ?? target.defaultModel) !== undefined
+      ? { modelId: modelId ?? target.defaultModel }
+      : {}),
     ...(preset.trustsModelCatalogue === false ? { catalogue: false as const } : {}),
   };
 }
@@ -178,6 +189,7 @@ function checkRequirement(
   if (requirement !== 'toolCalling' || capability !== 'chat' || target.catalogue === false) {
     return { requirement, status: 'unknown' };
   }
+  if (target.modelId === undefined) return { requirement, status: 'unknown' };
   const registry = (PROVIDERS as Record<string, { models?: readonly ModelLike[] }>)[
     target.registryId
   ];
