@@ -27,6 +27,7 @@ import {
   type TokenPlanModality,
   type TokenPlanPreset,
 } from '@/lib/config/token-plan-presets';
+import { presetIdFor, tokenPlanPresetId } from '@/lib/config/preset-ids';
 import { STAGE_SLOTS, type SlotCapability, type SlotId } from '@/lib/config/model-slots';
 import type { LlmStage } from '@/lib/server/model-routes';
 
@@ -50,6 +51,8 @@ export interface ProviderPreset {
   recommended?: Partial<Record<SlotId, string>>;
   /** True when the preset needs a caller-supplied base URL. */
   requiresBaseUrl?: boolean;
+  /** True when the preset authenticates with a key pair (`credentials`) rather than one key. */
+  requiresCredentials?: boolean;
   /**
    * False when the registry entry only supplies the transport, so its model
    * catalogue says nothing about the models behind the endpoint (a custom
@@ -58,7 +61,7 @@ export interface ProviderPreset {
   trustsModelCatalogue?: false;
 }
 
-type RegistryEntry = { name?: string; requiresBaseUrl?: boolean };
+type RegistryEntry = { name?: string; requiresBaseUrl?: boolean; requiresCredentials?: boolean };
 
 const REGISTRIES: Record<SlotCapability, Record<string, RegistryEntry>> = {
   chat: PROVIDERS,
@@ -70,22 +73,7 @@ const REGISTRIES: Record<SlotCapability, Record<string, RegistryEntry>> = {
   document: PDF_PROVIDERS,
 };
 
-/**
- * Preset ids for registry entries whose own id is taken: web search entries
- * that share an id with a chat provider, and chat providers that share an id
- * with a token plan offering a different endpoint.
- */
-export const PRESET_ID_OVERRIDES: Partial<Record<SlotCapability, Record<string, string>>> = {
-  webSearch: { minimax: 'minimax-search', doubao: 'doubao-search' },
-  image: { lemonade: 'lemonade-image' },
-};
-
-/**
- * Token plans whose id matches a chat provider but whose endpoint differs from
- * it (the Kimi coding plan is not the Moonshot open platform), so the plan gets
- * its own preset id and the chat provider keeps its id.
- */
-const TOKEN_PLAN_ID_OVERRIDES: Record<string, string> = { kimi: 'kimi-coding-plan' };
+export { PRESET_ID_OVERRIDES } from '@/lib/config/preset-ids';
 
 /**
  * Registry entries with no usable default endpoint, besides those whose
@@ -116,11 +104,12 @@ function singlePresets(): ProviderPreset[] {
       const requiresBaseUrl =
         entry.requiresBaseUrl === true || !!REQUIRES_BASE_URL[capability]?.includes(registryId);
       presets.push({
-        id: PRESET_ID_OVERRIDES[capability]?.[registryId] ?? registryId,
+        id: presetIdFor(capability, registryId),
         name: entry.name ?? registryId,
         kind: 'single',
         capabilities: { [capability]: { registryId } },
         ...(requiresBaseUrl ? { requiresBaseUrl } : {}),
+        ...(entry.requiresCredentials ? { requiresCredentials: true } : {}),
       });
     }
   }
@@ -137,7 +126,7 @@ function singlePresets(): ProviderPreset[] {
 
 /** Converts a token plan into a preset: modality targets and recommendations. */
 export function tokenPlanToPreset(plan: TokenPlanPreset): ProviderPreset {
-  const id = TOKEN_PLAN_ID_OVERRIDES[plan.id] ?? plan.id;
+  const id = tokenPlanPresetId(plan.id);
   const capabilities: ProviderPreset['capabilities'] = {};
   const recommended: Partial<Record<SlotId, string>> = {};
   for (const [modality, target] of Object.entries(plan.modalities) as [
@@ -186,4 +175,25 @@ export function registryDefaultBaseUrl(
 ): string | undefined {
   const entry = REGISTRIES[capability][registryId] as { defaultBaseUrl?: string } | undefined;
   return entry?.defaultBaseUrl || undefined;
+}
+
+export interface CatalogueModel {
+  id: string;
+  name: string;
+}
+
+/**
+ * The models a preset offers for a capability, best first: a token plan's own
+ * list, else the registry's catalogue. Empty for a capability without one
+ * (web search, document extraction) or a preset that does not offer it.
+ */
+export function presetModels(preset: ProviderPreset, capability: SlotCapability): CatalogueModel[] {
+  const target = preset.capabilities[capability];
+  if (!target) return [];
+  const entry = REGISTRIES[capability][target.registryId] as
+    | { models?: readonly { id: string; name?: string }[] }
+    | undefined;
+  const known = entry?.models ?? [];
+  const ids = target.models ?? known.map((model) => model.id);
+  return ids.map((id) => ({ id, name: known.find((model) => model.id === id)?.name ?? id }));
 }
