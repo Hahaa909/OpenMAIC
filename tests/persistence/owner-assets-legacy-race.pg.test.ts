@@ -91,7 +91,7 @@ describe.skipIf(!contractUrl)('legacy shared-asset mutation under a racing refer
 
   beforeEach(async () => {
     await pool.query(
-      'TRUNCATE document_asset_refs, document_asset_withdrawals, asset_entries, asset_blobs, ' +
+      'TRUNCATE asset_root_refs, document_asset_refs, document_asset_withdrawals, asset_entries, asset_blobs, ' +
         'stage_meta, document_stages CASCADE',
     );
   });

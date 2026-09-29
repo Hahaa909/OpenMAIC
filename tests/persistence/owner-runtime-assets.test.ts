@@ -547,6 +547,28 @@ describe('runtime and assets are keyed by the resolved owner', () => {
       expect((await call('bob', `/assets/${id}/content`)).status).toBe(404);
     });
 
+    it('keeps a rooted entry private: a reference root keeps it alive, not readable', async () => {
+      const { changeAssetRoots } = await import('@openmaic/storage/asset/pg');
+      const id = await allocate('alice');
+      // Alice's own partition, as the route allocated it.
+      const holder = await pool.query('SELECT principal FROM asset_entries WHERE id = $1', [id]);
+      const { principal } = holder.rows[0] as { principal: string };
+      await pool.query('BEGIN');
+      await changeAssetRoots(pool as never, {
+        add: [{ rootKind: 'material', rootId: 'mat-alice', assetIds: [id] }],
+        principals: [principal],
+      });
+      await pool.query('COMMIT');
+      // Committed by the root, as a course would commit it...
+      expect((await lifecycle(id))?.committed_at).not.toBeNull();
+
+      // ...but no live course of Alice names it, so Bob still cannot read it,
+      // while Alice reads her own entry as ever.
+      expect((await call('bob', `/assets/${id}/content`)).status).toBe(404);
+      expect((await call('bob', `/assets/${id}/content`, { method: 'HEAD' })).status).toBe(404);
+      expect((await call('alice', `/assets/${id}/content`)).status).toBe(200);
+    });
+
     it('ignores a reference row from a course that is not the entry owner’s', async () => {
       const id = await allocate('alice');
       await saveCourse('alice', 'stage-alice-gone', [id]);

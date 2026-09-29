@@ -6,8 +6,11 @@ import { AssetCollector } from '../src/asset/collector.js';
 import { PgAssetByteStore } from '../src/asset/pg-bytes.js';
 import {
   AssetQuotaExceededError,
+  AssetRootTargetError,
   PgAssetStore,
+  changeAssetRoots,
   ensureAssetSchema,
+  type ChangeAssetRootsInput,
   type QueryResult,
   type Queryable,
   type WithTransaction,
@@ -18,7 +21,9 @@ import {
 } from '../src/asset/collector.js';
 import {
   backfillDocumentAssetReferences,
+  removeDocumentAssetReferences,
   sceneAssetScope,
+  syncDocumentAssetReferences,
   syncStageAssetReferences,
 } from '../src/asset/references.js';
 import {
@@ -182,7 +187,7 @@ describe.skipIf(!contractUrl)('PgAssetStore with PostgreSQL 16', () => {
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE document_asset_refs, asset_entries, asset_blobs');
+    await pool.query('TRUNCATE asset_root_refs, document_asset_refs, asset_entries, asset_blobs');
     bytes = new PgAssetByteStore(pool as Queryable);
     store = new PgAssetStore(pool as Queryable, {
       byteStore: bytes,
@@ -411,7 +416,7 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
 
   beforeEach(async () => {
     await truncateDocumentTables(pool as Queryable);
-    await pool.query('TRUNCATE document_asset_refs, asset_entries, asset_blobs');
+    await pool.query('TRUNCATE asset_root_refs, document_asset_refs, asset_entries, asset_blobs');
     await pool.query('TRUNCATE asset_reference_tracking, document_asset_withdrawals');
     bytes = new PgAssetByteStore(pool as Queryable);
     assets = new PgAssetStore(pool as Queryable, {
@@ -1828,5 +1833,268 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
     await assets.remove(principal, id);
 
     expect((await pool.query('SELECT 1 FROM document_asset_refs')).rows).toEqual([]);
+  });
+
+  describe('reference roots', () => {
+    const principals = [principal.key];
+    const HOUR = 60 * 60 * 1000;
+
+    const change = (queryable: Queryable, input: Omit<ChangeAssetRootsInput, 'principals'>) =>
+      changeAssetRoots(queryable, { principals, ...input });
+    const addTo = (rootId: string, id: string) => ({
+      add: [{ rootKind: 'material', rootId, assetIds: [id] }],
+    });
+    const removeFrom = (rootId: string, id: string) => ({
+      remove: [{ rootKind: 'material', rootId, assetIds: [id] }],
+    });
+    const referenceIn = (queryable: Queryable, stageId: string, id: string) =>
+      syncDocumentAssetReferences(queryable, {
+        stageId,
+        scope: { scope: 'scene', sceneId: 'scene-a', candidates: [id] },
+      });
+    const stampOf = async (id: string): Promise<Date | null | undefined> =>
+      (
+        await pool.query<{ unreferenced_at: Date | null }>(
+          'SELECT unreferenced_at FROM asset_entries WHERE id = $1',
+          [id],
+        )
+      ).rows[0]?.unreferenced_at;
+    const rootsOf = async (id: string): Promise<string[]> =>
+      (
+        await pool.query<{ root_id: string }>(
+          'SELECT root_id FROM asset_root_refs WHERE asset_id = $1 ORDER BY root_id',
+          [id],
+        )
+      ).rows.map((row) => row.root_id);
+    const entryExists = async (id: string): Promise<boolean> =>
+      (await pool.query('SELECT 1 FROM asset_entries WHERE id = $1', [id])).rows.length > 0;
+    const passAt = (now: Date, graceMs = 0) =>
+      new AssetCollector(pool as Queryable, bytes, {
+        withTransaction: transactionFor(pool),
+        documentReferences: true,
+        graceMs,
+        now: () => now,
+      }).collectPass();
+
+    /**
+     * Run `first` in a transaction held open, start `second` in its own, prove
+     * `second` is waiting on a lock `first` holds, then commit `first` and let
+     * `second` finish. A `second` that did not contend fails here rather than
+     * passing by luck of timing.
+     */
+    const serialized = async (
+      first: (queryable: Queryable) => Promise<unknown>,
+      second: (queryable: Queryable) => Promise<unknown>,
+    ): Promise<void> => {
+      const holder = await pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await first(holder as Queryable);
+        const waiting = transactionFor(pool)((queryable) => second(queryable));
+        await waitForLockWaiter(pool);
+        await holder.query('COMMIT');
+        await waiting;
+      } catch (error) {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally {
+        holder.release();
+      }
+    };
+
+    beforeEach(async () => {
+      await pool.query(
+        `INSERT INTO asset_reference_tracking (singleton, enabled_at)
+         VALUES (TRUE, now()) ON CONFLICT DO NOTHING`,
+      );
+    });
+
+    test('provisions the cascading root foreign key', async () => {
+      const foreignKey = await pool.query<{ delete_rule: string }>(
+        `SELECT delete_rule
+           FROM information_schema.referential_constraints
+          WHERE constraint_schema = current_schema()
+            AND constraint_name = 'asset_root_refs_asset_id_fkey'`,
+      );
+      expect(foreignKey.rows).toEqual([{ delete_rule: 'CASCADE' }]);
+    });
+
+    test('an entry held only by a root outlives its pending deadline', async () => {
+      const id = await assets.put(principal, new Blob(['rooted only']));
+      await transactionFor(pool)((queryable) => change(queryable, addTo('material-1', id)));
+
+      const lifecycle = await pool.query<{ committed_at: Date | null; expires_at: Date | null }>(
+        'SELECT committed_at, expires_at FROM asset_entries WHERE id = $1',
+        [id],
+      );
+      expect(lifecycle.rows[0]?.committed_at).not.toBeNull();
+      expect(lifecycle.rows[0]?.expires_at).toBeNull();
+      const pass = await passAt(new Date(Date.now() + 3 * 24 * HOUR));
+      expect(pass.entriesCollected).toBe(0);
+      expect(await entryExists(id)).toBe(true);
+    });
+
+    test('a course withdrawal leaves a rooted entry alone; letting go of both drains it', async () => {
+      const id = await assets.put(principal, new Blob(['held twice']));
+      await referenceIn(pool as Queryable, 'course-1', id);
+      await transactionFor(pool)((queryable) => change(queryable, addTo('material-1', id)));
+
+      await transactionFor(pool)((queryable) =>
+        removeDocumentAssetReferences(queryable, { stageId: 'course-1' }),
+      );
+      expect(await stampOf(id)).toBeNull();
+      expect((await passAt(new Date(Date.now() + 2 * HOUR))).entriesCollected).toBe(0);
+
+      await transactionFor(pool)((queryable) => change(queryable, removeFrom('material-1', id)));
+      expect(await stampOf(id)).not.toBeNull();
+      expect((await passAt(new Date(), HOUR)).entriesCollected).toBe(0);
+      expect((await passAt(new Date(Date.now() + 2 * HOUR), HOUR)).entriesCollected).toBe(1);
+      expect(await entryExists(id)).toBe(false);
+    });
+
+    test('adding a root clears a stamp the entry already carries', async () => {
+      const id = await assets.put(principal, new Blob(['brought back']));
+      await referenceIn(pool as Queryable, 'course-1', id);
+      await removeDocumentAssetReferences(pool as Queryable, { stageId: 'course-1' });
+      expect(await stampOf(id)).not.toBeNull();
+
+      await transactionFor(pool)((queryable) => change(queryable, addTo('material-1', id)));
+
+      expect(await stampOf(id)).toBeNull();
+    });
+
+    test('a root added while the collector waits keeps the entry', async () => {
+      const id = await assets.put(principal, new Blob(['rescued']));
+      await pool.query(
+        `UPDATE asset_entries SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1`,
+        [id],
+      );
+
+      const holder = await pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await change(holder as Queryable, addTo('material-1', id));
+        const releasing = passAt(new Date());
+        await waitForLockWaiter(pool);
+        await holder.query('COMMIT');
+        expect((await releasing).entriesCollected).toBe(0);
+      } finally {
+        holder.release();
+      }
+
+      expect(await entryExists(id)).toBe(true);
+      expect(await rootsOf(id)).toEqual(['material-1']);
+    });
+
+    test('a root added after the collector took the entry is refused, not left dangling', async () => {
+      const id = await assets.put(principal, new Blob(['already gone']));
+      await pool.query(
+        `UPDATE asset_entries SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1`,
+        [id],
+      );
+      // The collector's release transaction, held open after its DELETE.
+      let signalDeleted!: () => void;
+      const deleted = new Promise<void>((resolve) => {
+        signalDeleted = resolve;
+      });
+      let allowCommit!: () => void;
+      const mayCommit = new Promise<void>((resolve) => {
+        allowCommit = resolve;
+      });
+      const holdAfterRelease: WithTransaction = async (body) => {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          let released = false;
+          const result = await body({
+            async query<TRow extends Record<string, unknown> = Record<string, unknown>>(
+              text: string,
+              params?: unknown[],
+            ): Promise<QueryResult<TRow>> {
+              if (text.startsWith('DELETE FROM asset_entries')) released = true;
+              return (client as Queryable).query<TRow>(text, params);
+            },
+          });
+          if (released) {
+            signalDeleted();
+            await mayCommit;
+          }
+          await client.query('COMMIT');
+          return result;
+        } catch (error) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
+      const releasing = new AssetCollector(pool as Queryable, bytes, {
+        withTransaction: holdAfterRelease,
+        documentReferences: true,
+        graceMs: 0,
+      }).collectPass();
+      await deleted;
+
+      // Settled into a value at once: it rejects while `releasing` is still
+      // being awaited, and an unobserved rejection would fail the run.
+      const rooting = transactionFor(pool)((queryable) =>
+        change(queryable, addTo('material-1', id)),
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await waitForLockWaiter(pool);
+      allowCommit();
+
+      expect((await releasing).entriesCollected).toBe(1);
+      expect(await rooting).toBeInstanceOf(AssetRootTargetError);
+      expect(await entryExists(id)).toBe(false);
+      expect(await rootsOf(id)).toEqual([]);
+    });
+
+    test('a course withdrawal and a root being added serialize, in either order', async () => {
+      for (const withdrawFirst of [true, false]) {
+        const id = await assets.put(principal, new Blob([`withdraw-${withdrawFirst}`]));
+        const stageId = `course-${withdrawFirst}`;
+        await referenceIn(pool as Queryable, stageId, id);
+        const withdraw = (queryable: Queryable) =>
+          removeDocumentAssetReferences(queryable, { stageId });
+        const root = (queryable: Queryable) => change(queryable, addTo(`material-${id}`, id));
+
+        await (withdrawFirst ? serialized(withdraw, root) : serialized(root, withdraw));
+
+        expect(await rootsOf(id)).toEqual([`material-${id}`]);
+        expect(await stampOf(id)).toBeNull();
+      }
+    });
+
+    test('a root being removed and a course reference being added serialize, in either order', async () => {
+      for (const unrootFirst of [true, false]) {
+        const id = await assets.put(principal, new Blob([`unroot-${unrootFirst}`]));
+        await transactionFor(pool)((queryable) => change(queryable, addTo('material-1', id)));
+        const unroot = (queryable: Queryable) => change(queryable, removeFrom('material-1', id));
+        const reference = (queryable: Queryable) =>
+          referenceIn(queryable, `course-${unrootFirst}`, id);
+
+        await (unrootFirst ? serialized(unroot, reference) : serialized(reference, unroot));
+
+        expect(await rootsOf(id)).toEqual([]);
+        expect(await stampOf(id)).toBeNull();
+      }
+    });
+
+    test('adding and removing roots of one entry serialize on its row lock, in either order', async () => {
+      for (const removeFirst of [true, false]) {
+        const id = await assets.put(principal, new Blob([`move-${removeFirst}`]));
+        await transactionFor(pool)((queryable) => change(queryable, addTo('material-a', id)));
+        const remove = (queryable: Queryable) => change(queryable, removeFrom('material-a', id));
+        const add = (queryable: Queryable) => change(queryable, addTo('material-b', id));
+
+        await (removeFirst ? serialized(remove, add) : serialized(add, remove));
+
+        expect(await rootsOf(id)).toEqual(['material-b']);
+        expect(await stampOf(id)).toBeNull();
+      }
+    });
   });
 });

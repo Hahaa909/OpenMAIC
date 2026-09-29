@@ -9,6 +9,7 @@ import {
   sceneAssetScope,
   stageAssetScope,
 } from './references.js';
+import { ENTRY_UNREFERENCED_SQL, entryIsReferenced } from './liveness.js';
 import {
   ownerOfSql,
   resolveDocumentOwnership,
@@ -80,7 +81,8 @@ export interface AssetCollectorOptions {
   now?: () => Date;
   /**
    * Reclaim unreferenced `asset_entries` as well as unreferenced bytes,
-   * using the `document_asset_refs` table. Defaults to `false`.
+   * using the `document_asset_refs` and `asset_root_refs` tables: an entry
+   * either one names is referenced (`./liveness.ts`). Defaults to `false`.
    *
    * **A deployment that turns this on MUST also construct its
    * `PgDocumentStore` with `trackAssetReferences: true`.** The two halves are
@@ -644,6 +646,13 @@ export class AssetCollector {
    * stamp, and even if there were, such a row is not a release candidate --
    * `releaseEntries` takes only entries with `expires_at` or `unreferenced_at`
    * set.
+   *
+   * Reference roots (`asset_root_refs`) take part in every stamp and in the
+   * release check, but need nothing from the backfill or the legacy gate:
+   * roots are written explicitly by their owner (`./roots.ts`), never derived
+   * from stored content, so there is no pre-tracking root for a walk to
+   * recover; and adding a root commits its entry, so a rooted entry is never
+   * legacy.
    */
   private async entryLevelPass(now: string, cutoff: string): Promise<EntryLevelPass> {
     let backfilledDocuments = 0;
@@ -753,9 +762,7 @@ export class AssetCollector {
               SET unreferenced_at = now()
             WHERE entries.id = ANY($1::text[])
               AND entries.unreferenced_at IS NULL
-              AND NOT EXISTS (
-                    SELECT 1 FROM document_asset_refs AS refs WHERE refs.asset_id = entries.id
-                  )`,
+              AND ${ENTRY_UNREFERENCED_SQL}`,
           [ids],
         );
       });
@@ -1091,9 +1098,7 @@ export class AssetCollector {
               SET unreferenced_at = now()
             WHERE entries.id = ANY($1::text[])
               AND entries.unreferenced_at IS NULL
-              AND NOT EXISTS (
-                    SELECT 1 FROM document_asset_refs AS refs WHERE refs.asset_id = entries.id
-                  )`,
+              AND ${ENTRY_UNREFERENCED_SQL}`,
           [ids],
         );
         return ids.length;
@@ -1136,8 +1141,9 @@ export class AssetCollector {
           // TWO statements, deliberately, and the split is load-bearing.
           //
           // The first one locks: it re-checks the entry's own timestamps and
-          // takes `FOR UPDATE`. A document write racing the candidate query
-          // above both clears those timestamps and inserts a reference row, so
+          // takes `FOR UPDATE`. A document write -- or a root being added --
+          // racing the candidate query above both clears those timestamps and
+          // inserts a reference row, so
           // when this statement waits on that writer's lock PostgreSQL
           // re-evaluates the predicate against the updated row (EvalPlanQual)
           // and the entry is skipped.
@@ -1171,13 +1177,10 @@ export class AssetCollector {
           );
           const entry = locked.rows[0];
           if (!entry) return false;
-          const referenced = await queryable.query(
-            'SELECT 1 FROM document_asset_refs WHERE asset_id = $1 LIMIT 1',
-            [entry.id],
-          );
-          // What makes "eligible" mean "no document names it" rather than "a
-          // column says so".
-          if (referenced.rows.length > 0) return false;
+          // What makes "eligible" mean "nothing references it" -- no document
+          // and no reference root (./liveness.ts) -- rather than "a column
+          // says so".
+          if (await entryIsReferenced(queryable, entry.id)) return false;
           // Exactly what `remove` does, in the same order: delete the one row,
           // then stamp the blob when no entry names those bytes any more. Any
           // reference row would go with it through the table's cascade; the

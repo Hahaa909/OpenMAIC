@@ -9,11 +9,16 @@
  * from the package root.
  *
  * This module is the only place that maintains `document_asset_refs` and the
- * lifecycle columns on `asset_entries` **as part of a document write**. Two
+ * lifecycle columns on `asset_entries` **as part of a document write**. Three
  * other writers exist by design and are named so this docstring cannot go
  * stale: `PgAssetStore.put` writes all three lifecycle columns when it
- * allocates an entry, and `AssetCollector` marks legacy entries and deletes
- * released ones. Everything here takes a `Queryable` and runs inside a
+ * allocates an entry, `AssetCollector` marks legacy entries and deletes
+ * released ones, and `changeAssetRoots` (`./roots.ts`) commits the entries it
+ * roots and stamps the ones whose last reference it removes. The last one
+ * reuses this module's lock and commit primitives, and every stamp in the
+ * package -- here, in the collector and in the root writer -- decides
+ * "unreferenced" through `./liveness.ts`, which looks at both reference
+ * tables. Everything here takes a `Queryable` and runs inside a
  * transaction the caller already owns -- the document store's write
  * transactions and the collector's backfill -- so a reference row and the
  * document write that implies it commit or roll back together. There is no
@@ -58,6 +63,7 @@
  */
 import type { Action, Scene, SceneType, Slide, SlideContent, Stage } from '@openmaic/dsl';
 import { enumerateAssetManifest, isSlideContent } from '@openmaic/dsl';
+import { ENTRY_UNREFERENCED_SQL } from './liveness.js';
 import { isLosslessJsonString } from '../runtime/json-value.js';
 import type { Queryable } from '../runtime/pg.js';
 
@@ -254,7 +260,7 @@ export function documentAssetScopes(document: ScopedDocumentInput): DocumentAsse
  * sort makes the parameter array match it in the common case and makes the
  * intent visible at every call site.
  */
-function queryableCandidates(candidates: readonly string[]): string[] {
+export function queryableCandidates(candidates: readonly string[]): string[] {
   const unique = new Set<string>();
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !isLosslessJsonString(candidate)) continue;
@@ -315,7 +321,7 @@ export async function recordAssetReferenceTracking(queryable: Queryable): Promis
  * acquisition in this package to the two strengths whose interaction is
  * reasoned about, and keeps the literal out of any caller's hands.
  */
-type EntryLockStrength = 'no-key-update' | 'key-share';
+export type EntryLockStrength = 'no-key-update' | 'key-share';
 
 const ENTRY_LOCK_SQL: Record<EntryLockStrength, string> = {
   'no-key-update': 'FOR NO KEY UPDATE',
@@ -356,25 +362,32 @@ const ENTRY_LOCK_SQL: Record<EntryLockStrength, string> = {
  * for the collector's insert-only backfill, which is exactly what its inserts'
  * foreign keys take, for the same reason.
  *
- * Returns the ids that exist as entries. That is also the join that keeps ids
- * opaque: a candidate with no entry locks nothing, and nothing downstream
- * updates it.
+ * Returns the entries that exist, with the principal each is held by. That is
+ * also the join that keeps ids opaque: a candidate with no entry locks
+ * nothing, and nothing downstream updates it. The principal is what the root
+ * writer (`./roots.ts`) checks ownership against, read under the same lock.
  */
-async function lockEntriesInOrder(
+export async function lockEntriesInOrder(
   queryable: Queryable,
   ids: readonly string[],
   strength: EntryLockStrength,
-): Promise<string[]> {
+): Promise<LockedEntry[]> {
   if (ids.length === 0) return [];
-  const locked = await queryable.query<{ id: string }>(
-    `SELECT id
+  const locked = await queryable.query<{ id: string; principal: string }>(
+    `SELECT id, principal
        FROM asset_entries
       WHERE id = ANY($1::text[])
       ORDER BY id ASC
         ${ENTRY_LOCK_SQL[strength]}`,
     [ids],
   );
-  return locked.rows.map((row) => row.id);
+  return locked.rows.map((row) => ({ id: row.id, principal: row.principal }));
+}
+
+/** An entry {@link lockEntriesInOrder} locked, and the principal holding it. */
+export interface LockedEntry {
+  readonly id: string;
+  readonly principal: string;
 }
 
 /**
@@ -433,7 +446,7 @@ export async function lockBackfillEntries(
  * every one of these rows at `FOR NO KEY UPDATE`, so this statement cannot
  * wait.
  */
-async function commitReferencedEntries(
+export async function commitReferencedEntries(
   queryable: Queryable,
   candidates: readonly string[],
   principals: ReferencePrincipals,
@@ -455,7 +468,7 @@ async function commitReferencedEntries(
  * The principals whose entries a writer may reference, or `undefined` for any
  * entry. See the module docstring.
  */
-type ReferencePrincipals = readonly string[] | undefined;
+export type ReferencePrincipals = readonly string[] | undefined;
 
 function principalFilter(principals: ReferencePrincipals): string[] | null {
   if (principals === undefined) return null;
@@ -463,10 +476,11 @@ function principalFilter(principals: ReferencePrincipals): string[] | null {
 }
 
 /**
- * Stamp the entries among `previous` that no document references any more.
+ * Stamp the entries among `previous` that nothing references any more.
  *
- * "Any more" is global, not scoped: another scene of this stage, or another
- * stage entirely, keeping a row is enough to leave the entry alone. The
+ * "Any more" is global, not scoped: another scene of this stage, another stage
+ * entirely, or a reference root (`asset_root_refs`) keeping a row is enough to
+ * leave the entry alone -- see `./liveness.ts`. The
  * `unreferenced_at IS NULL` guard makes the stamp the moment the LAST
  * reference went, so a document rewritten repeatedly cannot keep pushing an
  * entry's grace period out.
@@ -478,7 +492,7 @@ function principalFilter(principals: ReferencePrincipals): string[] | null {
  * `KEY SHARE` an insert-only reference writer takes, so a reference row can
  * still commit after the lock was taken, and only a later snapshot sees it.
  */
-async function stampUnreferencedEntries(
+export async function stampUnreferencedEntries(
   queryable: Queryable,
   previous: readonly string[],
 ): Promise<void> {
@@ -489,9 +503,7 @@ async function stampUnreferencedEntries(
         SET unreferenced_at = now()
       WHERE entries.id = ANY($1::text[])
         AND entries.unreferenced_at IS NULL
-        AND NOT EXISTS (
-              SELECT 1 FROM document_asset_refs AS refs WHERE refs.asset_id = entries.id
-            )`,
+        AND ${ENTRY_UNREFERENCED_SQL}`,
     [ids],
   );
 }

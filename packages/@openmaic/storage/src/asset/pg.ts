@@ -50,6 +50,13 @@ export type {
   AssetStore,
 } from './types.js';
 export { AssetNotFoundError, AssetQuotaExceededError } from './types.js';
+export {
+  AssetRootInputError,
+  AssetRootTargetError,
+  changeAssetRoots,
+  type AssetRootChange,
+  type ChangeAssetRootsInput,
+} from './roots.js';
 
 export interface PgAssetStoreOptions {
   /** Pin each callback to a fresh PostgreSQL transaction and connection. */
@@ -90,10 +97,10 @@ export const DEFAULT_ASSET_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
  *   rather than living forever.
  * - `committed_at` is stamped by that same first document write. `NULL` means
  *   pending; it is never read on a request path.
- * - `unreferenced_at` is stamped when a document write removes the entry's
- *   last reference row, so an entry drains after a grace period instead of
- *   immediately, and cleared by the document write paths when a reference
- *   arrives back. The collector's backfill is the one reference-adding writer
+ * - `unreferenced_at` is stamped when a write removes the entry's last
+ *   reference row -- of either kind below -- so an entry drains after a grace
+ *   period instead of immediately, and cleared by the document write paths
+ *   and by adding a root when a reference arrives back. The collector's backfill is the one reference-adding writer
  *   that does NOT clear it: it deliberately touches no lifecycle column, so a
  *   walk that re-references a stamped entry leaves it referenced AND stamped.
  *   That is a normal intermediate state and a safe one -- the entry pass never
@@ -113,6 +120,17 @@ export const DEFAULT_ASSET_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
  * document schema is a different backend that a deployment may not provision
  * at all, and the reference rows are maintained explicitly by the document
  * store (see `./references.ts`) rather than by a cascade.
+ *
+ * `asset_root_refs` is the second kind of reference: an explicit root that
+ * keeps an entry alive for as long as the row exists, written by a caller
+ * that owns something outside any document (see `./roots.ts`). Its
+ * `(root_kind, root_id)` pair is opaque to this package -- storage never
+ * interprets either -- and the lifecycle treats a root exactly like a
+ * document reference: an entry named by a row in EITHER table is referenced.
+ * A root keeps an entry alive and nothing more; in particular it does not make
+ * the entry readable by any other principal. Like `document_asset_refs` it
+ * cascades with its entry, so a `remove` of a rooted entry takes the root
+ * with it.
  *
  * `asset_reference_tracking` is a one-row marker, written by a document store
  * configured to maintain references and read by the collector before its
@@ -175,6 +193,14 @@ export const ASSET_PG_SCHEMA: readonly string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS document_asset_refs_asset_idx
      ON document_asset_refs (asset_id)`,
+  `CREATE TABLE IF NOT EXISTS asset_root_refs (
+     root_kind TEXT NOT NULL,
+     root_id TEXT NOT NULL,
+     asset_id TEXT NOT NULL REFERENCES asset_entries(id) ON DELETE CASCADE,
+     PRIMARY KEY (root_kind, root_id, asset_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS asset_root_refs_asset_idx
+     ON asset_root_refs (asset_id)`,
   `CREATE INDEX IF NOT EXISTS asset_entries_expires_idx
      ON asset_entries (expires_at) WHERE expires_at IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS asset_entries_unreferenced_idx
@@ -654,8 +680,9 @@ export class PgAssetStore implements AssetStore {
   /**
    * Delete one entry, and stamp the blob when no entry names it any more.
    *
-   * Unchanged by the entry lifecycle: any `document_asset_refs` rows naming
-   * this id go with the row through the table's `ON DELETE CASCADE`, which
+   * Unchanged by the entry lifecycle: any `document_asset_refs` or
+   * `asset_root_refs` rows naming this id go with the row through those
+   * tables' `ON DELETE CASCADE`, which
    * needs no statement here and cannot change the contract that an unknown id
    * -- or another principal's id -- is the same no-op, because a delete that
    * matches no row cascades to nothing.

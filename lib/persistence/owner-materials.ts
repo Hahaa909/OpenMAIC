@@ -126,10 +126,73 @@ CREATE INDEX IF NOT EXISTS owner_material_owner_created_idx
 -- oss_key (they tracked an asset id instead); CREATE TABLE IF NOT EXISTS
 -- leaves such tables untouched, so the column must be added here. The ''
 -- default is the existing "no bytes recorded" sentinel the stale-upload
--- sweeper already understands. The old NOT NULL asset_id column must also
--- go, or its constraint rejects every insert of the new row shape.
+-- sweeper already understands.
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS oss_key TEXT NOT NULL DEFAULT '';
-ALTER TABLE owner_material DROP COLUMN IF EXISTS asset_id;
+
+-- asset_id is the material's pointer into the asset pool. A table created
+-- before the byte-store model still carries an older asset_id column: NOT
+-- NULL, which would reject every insert of the current row shape, and holding
+-- ids from the retired registry wiring, which must never be read as pool
+-- pointers. Both are undone together in ONE statement, so a failure part-way
+-- can never leave the column nullable with the old values still in it (a
+-- state the next bootstrap would no longer recognize): the bootstrap lock is
+-- session-scoped and opens no transaction, and each statement here may run on
+-- its own pooled connection. Once the column is nullable this block does
+-- nothing. The old values carry nothing a reader needs; the DROP this
+-- replaces discarded them too.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'owner_material'
+       AND column_name = 'asset_id'
+       AND is_nullable = 'NO'
+  ) THEN
+    ALTER TABLE owner_material ALTER COLUMN asset_id DROP NOT NULL;
+    UPDATE owner_material SET asset_id = NULL;
+  END IF;
+END
+$$;
+
+-- Library columns. All nullable: a process that predates them still inserts
+-- rows without them. Nothing reads them yet.
+ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS asset_id TEXT;
+ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS folder_id TEXT;
+ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+-- Flat, owner-scoped material folders. Unfiled is folder_id IS NULL, not a
+-- row. Names are unique per owner by their normalized form, as course folders
+-- are.
+CREATE TABLE IF NOT EXISTS material_folders (
+  owner_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  created_at DOUBLE PRECISION NOT NULL,
+  updated_at DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (owner_id, id),
+  UNIQUE (owner_id, normalized_name)
+);
+
+-- A material may only be filed in a folder of its own owner, and a folder
+-- that still holds a material cannot be deleted. ADD CONSTRAINT has no IF NOT
+-- EXISTS, hence the guard. A NULL folder_id is not checked (MATCH SIMPLE).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'owner_material_folder_fk'
+       AND conrelid = 'owner_material'::regclass
+  ) THEN
+    ALTER TABLE owner_material
+      ADD CONSTRAINT owner_material_folder_fk
+      FOREIGN KEY (owner_id, folder_id)
+      REFERENCES material_folders (owner_id, id)
+      ON DELETE RESTRICT;
+  END IF;
+END
+$$;
 `;
 
 export async function ensureOwnerMaterialSchema(queryable: Queryable): Promise<void> {
@@ -412,4 +475,146 @@ export async function getReadyOwnerMaterials(
     [ownerId, [...materialIds]],
   );
   return result.rows.map(rowToRecord);
+}
+
+/** What {@link reassignMaterialFolders} did with one of the source owner's folders. */
+export interface MaterialFolderReassignment {
+  /** The source owner's folder id. */
+  fromFolderId: string;
+  /** The target owner's folder its materials are filed in now. */
+  toFolderId: string;
+  /**
+   * `moved`: the folder moved as it was. `merged`: the target already had a
+   * folder of the same normalized name, so the materials joined it and the
+   * source folder is gone. `renumbered`: the target already used the folder's
+   * id for a differently named folder, so the folder moved under a fresh id.
+   */
+  outcome: 'moved' | 'merged' | 'renumbered';
+}
+
+interface MaterialFolderRow extends Record<string, unknown> {
+  owner_id: string;
+  id: string;
+  name: string;
+  normalized_name: string;
+  created_at: number | string;
+  updated_at: number | string;
+}
+
+/**
+ * Move every material and material folder of one owner to another: the
+ * material half of a claim (`./owner-claims.ts`). `tx` must be the claim's
+ * open transaction, after the owners' identity and quota locks.
+ *
+ * Folder collisions resolve the way course folders do
+ * (`reassignDocumentFolders` in the storage package): a source folder whose
+ * normalized name the target already uses is merged into the target's folder;
+ * otherwise one whose id the target already uses moves under a fresh id;
+ * otherwise it moves unchanged. Every material moves, filed or not --
+ * `folder_id IS NULL` is Unfiled and stays Unfiled -- and a filed one follows
+ * its folder's mapping.
+ *
+ * The statement order is what the `ON DELETE RESTRICT` folder foreign key
+ * requires: the target folders exist before any material points at them, and
+ * the source folders are deleted only after no material does. Reference roots
+ * are keyed by material id, which does not change, so none is touched here.
+ */
+export async function reassignMaterialFolders(
+  tx: Queryable,
+  fromOwnerId: string,
+  toOwnerId: string,
+  createFolderId: () => string = () => globalThis.crypto.randomUUID(),
+): Promise<{ materials: number; folders: MaterialFolderReassignment[] }> {
+  // Both owners' folder rows, then the source's material rows, each in one
+  // ordered statement before anything is written.
+  const folderRows = await tx.query<MaterialFolderRow>(
+    `SELECT owner_id, id, name, normalized_name, created_at, updated_at
+       FROM material_folders
+      WHERE owner_id IN ($1, $2)
+      ORDER BY owner_id, id
+        FOR UPDATE`,
+    [fromOwnerId, toOwnerId],
+  );
+  await tx.query('SELECT id FROM owner_material WHERE owner_id = $1 ORDER BY id FOR UPDATE', [
+    fromOwnerId,
+  ]);
+
+  const target = folderRows.rows.filter((row) => row.owner_id === toOwnerId);
+  const source = folderRows.rows
+    .filter((row) => row.owner_id === fromOwnerId)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const targetByName = new Map(target.map((row) => [row.normalized_name, row.id]));
+  const usedIds = new Set(target.map((row) => row.id));
+  const plan: MaterialFolderReassignment[] = [];
+  const inserts: MaterialFolderRow[] = [];
+  for (const folder of source) {
+    const merged = targetByName.get(folder.normalized_name);
+    if (merged !== undefined) {
+      plan.push({ fromFolderId: folder.id, toFolderId: merged, outcome: 'merged' });
+      continue;
+    }
+    let id = folder.id;
+    let outcome: MaterialFolderReassignment['outcome'] = 'moved';
+    if (usedIds.has(id)) {
+      do id = createFolderId();
+      while (usedIds.has(id));
+      outcome = 'renumbered';
+    }
+    usedIds.add(id);
+    targetByName.set(folder.normalized_name, id);
+    inserts.push({ ...folder, id });
+    plan.push({ fromFolderId: folder.id, toFolderId: id, outcome });
+  }
+
+  // Every filed material must have a mapping. The foreign key already makes
+  // this so; checking it here turns a violation into a loud rollback instead
+  // of a material silently landing Unfiled below.
+  const mapped = new Set(plan.map((entry) => entry.fromFolderId));
+  const filed = await tx.query<{ folder_id: string } & Record<string, unknown>>(
+    `SELECT DISTINCT folder_id FROM owner_material
+      WHERE owner_id = $1 AND folder_id IS NOT NULL`,
+    [fromOwnerId],
+  );
+  if (filed.rows.some((row) => !mapped.has(row.folder_id))) {
+    throw new Error('owner materials: a filed material names a folder its owner does not have');
+  }
+
+  for (const folder of inserts) {
+    await tx.query(
+      `INSERT INTO material_folders
+         (owner_id, id, name, normalized_name, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        toOwnerId,
+        folder.id,
+        folder.name,
+        folder.normalized_name,
+        Number(folder.created_at),
+        Number(folder.updated_at),
+      ],
+    );
+  }
+  // One statement over every source material, Unfiled included: an inner
+  // join against the mapping would skip folder_id IS NULL and leave those
+  // rows under the retired owner.
+  const moved = await tx.query<{ id: string } & Record<string, unknown>>(
+    `UPDATE owner_material AS material
+        SET owner_id = $2,
+            folder_id = CASE
+              WHEN material.folder_id IS NULL THEN NULL
+              ELSE (SELECT moves.to_id
+                      FROM unnest($3::text[], $4::text[]) AS moves(from_id, to_id)
+                     WHERE moves.from_id = material.folder_id)
+            END
+      WHERE material.owner_id = $1
+      RETURNING material.id`,
+    [
+      fromOwnerId,
+      toOwnerId,
+      plan.map((entry) => entry.fromFolderId),
+      plan.map((entry) => entry.toFolderId),
+    ],
+  );
+  await tx.query('DELETE FROM material_folders WHERE owner_id = $1', [fromOwnerId]);
+  return { materials: moved.rows.length, folders: plan };
 }
