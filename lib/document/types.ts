@@ -43,6 +43,11 @@ export interface DocumentExtractorProvider {
   supportedMimeTypes: readonly string[];
   capabilities: DocumentExtractorCapabilities;
   /**
+   * Whether extraction needs a server-configured service (see the extractor
+   * manifest). Absent on ad-hoc providers, which count as self-contained.
+   */
+  requiresServiceConfig?: boolean;
+  /**
    * Provider version. Bump it whenever this provider's extraction output
    * shape or quality changes; it is the version half of the
    * (content identity, extractor identity) key under which extraction
@@ -84,6 +89,8 @@ export interface MediaExtractorProvider {
    */
   supportedMimeTypes: readonly string[];
   capabilities: MediaExtractorCapabilities;
+  /** Whether an audio track needs a server ASR provider (see the extractor manifest). */
+  requiresServerASR?: boolean;
   /**
    * Provider version. Bump it whenever this provider's extraction output
    * shape or quality changes; it is the version half of the
