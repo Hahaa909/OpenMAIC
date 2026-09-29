@@ -32,7 +32,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A `${` with no closing brace, checked on the text as written. */
 const UNCLOSED_ENV_REF = /\$\{[^}]*$/;
 
-const thinkingSchema = z
+export const thinkingSchema = z
   .object({
     mode: z.enum(VALID_MODES as [string, ...string[]]).optional(),
     effort: z.enum(VALID_EFFORTS as [string, ...string[]]).optional(),
@@ -80,12 +80,16 @@ const assignmentSchema = z.unknown().transform((value, ctx): SlotAssignment => {
   return z.NEVER;
 });
 
-const providerSchema = z
+export const providerSchema = z
   .object({
     preset: z.string().min(1),
     apiKey: z.string().min(1).optional(),
     baseUrl: z.url().optional(),
     models: z.array(z.string().min(1)).min(1).optional(),
+    /** HTTP proxy for this provider's requests. */
+    proxy: z.url().optional(),
+    /** Multi-part credentials for vendors that do not use a single key. */
+    credentials: z.record(z.string().min(1), z.string().min(1)).optional(),
   })
   .strict();
 
