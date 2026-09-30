@@ -86,6 +86,24 @@ const assignmentSchema = z.unknown().transform((value, ctx): SlotAssignment => {
   return z.NEVER;
 });
 
+/**
+ * A provider's non-secret options: short names, scalar values. They are shown
+ * in the settings view, so a name that sounds like a credential is refused:
+ * credentials belong in `apiKey` or `credentials`.
+ */
+export const providerOptionsSchema = z.record(
+  z
+    .string()
+    .regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/, 'invalid option name')
+    .refine(
+      (name) => !/key|secret|token|password/i.test(name),
+      'options are shown in the settings; put credentials in apiKey or credentials',
+    ),
+  z.union([z.string().max(1024), z.number().finite(), z.boolean()]),
+);
+
+export type ProviderOptions = z.infer<typeof providerOptionsSchema>;
+
 export const providerSchema = z
   .object({
     preset: z.string().min(1),
@@ -96,6 +114,12 @@ export const providerSchema = z
     proxy: z.url().optional(),
     /** Multi-part credentials for vendors that do not use a single key. */
     credentials: z.record(z.string().min(1), z.string().min(1)).optional(),
+    /**
+     * Provider-specific settings that are not secret (a VoxCPM `backend`, for
+     * example): passed to the provider's adapter as its options. Shown in the
+     * settings view, so never a place for a key.
+     */
+    options: providerOptionsSchema.optional(),
   })
   .strict();
 
