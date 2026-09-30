@@ -29,7 +29,7 @@ import {
   resetClaimParticipantsForTests,
 } from '@/lib/persistence/owner-claims';
 import { bindLegacyImport } from '@/lib/persistence/legacy-import-bindings';
-import { registerOwnerMaterial } from '@/lib/persistence/owner-materials';
+import { reassignMaterialFolders, registerOwnerMaterial } from '@/lib/persistence/owner-materials';
 import {
   canonicalizeOwner,
   canonicalizeStoredOwner,
@@ -715,6 +715,24 @@ export async function emptyFoldersOnlyMaterialClaimScenario(h: ClaimHarness): Pr
     folders: { 'mf-account-notes': 'notes', 'mf-empty': 'Empty' },
     materials: {},
   });
+}
+
+/**
+ * Reassigning an owner's library onto itself changes nothing: an empty folder
+ * is not dropped and a filed material keeps its folder. The claim entry point
+ * refuses the same owner before this runs; the helper holds on its own too.
+ */
+export async function selfReassignMaterialFoldersScenario(h: ClaimHarness): Promise<void> {
+  await materialFolder(h, ACCOUNT, 'mf-empty', 'Empty');
+  await materialFolder(h, ACCOUNT, 'mf-filed', 'Filed');
+  await material(h, ACCOUNT, 'mat-filed', 'mf-filed');
+  const before = await libraryOf(h, ACCOUNT);
+
+  expect(await reassignMaterialFolders(h.pool, ACCOUNT, ACCOUNT)).toEqual({
+    materials: 0,
+    folders: [],
+  });
+  expect(await libraryOf(h, ACCOUNT)).toEqual(before);
 }
 
 /** A claim that fails after the materials moved keeps both libraries as they were. */

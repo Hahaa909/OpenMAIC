@@ -39,6 +39,7 @@ import {
   materialFolderClaimScenario,
   unfiledOnlyMaterialClaimScenario,
   emptyFoldersOnlyMaterialClaimScenario,
+  selfReassignMaterialFoldersScenario,
   materialFolderAtomicityScenario,
   rootedMaterialClaimScenario,
   rowsUnder,
@@ -189,6 +190,10 @@ describe.skipIf(!contractUrl)('claiming anonymous work on PostgreSQL', () => {
 
   it('moves an owner that has empty material folders only', async () => {
     await emptyFoldersOnlyMaterialClaimScenario(harness);
+  });
+
+  it('leaves a library reassigned onto its own owner unchanged', async () => {
+    await selfReassignMaterialFoldersScenario(harness);
   });
 
   it('keeps both material libraries as they were when the claim fails', async () => {

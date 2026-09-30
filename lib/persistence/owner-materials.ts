@@ -526,6 +526,9 @@ export async function reassignMaterialFolders(
   toOwnerId: string,
   createFolderId: () => string = () => globalThis.crypto.randomUUID(),
 ): Promise<{ materials: number; folders: MaterialFolderReassignment[] }> {
+  // As `reassignDocumentFolders`: moving an owner onto itself moves nothing.
+  // Without this, the final DELETE would drop the owner's own folders.
+  if (fromOwnerId === toOwnerId) return { materials: 0, folders: [] };
   // Both owners' folder rows, then the source's material rows, each in one
   // ordered statement before anything is written.
   const folderRows = await tx.query<MaterialFolderRow>(
