@@ -16,6 +16,15 @@
  *   run row's `seq` is the last one allocated).
  * - `generation_run_commands`: commands by their caller's `command_id`, so a
  *   repeated command answers what the first one did.
+ *
+ * Version 2 adds `media_pending`: a run that is paused or completed still has
+ * media to generate (a retried image, a video whose wait was interrupted).
+ * Such a run holds no step, so the claim reads this flag instead of the run's
+ * state; every commit that gives the lease up recomputes it from the media
+ * checkpoints. It also indexes the runs still producing a course by
+ * `stage_id` (and the completed ones with media pending), which every content
+ * write of a course and its deletion look up; both queries' predicates imply
+ * the index's.
  */
 import type { Queryable } from '@openmaic/storage/document/pg';
 import { applySchemaMigrations, type SchemaMigrationSet } from '@openmaic/storage/pg-migrations';
@@ -77,9 +86,21 @@ CREATE TABLE IF NOT EXISTS generation_run_commands (
   PRIMARY KEY (run_id, command_id)
 )`;
 
+const MEDIA_PENDING = `
+ALTER TABLE generation_runs ADD COLUMN IF NOT EXISTS media_pending BOOLEAN NOT NULL DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS generation_runs_media_pending_idx
+  ON generation_runs (updated_at) WHERE media_pending AND state IN ('paused','completed');
+
+CREATE INDEX IF NOT EXISTS generation_runs_stage_active_idx
+  ON generation_runs (stage_id) WHERE state NOT IN ('completed','ended') OR media_pending`;
+
 export const GENERATION_RUN_MIGRATIONS: SchemaMigrationSet = {
   store: 'generation-runs',
-  migrations: [{ version: 1, name: 'baseline', up: SCHEMA, transaction: false }],
+  migrations: [
+    { version: 1, name: 'baseline', up: SCHEMA, transaction: false },
+    { version: 2, name: 'media_pending', up: MEDIA_PENDING },
+  ],
 };
 
 export async function ensureGenerationRunSchema(queryable: Queryable): Promise<void> {

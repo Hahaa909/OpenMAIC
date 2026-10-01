@@ -151,6 +151,13 @@ const SHIPPED: readonly (readonly [
     false,
     'be1c2c6a13bb6c787e90549e65904ff94c60e05a3faac309b8951eeb2ce4994b',
   ],
+  [
+    'generation-runs',
+    2,
+    'media_pending',
+    true,
+    '7f6f57d0c4ca3056e8a01de8fa243bc20db5e300099275aee7b5a10de5387edf',
+  ],
 ];
 
 describe('shipped schema migrations', () => {

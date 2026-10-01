@@ -10,6 +10,10 @@
  * no server TTS) still runs and checkpoints that it did nothing, so the plan
  * never depends on configuration read at another moment.
  */
+import { PERMANENT_MEDIA_FAILURE_CODES } from '@/lib/media/media-failure';
+import type { MediaGenerationRequest } from '@/lib/media/types';
+import type { SceneOutline } from '@/lib/types/generation';
+
 import type { ExecutableRunState, GenerationRunInput, GenerationRunState } from './types';
 
 /** A scene's narration step also appends it to the course, in the same commit. */
@@ -104,4 +108,59 @@ export function stateForRetry(stepId: string): ExecutableRunState {
   const step = parseStepId(stepId);
   if (!step) throw new Error(`Unknown run step ${JSON.stringify(stepId)}`);
   return phaseOfStep(step);
+}
+
+/**
+ * The checkpoint of one generated image or video. Media is not a step of the
+ * plan: it is generated alongside the scenes (see `./media.ts`), and its
+ * checkpoints share the run's step table so a takeover finds them.
+ */
+export function mediaStepId(elementId: string): string {
+  return `media:${elementId}`;
+}
+
+export const MEDIA_STEP_PREFIX = 'media:';
+
+/** One media request of the confirmed outline, with the scene it belongs to. */
+export interface RunMediaItem {
+  request: MediaGenerationRequest;
+  sceneIndex: number;
+}
+
+/**
+ * The media the outline asks for, in the order the browser's media pass takes
+ * it (outline order, then each outline's own order). A placeholder requested
+ * twice is generated once, as the browser keys its media tasks by it.
+ */
+export function mediaItemsOf(outlines: readonly SceneOutline[]): RunMediaItem[] {
+  const seen = new Set<string>();
+  const items: RunMediaItem[] = [];
+  outlines.forEach((outline, sceneIndex) => {
+    for (const request of outline.mediaGenerations ?? []) {
+      if (seen.has(request.elementId)) continue;
+      seen.add(request.elementId);
+      items.push({ request, sceneIndex });
+    }
+  });
+  return items;
+}
+
+/**
+ * A media item regenerated after its course completed whose element the
+ * course no longer has (the author deleted it, or its scene): the result was
+ * dropped. Final: a Retry would pay for media nothing can show.
+ */
+export const MEDIA_ELEMENT_REMOVED = 'MEDIA_ELEMENT_REMOVED';
+
+/** The failures no Retry of a run changes: the browser's final ones, and a removed element. */
+export const FINAL_RUN_MEDIA_FAILURE_CODES: readonly string[] = [
+  ...PERMANENT_MEDIA_FAILURE_CODES,
+  MEDIA_ELEMENT_REMOVED,
+];
+
+/** Whether a failed media item may be retried. */
+export function isRetryableRunMedia(failure: { readonly errorCode?: string }): boolean {
+  return (
+    failure.errorCode === undefined || !FINAL_RUN_MEDIA_FAILURE_CODES.includes(failure.errorCode)
+  );
 }
