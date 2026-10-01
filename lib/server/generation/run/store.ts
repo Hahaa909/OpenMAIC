@@ -1,0 +1,982 @@
+/**
+ * PostgreSQL store of generation runs: creation under the per-owner limit,
+ * lease claims with generations (fencing), checkpointed step commits, the
+ * ordered event log, and idempotent owner commands.
+ *
+ * The coordination follows the agent runtime's sessions
+ * (`@openmaic/storage/agent-session/pg`): PostgreSQL is the authority for who
+ * executes a run; a worker's every write names the lease generation it
+ * claimed and is refused once another worker took the run over; a `NOTIFY`
+ * queued in the same transaction as a durable event wakes the readers at
+ * commit, and every reader keeps a fallback poll because NOTIFY is lossy.
+ *
+ * Ownership: a run belongs to the owner that started it, and to the account
+ * that owner was claimed into since (the same rule as classroom jobs, without
+ * moving the rows). Every other owner gets the same answer as for an unknown
+ * run.
+ */
+import { randomBytes } from 'node:crypto';
+
+import type { Queryable } from '@openmaic/storage/document/pg';
+import { encodeJson } from '@openmaic/storage/pg-json';
+import type { ConnectableQueryable } from '@openmaic/storage/server/reference';
+
+import { ensureGenerationRunSchema } from '@/lib/persistence/generation-runs';
+import { withSchemaBootstrapLock } from '@/lib/persistence/schema-bootstrap-lock';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import { notifyDurableAgentEvent } from '@/lib/server/agent-runtime/event-notify-bus';
+import type { SceneOutline } from '@/lib/types/generation';
+
+import { stateForRetry } from './plan';
+import {
+  ACTIVE_RUN_STATES,
+  EXECUTABLE_RUN_STATES,
+  LIMITED_RUN_STATES,
+  type GenerationRunAgentsResult,
+  type GenerationRunEvent,
+  type GenerationRunFailure,
+  type GenerationRunInput,
+  type GenerationRunOutline,
+  type GenerationRunSnapshot,
+  type ExecutableRunState,
+  type GenerationRunState,
+  type NewGenerationRunEvent,
+} from './types';
+
+/** A worker's claim on a run: every write it makes names it. */
+export interface RunLease {
+  runId: string;
+  workerId: string;
+  generation: number;
+}
+
+/** The worker no longer holds the run: another worker took it over, or the run left its phase. */
+export class GenerationRunLeaseLostError extends Error {
+  constructor(readonly lease: RunLease) {
+    super(`generation run ${lease.runId}: lease generation ${lease.generation} is no longer held`);
+    this.name = 'GenerationRunLeaseLostError';
+  }
+}
+
+export function isGenerationRunLeaseLostError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'GenerationRunLeaseLostError';
+}
+
+/** The owner already has as many active runs as the limit allows. */
+export class ActiveRunLimitError extends Error {
+  constructor(readonly limit: number) {
+    super(
+      `At most ${limit} course generation${limit === 1 ? '' : 's'} may be in progress at once ` +
+        '(one waiting for its outline to be confirmed does not count); wait for one to finish, ' +
+        'or delete its course, and try again.',
+    );
+    this.name = 'ActiveRunLimitError';
+  }
+}
+
+/** A command the run cannot take in its current state. The message is caller-facing. */
+export class RunCommandConflictError extends Error {
+  constructor(
+    readonly reason: 'state' | 'outline-revision' | 'command-reused' | 'course-exists',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RunCommandConflictError';
+  }
+}
+
+export interface StoredRun extends GenerationRunSnapshot {
+  ownerId: string;
+  leaseWorkerId: string | null;
+  leaseHeartbeatAt: number | null;
+  leaseGeneration: number;
+  takeovers: number;
+}
+
+interface RunRow extends Record<string, unknown> {
+  id: string;
+  owner_id: string;
+  input: GenerationRunInput;
+  state: GenerationRunState;
+  step: string | null;
+  outline: GenerationRunOutline | null;
+  outline_revision: number;
+  agents: GenerationRunAgentsResult | null;
+  stage_id: string | null;
+  scenes_total: number;
+  scenes_completed: number;
+  error: GenerationRunFailure | null;
+  seq: string | number;
+  lease_worker_id: string | null;
+  lease_heartbeat_at: string | number | null;
+  lease_generation: number;
+  takeovers: number;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+const RUN_COLUMNS = `id, owner_id, input, state, step, outline, outline_revision, agents, stage_id,
+  scenes_total, scenes_completed, error, seq, lease_worker_id, lease_heartbeat_at,
+  lease_generation, takeovers, created_at, updated_at`;
+
+function isoTimestamp(value: Date | string): string {
+  return (value instanceof Date ? value : new Date(value)).toISOString();
+}
+
+function storedRun(row: RunRow): StoredRun {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    state: row.state,
+    step: row.step,
+    seq: Number(row.seq),
+    input: row.input,
+    outline: row.outline ? { ...row.outline, revision: row.outline_revision } : null,
+    agents: row.agents,
+    stageId: row.stage_id,
+    progress: { scenesTotal: row.scenes_total, scenesCompleted: row.scenes_completed },
+    error: row.error,
+    createdAt: isoTimestamp(row.created_at),
+    updatedAt: isoTimestamp(row.updated_at),
+    leaseWorkerId: row.lease_worker_id,
+    leaseHeartbeatAt: row.lease_heartbeat_at === null ? null : Number(row.lease_heartbeat_at),
+    leaseGeneration: row.lease_generation,
+    takeovers: row.takeovers,
+  };
+}
+
+/** The part of a stored run its owner reads. */
+export function runSnapshot(run: StoredRun): GenerationRunSnapshot {
+  return {
+    id: run.id,
+    state: run.state,
+    step: run.step,
+    seq: run.seq,
+    input: run.input,
+    outline: run.outline,
+    agents: run.agents,
+    stageId: run.stageId,
+    progress: run.progress,
+    error: run.error,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+}
+
+/** A fresh run id. */
+export function generateRunId(): string {
+  return `run-${randomBytes(12).toString('base64url')}`;
+}
+
+export function isRunId(value: string): boolean {
+  return /^run-[A-Za-z0-9_-]{16}$/.test(value);
+}
+
+/** What one fenced commit changes on the run row besides its sequence number. */
+export interface RunPatch {
+  state?: GenerationRunState;
+  step?: string | null;
+  outline?: GenerationRunOutline;
+  outlineRevision?: number;
+  agents?: GenerationRunAgentsResult;
+  stageId?: string;
+  scenesTotal?: number;
+  scenesCompleted?: number;
+  error?: GenerationRunFailure | null;
+  /** Release the lease with this commit (the run waits, pauses or ends). */
+  releaseLease?: boolean;
+}
+
+export interface StepCommit {
+  /** The checkpoint this commit records, if it completes a step. */
+  step?: { id: string; output: unknown };
+  patch?: RunPatch;
+  events?: NewGenerationRunEvent[];
+}
+
+/**
+ * The owner predicate: the run's owner, or any owner claimed into the reader,
+ * however many claims ago (the merge records are followed transitively).
+ */
+const OWNED_BY = (ownerParam: string) =>
+  `owner_id IN (
+     WITH RECURSIVE merged(id) AS (
+       SELECT ${ownerParam}::text
+       UNION
+       SELECT m.from_owner_id FROM owner_merges m JOIN merged ON m.to_owner_id = merged.id
+     )
+     SELECT id FROM merged)`;
+
+/** How many claims a chain of merge records may span before it is taken as corrupt. */
+const MAX_MERGE_HOPS = 16;
+
+const SCHEMA_STATE_KEY = Symbol.for('openmaic.generation-runs.schema');
+const schemaState = globalThis as typeof globalThis & {
+  [SCHEMA_STATE_KEY]?: { connectionString: string; ready: Promise<void> };
+};
+
+async function provider() {
+  const connectionString = process.env.DATABASE_URL ?? '';
+  const persistence = await getServerPersistenceProvider(connectionString);
+  // Provisioned lazily, like the agent runtime's tables: the first use of
+  // runs in a process creates or migrates them under the bootstrap lock.
+  const cached = schemaState[SCHEMA_STATE_KEY];
+  if (!cached || cached.connectionString !== connectionString) {
+    const ready = withSchemaBootstrapLock(
+      persistence.pool as unknown as ConnectableQueryable,
+      ensureGenerationRunSchema,
+    );
+    schemaState[SCHEMA_STATE_KEY] = { connectionString, ready };
+    ready.catch(() => {
+      if (schemaState[SCHEMA_STATE_KEY]?.ready === ready) delete schemaState[SCHEMA_STATE_KEY];
+    });
+  }
+  await schemaState[SCHEMA_STATE_KEY]!.ready;
+  return persistence;
+}
+
+/** Forget the provisioned schema (tests that drop it). */
+export function resetGenerationRunSchemaForTests(): void {
+  delete schemaState[SCHEMA_STATE_KEY];
+}
+
+async function notifyOwner(tx: Queryable, ownerId: string): Promise<void> {
+  // The owner, and every account it was claimed into since, read its runs.
+  let current: string | undefined = ownerId;
+  for (let hop = 0; current && hop <= MAX_MERGE_HOPS; hop += 1) {
+    await notifyDurableAgentEvent(tx, { kind: 'generation-run-owner', ownerId: current });
+    const merged: { rows: Array<{ to_owner_id: string }> } = await tx.query<{
+      to_owner_id: string;
+    }>('SELECT to_owner_id FROM owner_merges WHERE from_owner_id = $1', [current]);
+    current = merged.rows[0]?.to_owner_id;
+  }
+}
+
+/**
+ * The owner a stored owner id belongs to now, following every claim since
+ * (background work reads what the account holds after a claim moved it).
+ */
+export async function currentOwnerOf(storedOwnerId: string): Promise<string> {
+  const { pool } = await provider();
+  let current = storedOwnerId;
+  for (let hop = 0; hop < MAX_MERGE_HOPS; hop += 1) {
+    const merged = await pool.query<{ to_owner_id: string }>(
+      'SELECT to_owner_id FROM owner_merges WHERE from_owner_id = $1',
+      [current],
+    );
+    const next = merged.rows[0]?.to_owner_id;
+    if (!next) return current;
+    current = next;
+  }
+  throw new Error(
+    `The claims of owner ${storedOwnerId} form a chain longer than ${MAX_MERGE_HOPS}`,
+  );
+}
+
+/**
+ * Compact the runs that finished (completed or ended) more than `graceMs`
+ * ago to what their final snapshot needs: their checkpoints go, and so does
+ * every event but the final commit's two (`completed`/`ended` and `state`).
+ * A follower still sees how a run ended; one further behind is told to
+ * reload the snapshot (the events stream's `resync`). Answers how many runs
+ * it compacted.
+ */
+export async function compactFinishedGenerationRuns(graceMs: number): Promise<number> {
+  const { withTransaction } = await provider();
+  return withTransaction(async (tx) => {
+    const finished = await tx.query<{ id: string }>(
+      `SELECT id FROM generation_runs r
+        WHERE state IN ('completed', 'ended') AND updated_at < now() - make_interval(secs => $1)
+          AND (EXISTS (SELECT 1 FROM generation_run_steps s WHERE s.run_id = r.id)
+               OR EXISTS (SELECT 1 FROM generation_run_events e
+                           WHERE e.run_id = r.id AND e.seq <= r.seq - 2))
+        ORDER BY id LIMIT 500`,
+      [graceMs / 1000],
+    );
+    const ids = finished.rows.map((row) => row.id);
+    if (ids.length === 0) return 0;
+    await tx.query('DELETE FROM generation_run_steps WHERE run_id = ANY($1)', [ids]);
+    await tx.query(
+      `DELETE FROM generation_run_events e USING generation_runs r
+        WHERE e.run_id = r.id AND r.id = ANY($1) AND e.seq <= r.seq - 2`,
+      [ids],
+    );
+    return ids.length;
+  });
+}
+
+/** Append events under the run row lock (held by the caller), allocating their seqs. */
+async function insertEvents(
+  tx: Queryable,
+  runId: string,
+  events: readonly NewGenerationRunEvent[],
+): Promise<number> {
+  if (events.length === 0) {
+    const current = await tx.query<{ seq: string | number }>(
+      'SELECT seq FROM generation_runs WHERE id = $1',
+      [runId],
+    );
+    return Number(current.rows[0]?.seq ?? 0);
+  }
+  const allocated = await tx.query<{ seq: string | number }>(
+    'UPDATE generation_runs SET seq = seq + $2 WHERE id = $1 RETURNING seq',
+    [runId, events.length],
+  );
+  const last = Number(allocated.rows[0]!.seq);
+  const first = last - events.length + 1;
+  const ts = Date.now();
+  for (const [index, event] of events.entries()) {
+    await tx.query(
+      `INSERT INTO generation_run_events (run_id, seq, ts, type, data)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [runId, first + index, ts, event.type, encodeJson(event.data, 'generation run event')],
+    );
+  }
+  await notifyDurableAgentEvent(tx, { kind: 'generation-run', runId });
+  return last;
+}
+
+/** Lock the run row for the lease holder, or refuse a stale worker. */
+async function lockLeased(tx: Queryable, lease: RunLease): Promise<RunRow> {
+  const locked = await tx.query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM generation_runs
+      WHERE id = $1 AND lease_worker_id = $2 AND lease_generation = $3
+      FOR UPDATE`,
+    [lease.runId, lease.workerId, lease.generation],
+  );
+  const row = locked.rows[0];
+  if (!row) throw new GenerationRunLeaseLostError(lease);
+  return row;
+}
+
+/** Apply a patch to the locked row; answers the updated row. */
+async function applyPatch(
+  tx: Queryable,
+  runId: string,
+  patch: RunPatch,
+  { resetTakeovers }: { resetTakeovers: boolean },
+): Promise<RunRow> {
+  const sets: string[] = ['updated_at = now()'];
+  const params: unknown[] = [runId];
+  const set = (column: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${column} = $${params.length}${cast}`);
+  };
+  if (patch.state !== undefined) set('state', patch.state);
+  if (patch.step !== undefined) set('step', patch.step);
+  if (patch.outline !== undefined) set('outline', encodeJson(patch.outline, 'outline'), '::jsonb');
+  if (patch.outlineRevision !== undefined) set('outline_revision', patch.outlineRevision);
+  if (patch.agents !== undefined) set('agents', encodeJson(patch.agents, 'agents'), '::jsonb');
+  if (patch.stageId !== undefined) set('stage_id', patch.stageId);
+  if (patch.scenesTotal !== undefined) set('scenes_total', patch.scenesTotal);
+  if (patch.scenesCompleted !== undefined) set('scenes_completed', patch.scenesCompleted);
+  if (patch.error !== undefined) {
+    set('error', patch.error === null ? null : encodeJson(patch.error, 'error'), '::jsonb');
+  }
+  if (patch.releaseLease) {
+    sets.push('lease_worker_id = NULL', 'lease_heartbeat_at = NULL');
+  }
+  if (resetTakeovers) sets.push('takeovers = 0');
+  const updated = await tx.query<RunRow>(
+    `UPDATE generation_runs SET ${sets.join(', ')} WHERE id = $1 RETURNING ${RUN_COLUMNS}`,
+    params,
+  );
+  return updated.rows[0]!;
+}
+
+export interface CreateRunOptions {
+  maxActiveRunsPerOwner: number;
+  /** Runs one owner may have waiting for outline confirmation at once. */
+  maxWaitingRunsPerOwner: number;
+}
+
+/** The owner already has as many runs waiting for outline confirmation as allowed. */
+export class WaitingRunLimitError extends Error {
+  constructor(readonly limit: number) {
+    super(
+      `At most ${limit} course${limit === 1 ? '' : 's'} may wait for an outline confirmation at ` +
+        'once; confirm or discard one and try again.',
+    );
+    this.name = 'WaitingRunLimitError';
+  }
+}
+
+/**
+ * Serialize the owner's starts and confirmations, then refuse one more run in
+ * a limited state when the owner already has `limit` of them. The lock comes
+ * first in the transaction, before any run row.
+ */
+async function enforceActiveRunLimitIn(
+  tx: Queryable,
+  ownerId: string,
+  limit: number,
+): Promise<string> {
+  // Counted for the owner the runs belong to now: every owner claimed into it
+  // shares its limit, and its lock.
+  const owner = await canonicalOwnerIn(tx, ownerId);
+  await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+    `openmaic.generation-runs.owner:${owner}`,
+  ]);
+  const active = await tx.query<{ n: string | number }>(
+    `SELECT count(*) AS n FROM generation_runs
+      WHERE ${OWNED_BY('$1')} AND state = ANY($2::text[])`,
+    [owner, [...LIMITED_RUN_STATES]],
+  );
+  if (Number(active.rows[0]?.n ?? 0) >= limit) throw new ActiveRunLimitError(limit);
+  return owner;
+}
+
+/** {@link currentOwnerOf}, on an open transaction. */
+async function canonicalOwnerIn(tx: Queryable, ownerId: string): Promise<string> {
+  let current = ownerId;
+  for (let hop = 0; hop < MAX_MERGE_HOPS; hop += 1) {
+    const merged = await tx.query<{ to_owner_id: string }>(
+      'SELECT to_owner_id FROM owner_merges WHERE from_owner_id = $1',
+      [current],
+    );
+    const next = merged.rows[0]?.to_owner_id;
+    if (!next) return current;
+    current = next;
+  }
+  throw new Error(`The claims of owner ${ownerId} form a chain longer than ${MAX_MERGE_HOPS}`);
+}
+
+/**
+ * Create a run in `preparing`, refused with {@link ActiveRunLimitError` when
+ * the owner already has the limit's worth of active runs. Decided under a
+ * per-owner transaction lock, so two starts at the limit cannot both land.
+ */
+export async function createGenerationRun(
+  ownerId: string,
+  input: GenerationRunInput,
+  options: CreateRunOptions,
+): Promise<StoredRun> {
+  const { withTransaction } = await provider();
+  return withTransaction(async (tx) => {
+    const owner = await enforceActiveRunLimitIn(tx, ownerId, options.maxActiveRunsPerOwner);
+    const waiting = await tx.query<{ n: string | number }>(
+      `SELECT count(*) AS n FROM generation_runs
+        WHERE ${OWNED_BY('$1')} AND state = 'awaiting_outline_confirmation'`,
+      [owner],
+    );
+    if (Number(waiting.rows[0]?.n ?? 0) >= options.maxWaitingRunsPerOwner) {
+      throw new WaitingRunLimitError(options.maxWaitingRunsPerOwner);
+    }
+    const id = generateRunId();
+    await tx.query(
+      `INSERT INTO generation_runs (id, owner_id, input, state)
+       VALUES ($1, $2, $3::jsonb, 'preparing')`,
+      [id, ownerId, encodeJson(input, 'run input')],
+    );
+    await insertEvents(tx, id, [{ type: 'state', data: { state: 'preparing', step: null } }]);
+    await notifyOwner(tx, ownerId);
+    const row = await tx.query<RunRow>(`SELECT ${RUN_COLUMNS} FROM generation_runs WHERE id = $1`, [
+      id,
+    ]);
+    return storedRun(row.rows[0]!);
+  });
+}
+
+/** The run, for its owner; null for an unknown run and for another owner's alike. */
+export async function readGenerationRun(runId: string, ownerId: string): Promise<StoredRun | null> {
+  const { pool } = await provider();
+  const result = await pool.query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM generation_runs WHERE id = $1 AND ${OWNED_BY('$2')}`,
+    [runId, ownerId],
+  );
+  const row = result.rows[0];
+  return row ? storedRun(row) : null;
+}
+
+/** The owner's runs that are not completed or ended, oldest first. */
+export async function listActiveGenerationRuns(ownerId: string): Promise<StoredRun[]> {
+  const { pool } = await provider();
+  const result = await pool.query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM generation_runs
+      WHERE ${OWNED_BY('$1')} AND state = ANY($2::text[])
+      ORDER BY created_at, id`,
+    [ownerId, [...ACTIVE_RUN_STATES]],
+  );
+  return result.rows.map(storedRun);
+}
+
+/** The owner's runs changed after `since` (any state), for the owner stream. */
+export async function listGenerationRunsUpdatedSince(
+  ownerId: string,
+  since: Date,
+): Promise<StoredRun[]> {
+  const { pool } = await provider();
+  const result = await pool.query<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM generation_runs
+      WHERE ${OWNED_BY('$1')} AND updated_at > $2
+      ORDER BY updated_at, id`,
+    [ownerId, since],
+  );
+  return result.rows.map(storedRun);
+}
+
+/** The run's events after `afterSeq`, in order. The caller has checked ownership. */
+export async function readGenerationRunEvents(
+  runId: string,
+  afterSeq: number,
+  limit = 500,
+): Promise<GenerationRunEvent[]> {
+  const { pool } = await provider();
+  const result = await pool.query<{
+    run_id: string;
+    seq: string | number;
+    ts: string | number;
+    type: GenerationRunEvent['type'];
+    data: Record<string, unknown>;
+  }>(
+    `SELECT run_id, seq, ts, type, data FROM generation_run_events
+      WHERE run_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`,
+    [runId, afterSeq, limit],
+  );
+  return result.rows.map((row) => ({
+    runId: row.run_id,
+    seq: Number(row.seq),
+    ts: Number(row.ts),
+    type: row.type,
+    data: row.data,
+  }));
+}
+
+export interface ClaimedRun {
+  run: StoredRun;
+  lease: RunLease;
+  /** The previous worker died holding the run (its lease went stale). */
+  takeover: boolean;
+}
+
+export interface ClaimOptions {
+  leaseTtlMs: number;
+  maxTakeovers: number;
+  /** Claim this run only. */
+  runId?: string;
+}
+
+/**
+ * Claim the oldest executable run nobody holds (a fresh one, one a command
+ * released, or one whose worker's lease went stale). Each claim bumps the
+ * lease generation, which fences every write of the previous holder. A run
+ * whose step was orphaned more than `maxTakeovers` times in a row is paused
+ * there instead of being claimed again.
+ */
+export async function claimNextGenerationRun(
+  workerId: string,
+  options: ClaimOptions,
+): Promise<ClaimedRun | null> {
+  const { pool, withTransaction } = await provider();
+  const staleBefore = Date.now() - options.leaseTtlMs;
+  const executable = [...EXECUTABLE_RUN_STATES];
+  const claimable = `state = ANY($1::text[])
+    AND (lease_worker_id IS NULL OR lease_heartbeat_at IS NULL OR lease_heartbeat_at < $2)`;
+  const targeted = options.runId ? ' AND id = $3' : '';
+  const params: unknown[] = [executable, staleBefore, ...(options.runId ? [options.runId] : [])];
+  const candidates = await pool.query<{ id: string }>(
+    `SELECT id FROM generation_runs WHERE ${claimable}${targeted} ORDER BY updated_at LIMIT 5`,
+    params,
+  );
+  for (const candidate of candidates.rows) {
+    const claimed = await withTransaction(async (tx): Promise<ClaimedRun | null> => {
+      const locked = await tx.query<RunRow>(
+        `SELECT ${RUN_COLUMNS} FROM generation_runs
+          WHERE id = $3 AND ${claimable}
+          FOR UPDATE SKIP LOCKED`,
+        [executable, staleBefore, candidate.id],
+      );
+      const previous = locked.rows[0];
+      if (!previous) return null;
+      const takeover = previous.lease_worker_id !== null;
+      if (takeover && previous.takeovers >= options.maxTakeovers) {
+        // The step's worker died this many times in a row: pausing lets the
+        // owner retry it deliberately instead of crashing workers forever.
+        // A worker that died before it chose a step leaves no step: retry
+        // then resumes the run in the state it was executing.
+        const failure: GenerationRunFailure = {
+          step: previous.step,
+          message: 'The step was interrupted too many times',
+          ...(previous.step ? {} : { resumeState: previous.state as ExecutableRunState }),
+        };
+        await applyPatch(
+          tx,
+          previous.id,
+          { state: 'paused', step: previous.step, error: failure, releaseLease: true },
+          { resetTakeovers: true },
+        );
+        await insertEvents(tx, previous.id, [
+          { type: 'step_failed', data: { ...failure } },
+          { type: 'state', data: { state: 'paused', step: failure.step } },
+        ]);
+        await notifyOwner(tx, previous.owner_id);
+        return null;
+      }
+      const updated = await tx.query<RunRow>(
+        `UPDATE generation_runs
+            SET lease_worker_id = $2, lease_heartbeat_at = $3,
+                lease_generation = lease_generation + 1,
+                takeovers = takeovers + $4, updated_at = now()
+          WHERE id = $1 RETURNING ${RUN_COLUMNS}`,
+        [previous.id, workerId, Date.now(), takeover ? 1 : 0],
+      );
+      const row = updated.rows[0]!;
+      return {
+        run: storedRun(row),
+        lease: { runId: row.id, workerId, generation: row.lease_generation },
+        takeover,
+      };
+    });
+    if (claimed) return claimed;
+  }
+  return null;
+}
+
+/** The state a run is in now, or null for none (the runner's own reads). */
+export async function readGenerationRunState(runId: string): Promise<GenerationRunState | null> {
+  const { pool } = await provider();
+  const result = await pool.query<{ state: GenerationRunState }>(
+    'SELECT state FROM generation_runs WHERE id = $1',
+    [runId],
+  );
+  return result.rows[0]?.state ?? null;
+}
+
+/** Refresh the lease; false once it is no longer held. */
+export async function heartbeatGenerationRun(lease: RunLease): Promise<boolean> {
+  const { pool } = await provider();
+  const result = await pool.query(
+    `UPDATE generation_runs SET lease_heartbeat_at = $4
+      WHERE id = $1 AND lease_worker_id = $2 AND lease_generation = $3`,
+    [lease.runId, lease.workerId, lease.generation, Date.now()],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Give the run up without a commit (the process is shutting down, or the
+ * claim is handed back): the next claim resumes it from its last checkpoint.
+ * `undoTakeover` takes back the takeover the claim counted, for a claim
+ * handed back unused.
+ */
+export async function releaseGenerationRunLease(
+  lease: RunLease,
+  { undoTakeover = false }: { undoTakeover?: boolean } = {},
+): Promise<void> {
+  const { pool } = await provider();
+  await pool.query(
+    `UPDATE generation_runs
+        SET lease_worker_id = NULL, lease_heartbeat_at = NULL,
+            takeovers = CASE WHEN $4::boolean THEN greatest(takeovers - 1, 0) ELSE takeovers END
+      WHERE id = $1 AND lease_worker_id = $2 AND lease_generation = $3`,
+    [lease.runId, lease.workerId, lease.generation, undoTakeover],
+  );
+}
+
+/** The checkpoints of every completed step, by step id. */
+export async function readGenerationRunSteps(runId: string): Promise<Map<string, unknown>> {
+  const { pool } = await provider();
+  const result = await pool.query<{ step_id: string; output: unknown }>(
+    'SELECT step_id, output FROM generation_run_steps WHERE run_id = $1',
+    [runId],
+  );
+  return new Map(result.rows.map((row) => [row.step_id, row.output]));
+}
+
+/**
+ * One fenced commit on `tx`, an open transaction: the step's checkpoint, the
+ * run's next state and the events that report both, refused with
+ * {@link GenerationRunLeaseLostError} for a worker that no longer holds the
+ * run. Answers the run as committed.
+ */
+export async function commitGenerationRunIn(
+  tx: Queryable,
+  lease: RunLease,
+  commit: StepCommit,
+): Promise<StoredRun> {
+  const before = await lockLeased(tx, lease);
+  if (commit.step) {
+    await tx.query(
+      `INSERT INTO generation_run_steps (run_id, step_id, output) VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (run_id, step_id) DO UPDATE SET output = EXCLUDED.output, completed_at = now()`,
+      [lease.runId, commit.step.id, encodeJson(commit.step.output ?? null, 'step output')],
+    );
+  }
+  let row = await applyPatch(tx, lease.runId, commit.patch ?? {}, {
+    resetTakeovers: commit.step !== undefined,
+  });
+  if (commit.events?.length) {
+    await insertEvents(tx, lease.runId, commit.events);
+    row = { ...row, seq: Number(row.seq) + commit.events.length };
+  }
+  if (commit.patch?.state !== undefined && commit.patch.state !== before.state) {
+    await notifyOwner(tx, before.owner_id);
+  } else if (commit.patch?.scenesCompleted !== undefined || commit.patch?.stageId !== undefined) {
+    // Course cards show the progress and link the course.
+    await notifyOwner(tx, before.owner_id);
+  }
+  return storedRun(row);
+}
+
+/** {@link commitGenerationRunIn} in a transaction of its own. */
+export async function commitGenerationRun(lease: RunLease, commit: StepCommit): Promise<StoredRun> {
+  const { withTransaction } = await provider();
+  return withTransaction((tx) => commitGenerationRunIn(tx, lease, commit));
+}
+
+/**
+ * The fence of a write the run makes outside its own rows (a document write,
+ * an asset allocation), inside that write's transaction: refused with
+ * {@link GenerationRunLeaseLostError} once the worker no longer holds the run.
+ *
+ * It locks the course's ownership row first, then the run row, in the order
+ * a course deletion takes them (the deletion ends the course's runs in its
+ * own transaction), so the two can never wait on each other in a cycle.
+ */
+export async function fenceGenerationRunWriteIn(
+  tx: Queryable,
+  lease: RunLease,
+  stageId?: string,
+): Promise<void> {
+  if (stageId) {
+    await tx.query('SELECT 1 FROM stage_meta WHERE stage_id = $1 FOR UPDATE', [stageId]);
+  }
+  await lockLeased(tx, lease);
+}
+
+/**
+ * End every unfinished run of a course, on the transaction that deletes it
+ * (`deleteDocument` of the owner-bound document store), whatever state the
+ * run is in. A worker executing one loses its lease with it. A no-op on a
+ * database whose run tables do not exist yet.
+ */
+export async function endGenerationRunsOfDeletedCourseIn(
+  tx: Queryable,
+  stageId: string,
+): Promise<void> {
+  const provisioned = await tx.query<{ present: string | null }>(
+    "SELECT to_regclass('generation_runs')::text AS present",
+  );
+  if (!provisioned.rows[0]?.present) return;
+  const runs = await tx.query<{ id: string; owner_id: string }>(
+    `SELECT id, owner_id FROM generation_runs
+      WHERE stage_id = $1 AND state NOT IN ('completed', 'ended')
+      ORDER BY id FOR UPDATE`,
+    [stageId],
+  );
+  for (const run of runs.rows) {
+    await endRunIn(tx, run.id, run.owner_id, { stageId });
+  }
+}
+
+/** End a run (its course is gone or was never made), fencing whoever held it. */
+async function endRunIn(
+  tx: Queryable,
+  runId: string,
+  ownerId: string,
+  data: { stageId: string | null },
+): Promise<number> {
+  await tx.query(
+    `UPDATE generation_runs
+        SET state = 'ended', step = NULL, error = NULL,
+            lease_worker_id = NULL, lease_heartbeat_at = NULL,
+            lease_generation = lease_generation + 1, updated_at = now()
+      WHERE id = $1`,
+    [runId],
+  );
+  const seq = await insertEvents(tx, runId, [
+    { type: 'ended', data },
+    { type: 'state', data: { state: 'ended', step: null } },
+  ]);
+  await notifyOwner(tx, ownerId);
+  return seq;
+}
+
+export interface CommandResult {
+  state: GenerationRunState;
+  seq: number;
+  outlineRevision?: number;
+}
+
+/**
+ * Run `apply` once per `commandId`: a command id seen before answers the
+ * result recorded the first time (for the same command type), without
+ * applying anything again. Only a command that applied is recorded, so a
+ * refused one may be sent again once the run allows it.
+ */
+async function runCommand(
+  runId: string,
+  ownerId: string,
+  commandId: string,
+  type: 'confirm-outline' | 'retry' | 'discard',
+  apply: (tx: Queryable, run: RunRow, refusal: unknown) => Promise<CommandResult>,
+  /** Runs first in the transaction, before the run row is locked. */
+  before?: (tx: Queryable) => Promise<void>,
+): Promise<CommandResult | null> {
+  const { withTransaction } = await provider();
+  return withTransaction(async (tx) => {
+    // A lock taken here comes before the run row's, as in a start.
+    let refusal: unknown;
+    if (before) {
+      try {
+        await before(tx);
+      } catch (error) {
+        // Refused only if this command is new (a repeat answers what it did).
+        refusal = error;
+      }
+    }
+    const locked = await tx.query<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM generation_runs WHERE id = $1 AND ${OWNED_BY('$2')} FOR UPDATE`,
+      [runId, ownerId],
+    );
+    const run = locked.rows[0];
+    if (!run) return null;
+    const seen = await tx.query<{ type: string; result: CommandResult }>(
+      'SELECT type, result FROM generation_run_commands WHERE run_id = $1 AND command_id = $2',
+      [runId, commandId],
+    );
+    const previous = seen.rows[0];
+    if (previous) {
+      if (previous.type !== type) {
+        throw new RunCommandConflictError(
+          'command-reused',
+          `The command id was already used for a ${previous.type} command`,
+        );
+      }
+      return previous.result;
+    }
+    const result = await apply(tx, run, refusal);
+    await tx.query(
+      `INSERT INTO generation_run_commands (run_id, command_id, type, result)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [runId, commandId, type, encodeJson(result, 'command result')],
+    );
+    await notifyOwner(tx, run.owner_id);
+    return result;
+  });
+}
+
+/**
+ * Confirm the outline at `outlineRevision`, optionally replacing it with the
+ * owner's edit (a new revision). The run goes on generating; nothing holds a
+ * worker until then. Null for a run the owner cannot see.
+ */
+export async function confirmGenerationRunOutline(
+  runId: string,
+  ownerId: string,
+  command: { commandId: string; outlineRevision: number; outlines?: SceneOutline[] },
+  /** Confirming makes the run active again: it counts toward the limit from then on. */
+  options: { maxActiveRunsPerOwner: number },
+): Promise<CommandResult | null> {
+  const limit = async (tx: Queryable) => {
+    await enforceActiveRunLimitIn(tx, ownerId, options.maxActiveRunsPerOwner);
+  };
+  return runCommand(
+    runId,
+    ownerId,
+    command.commandId,
+    'confirm-outline',
+    async (tx, run, refusal) => {
+      if (run.state !== 'awaiting_outline_confirmation' || !run.outline) {
+        throw new RunCommandConflictError(
+          'state',
+          `The run is ${run.state.replaceAll('_', ' ')}, not waiting for its outline to be confirmed`,
+        );
+      }
+      if (command.outlineRevision !== run.outline_revision) {
+        throw new RunCommandConflictError(
+          'outline-revision',
+          `The outline is at revision ${run.outline_revision}, not ${command.outlineRevision}`,
+        );
+      }
+      // The run is confirmable: whether the owner may run one more decides.
+      if (refusal) throw refusal;
+      const edited = command.outlines !== undefined;
+      const outline: GenerationRunOutline = edited
+        ? { ...run.outline, outlines: command.outlines! }
+        : run.outline;
+      const revision = edited ? run.outline_revision + 1 : run.outline_revision;
+      const updated = await applyPatch(
+        tx,
+        runId,
+        {
+          state: 'generating',
+          step: null,
+          outline,
+          outlineRevision: revision,
+          scenesTotal: outline.outlines.length,
+          releaseLease: true,
+        },
+        { resetTakeovers: true },
+      );
+      const seq = await insertEvents(tx, runId, [
+        { type: 'outline_confirmed', data: { revision, edited } },
+        { type: 'state', data: { state: 'generating', step: null } },
+      ]);
+      return { state: updated.state, seq, outlineRevision: revision };
+    },
+    limit,
+  );
+}
+
+/** Re-run the step a paused run stopped at. Null for a run the owner cannot see. */
+export async function retryGenerationRun(
+  runId: string,
+  ownerId: string,
+  command: { commandId: string },
+): Promise<CommandResult | null> {
+  return runCommand(runId, ownerId, command.commandId, 'retry', async (tx, run) => {
+    if (run.state !== 'paused') {
+      throw new RunCommandConflictError(
+        'state',
+        `The run is ${run.state.replaceAll('_', ' ')}, not paused`,
+      );
+    }
+    // A run paused before it chose a step resumes where it was executing.
+    const state = run.step
+      ? stateForRetry(run.step)
+      : (run.error?.resumeState ?? (run.outline ? 'generating' : 'preparing'));
+    const updated = await applyPatch(
+      tx,
+      runId,
+      { state, error: null, releaseLease: true },
+      { resetTakeovers: true },
+    );
+    const seq = await insertEvents(tx, runId, [{ type: 'state', data: { state, step: run.step } }]);
+    return { state: updated.state, seq };
+  });
+}
+
+/**
+ * Discard a run that has no course yet: its course card is all there is of
+ * the course, and discarding it is deleting that pending course (the run
+ * ends, and a worker executing it loses its lease). A run whose course
+ * exists ends when the course is deleted instead. Repeating a discard
+ * answers the same. Null for a run the owner cannot see.
+ */
+export async function discardGenerationRun(
+  runId: string,
+  ownerId: string,
+): Promise<CommandResult | null> {
+  const { withTransaction } = await provider();
+  return withTransaction(async (tx) => {
+    const locked = await tx.query<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM generation_runs WHERE id = $1 AND ${OWNED_BY('$2')} FOR UPDATE`,
+      [runId, ownerId],
+    );
+    const run = locked.rows[0];
+    if (!run) return null;
+    if (run.stage_id) {
+      throw new RunCommandConflictError(
+        'course-exists',
+        'The run already has its course; delete the course to end the run',
+      );
+    }
+    if (run.state === 'ended') return { state: 'ended', seq: Number(run.seq) };
+    if (run.state === 'completed') {
+      throw new RunCommandConflictError('state', 'The run is completed');
+    }
+    const seq = await endRunIn(tx, run.id, run.owner_id, { stageId: null });
+    return { state: 'ended', seq };
+  });
+}

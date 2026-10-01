@@ -28,6 +28,7 @@ import {
 import type { AgentInfo } from '@openmaic/generation';
 import { DEFAULT_LANGUAGE_DIRECTIVE } from '@openmaic/generation';
 import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import { MAX_OUTLINE_SCENES } from '@/lib/server/generation/outline-schema';
 import { nanoid } from 'nanoid';
 import type {
   UserRequirements,
@@ -606,6 +607,8 @@ export async function streamOutlines(
   ) {
     try {
       let fullText = '';
+      // In UTF-8 bytes, the unit of the cap (and of the outline normalizer's).
+      let fullTextBytes = 0;
       let scanFrom = 0;
       parsedOutlines = [];
       languageDirective = null;
@@ -641,10 +644,11 @@ export async function streamOutlines(
         const chunk = part.text;
 
         fullText += chunk;
+        fullTextBytes += Buffer.byteLength(chunk, 'utf8');
 
-        if (fullText.length > MAX_OUTLINE_STREAM_BYTES) {
+        if (fullTextBytes > MAX_OUTLINE_STREAM_BYTES) {
           log.warn(
-            `Outline stream exceeded ${MAX_OUTLINE_STREAM_BYTES} bytes (len=${fullText.length}); stopping read and finalizing with ${parsedOutlines.length} outline(s)`,
+            `Outline stream exceeded ${MAX_OUTLINE_STREAM_BYTES} bytes (bytes=${fullTextBytes}); stopping read and finalizing with ${parsedOutlines.length} outline(s)`,
           );
           break;
         }
@@ -669,6 +673,7 @@ export async function streamOutlines(
         );
         scanFrom = nextScanFrom;
         for (const outline of newOutlines) {
+          if (parsedOutlines.length >= MAX_OUTLINE_SCENES) break;
           // Ensure ID and order
           const enrichedBase = {
             ...outline,
@@ -680,6 +685,12 @@ export async function streamOutlines(
           const enriched = ensureUniqueOutlineId(normalized, usedOutlineIds);
           parsedOutlines.push(enriched);
           emit({ type: 'outline', data: enriched, index: parsedOutlines.length - 1 });
+        }
+        if (parsedOutlines.length >= MAX_OUTLINE_SCENES) {
+          log.warn(
+            `Outline reached ${MAX_OUTLINE_SCENES} scenes; stopping read and finalizing with them`,
+          );
+          break;
         }
       }
 
