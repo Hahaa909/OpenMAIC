@@ -1,5 +1,8 @@
 import { restoreAgentSelection } from '@/lib/orchestration/registry/agent-selection';
-import { applyGeneratedAgentsToRegistry } from '@/lib/orchestration/registry/store';
+import {
+  applyGeneratedAgentsToRegistry,
+  whenAgentRegistryLoaded,
+} from '@/lib/orchestration/registry/store';
 import { useMediaGenerationStore, type MediaTask } from '@/lib/store/media-generation';
 import {
   markStagePersistenceDirty,
@@ -75,6 +78,12 @@ export interface RunClassroomLoadArgs<TMediaTasks = unknown> {
   applyGeneratedAgents: (stageId: string, configs: readonly GeneratedAgentConfig[]) => string[];
   getSettings: () => ClassroomLoadSettings;
   getAgent: (agentId: string) => AgentLookupResult | undefined;
+  /**
+   * Whether the owner's custom agents are in the registry (waited for, with a
+   * bound). While they are not, an id the registry does not know may be one of
+   * them, so a selection naming it is kept rather than downgraded.
+   */
+  agentsReady?: () => Promise<boolean>;
   restoreAgentSelection: typeof restoreAgentSelection;
   setError: (message: string) => void;
   setLoading: (loading: boolean) => void;
@@ -112,6 +121,7 @@ export async function runClassroomLoad<TMediaTasks = unknown>({
   applyGeneratedAgents,
   getSettings,
   getAgent,
+  agentsReady,
   restoreAgentSelection: restoreSelection,
   setError,
   setLoading,
@@ -187,6 +197,7 @@ export async function runClassroomLoad<TMediaTasks = unknown>({
     if (!isCurrent()) return { outcome: 'cancelled' };
     const generatedAgentIds = applyGeneratedAgents(classroomId, effectiveConfigs);
 
+    const agentsKnown = agentsReady ? await agentsReady() : true;
     if (!isCurrent()) return { outcome: 'cancelled' };
     const settings = getSettings();
     const { selection: next, isUserSet } = restoreSelection({
@@ -196,7 +207,9 @@ export async function runClassroomLoad<TMediaTasks = unknown>({
       stageAgentIds: getCurrentStage()?.agentIds,
       isPresetAgent: (id) => {
         const agent = getAgent(id);
-        return !!agent && !agent.isGenerated;
+        // Unknown before the custom agents arrived: possibly one of them.
+        if (!agent) return !agentsKnown;
+        return !agent.isGenerated;
       },
     });
 
@@ -587,5 +600,6 @@ export const defaultClassroomLoadDeps = {
   loadLegacyAgentFallbacks: loadLegacyAgentFallbacksFromDB,
   commitMigratedAgentConfigs: commitMigratedAgentConfigsToStore,
   applyGeneratedAgents: applyGeneratedAgentsToRegistry,
+  agentsReady: () => whenAgentRegistryLoaded(),
   restoreAgentSelection,
 };

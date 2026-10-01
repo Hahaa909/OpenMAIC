@@ -4,6 +4,7 @@ import { useEffect, useState, ReactNode } from 'react';
 import { AccessCodeModal } from '@/components/access-code-modal';
 import { importLegacyModelSettings } from '@/components/model-settings-init';
 import { modelSettingsClient } from '@/lib/model-settings/client';
+import { reloadAgentRegistry } from '@/lib/orchestration/registry/store';
 
 export function AccessCodeGuard({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{
@@ -52,6 +53,8 @@ export function AccessCodeGuard({ children }: { children: ReactNode }) {
             // authorized, and retry the one-time import of browser settings.
             void modelSettingsClient.load();
             void importLegacyModelSettings();
+            // The same for the custom agents (and their one-time import).
+            void reloadAgentRegistry();
           }}
         />
       )}

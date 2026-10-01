@@ -207,6 +207,48 @@ proposal.
 Clear Local Cache keeps a proposal that is still waiting: it exists nowhere
 else.
 
+## Custom agents
+
+Earlier builds kept the agent registry in localStorage (`agent-registry-storage`,
+the zustand `persist` snapshot of `lib/orchestration/registry/store.ts`). Built-in
+agents are now code (`lib/orchestration/registry/built-in.ts`) and an owner's custom
+agents live on the server (`/api/agents`, `lib/server/agents`). `agents-import.ts`
+carries the custom ones over once: the registry's first load
+runs it in the background (`importLegacyAgents`).
+
+- It reads the snapshot's custom agents (not the `default-*` built-ins, not
+  generated agents, which belong to a course's roster) and sends their stored
+  fields to `POST /api/agents/import`, bound like the model settings import:
+  the binding first, then the request with `X-OpenMAIC-Legacy-Import` (one of
+  `FENCED_ENDPOINTS`).
+- The server checks each agent with the registry's schema and keeps an agent
+  the owner already has under that id; invalid agents, built-in ids and agents
+  past the per-owner limit are skipped with the reason.
+- The ledger records each agent the server settled (imported, or already
+  there) in `agentsSettled`, and a later run sends only the others, so an
+  agent the user deleted on the server after it arrived is not created again.
+  It records `agents: 'done'` once every agent is settled. The agents go in
+  batches under the route's limits (`MAX_IMPORT_BATCH_AGENTS`,
+  `MAX_IMPORT_BODY_BYTES`). Agents the server skipped (the owner's limit,
+  a record it refuses) keep the import open: the registry shows them as
+  `legacyAgentsPending`, and every later load sends the agents again. A
+  refused request, another owner holding the browser, 401, 409, 5xx or a
+  network error also leave it for a later load. A browser with no custom
+  agents gets no ledger from it.
+- Empty optional fields of an old record (a voice without a provider or voice
+  id, an empty model id, an incomplete voice design) are left out before it is
+  sent.
+- Runs are serialized across tabs with the Web Lock
+  `openmaic:legacy-agents-import`; the settled ids are read and recorded
+  under it, and a tab that finds it taken leaves the import to that tab.
+  Without Web Locks tabs are not serialized, and an agent deleted while two
+  tabs import at once can be created again.
+- It runs in the background after the registry's first read of the owner's
+  agents, in the registry's request queue, and the list is read again (queued
+  after it) when it added any.
+- The snapshot is never written or removed. Clear Local Cache keeps it until
+  the ledger records the import.
+
 ## Removal
 
 When the maintainers decide enough releases have passed:
@@ -223,6 +265,13 @@ When the maintainers decide enough releases have passed:
    imports `LEDGER_KEY` and `legacyImportIsComplete` from `ledger.ts`: define the
    ledger key there again (or drop it with step 5) and drop the quiz-key retention,
    with its cases in `tests/settings/general-settings.test.ts`.
+   The custom agents import: remove `importLegacyAgents`, its call and
+   `legacyAgentsPending` in `lib/orchestration/registry/store.ts`,
+   `app/api/agents/import/` with its case in
+   `tests/server/agents/agents-route.test.ts` and its entry in the handler
+   table of `tests/server/identity/legacy-import-binding-route.test.ts`, and
+   `LEGACY_AGENT_REGISTRY_KEY` with its retention in
+   `lib/device-storage/clear-local-cache.ts`.
 2. Remove the dynamic import at the end of `lib/persistence/bootstrap.ts`.
 3. Remove the server side:
    - `app/api/identity/legacy-import-binding/` and

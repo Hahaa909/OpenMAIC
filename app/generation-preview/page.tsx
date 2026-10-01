@@ -11,7 +11,7 @@ import { OutlinesEditor } from '@/components/generation/outlines-editor';
 import { cn } from '@/lib/utils';
 import { useStageStore } from '@/lib/store/stage';
 import { useSettingsStore } from '@/lib/store/settings';
-import { useAgentRegistry } from '@/lib/orchestration/registry/store';
+import { useAgentRegistry, whenAgentRegistryLoaded } from '@/lib/orchestration/registry/store';
 import {
   getEnabledProvidersWithVoices,
   resolveNarratorVoiceForGeneration,
@@ -683,6 +683,10 @@ function GenerationPreviewContent() {
       }
 
       // ── Agent generation (after outlines — uses languageDirective + outlines) ──
+      // The owner's custom agents come from the server: wait for them (with a
+      // bound) before the selection is read, or a custom agent would be
+      // dropped as unknown.
+      const agentsKnown = await whenAgentRegistryLoaded();
       const settings = useSettingsStore.getState();
       // The tts slot's provider, and the user's voice for it.
       const tts = ttsSelection();
@@ -867,6 +871,16 @@ function GenerationPreviewContent() {
         // Preset mode — use selected agents (include persona)
         // Filter out stale generated agent IDs that may linger in settings
         const registry = useAgentRegistry.getState();
+        // Before the custom agents arrived, an unknown id the user picked may
+        // be one of them: stop rather than generate without it (the selection
+        // is left as is). Stage-derived selections may name stale roster ids.
+        if (
+          !agentsKnown &&
+          settings.agentSelectionIsUserSet &&
+          settings.selectedAgentIds.some((id) => !registry.getAgent(id))
+        ) {
+          throw new Error(t('generation.customAgentsUnavailable'));
+        }
         const presetAgentIds = settings.selectedAgentIds.filter((id) => {
           const a = registry.getAgent(id);
           return a && !a.isGenerated;
