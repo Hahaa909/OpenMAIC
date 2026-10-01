@@ -2,7 +2,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest'
 import { Pool } from 'pg';
 import { contentHashOf, type ContentHash } from '../src/asset/blob.js';
 import type { AssetByteStore } from '../src/asset/byte-store.js';
-import { AssetCollector } from '../src/asset/collector.js';
+import {
+  ASSET_REFERENCE_RULE_VERSION,
+  AssetCollector,
+  AssetReferenceRuleVersionError,
+} from '../src/asset/collector.js';
 import { PgAssetByteStore } from '../src/asset/pg-bytes.js';
 import {
   AssetQuotaExceededError,
@@ -21,6 +25,7 @@ import {
 } from '../src/asset/collector.js';
 import {
   backfillDocumentAssetReferences,
+  recordAssetReferenceTracking,
   removeDocumentAssetReferences,
   sceneAssetScope,
   syncDocumentAssetReferences,
@@ -1942,6 +1947,94 @@ describe.skipIf(!contractUrl)('document asset references with PostgreSQL 16', ()
             AND constraint_name = 'asset_root_refs_asset_id_fkey'`,
       );
       expect(foreignKey.rows).toEqual([{ delete_rule: 'CASCADE' }]);
+    });
+
+    describe('the reference-rule version', () => {
+      const ruleVersion = async (): Promise<number> =>
+        Number(
+          (
+            await pool.query<{ v: number }>(
+              'SELECT rule_version AS v FROM asset_reference_tracking',
+            )
+          ).rows[0]!.v,
+        );
+      const setRuleVersion = (version: number) =>
+        pool.query('UPDATE asset_reference_tracking SET rule_version = $1', [version]);
+
+      test('a root change raises a marker an older writer left', async () => {
+        const id = await assets.put(principal, new Blob(['raises the version']));
+        await setRuleVersion(1);
+        await transactionFor(pool)((queryable) => change(queryable, addTo('material-v', id)));
+        expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION);
+        await setRuleVersion(1);
+        await transactionFor(pool)((queryable) => change(queryable, removeFrom('material-v', id)));
+        expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION);
+      });
+
+      test('once raised, a writer does not queue on the marker row', async () => {
+        await setRuleVersion(ASSET_REFERENCE_RULE_VERSION);
+        const holder = await pool.connect();
+        try {
+          await holder.query('BEGIN');
+          const holderPid = await backendPid(holder as Queryable);
+          await holder.query('SELECT 1 FROM asset_reference_tracking FOR UPDATE');
+          // Raised already: the write finishes while the marker row is held.
+          await transactionFor(pool)((queryable) => recordAssetReferenceTracking(queryable));
+
+          // Not raised yet: the write does wait for the row, which is what
+          // shows this test can tell the two apart.
+          await holder.query('COMMIT');
+          await pool.query('UPDATE asset_reference_tracking SET rule_version = 1');
+          await holder.query('BEGIN');
+          await holder.query('SELECT 1 FROM asset_reference_tracking FOR UPDATE');
+          const raising = transactionFor(pool)((queryable) =>
+            recordAssetReferenceTracking(queryable),
+          );
+          await waitUntilBlockedBy(holderPid);
+          await holder.query('COMMIT');
+          await raising;
+          expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION);
+        } catch (error) {
+          await holder.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          holder.release();
+        }
+      });
+
+      test('a version raised while a pass waits on an entry stops the deletion', async () => {
+        await setRuleVersion(ASSET_REFERENCE_RULE_VERSION);
+        const id = await assets.put(principal, new Blob(['kept by a newer kind']));
+        await transactionFor(pool)((queryable) => change(queryable, addTo('material-x', id)));
+        await transactionFor(pool)((queryable) => change(queryable, removeFrom('material-x', id)));
+        expect(await stampOf(id)).not.toBeNull();
+
+        // A writer of a newer kind holds the entry, as its reference row's
+        // foreign key would, and raises the version before it lets go.
+        const holder = await pool.connect();
+        try {
+          await holder.query('BEGIN');
+          const holderPid = await backendPid(holder as Queryable);
+          await holder.query('SELECT 1 FROM asset_entries WHERE id = $1 FOR KEY SHARE', [id]);
+          const pass = passAt(new Date(Date.now() + HOUR)).catch((error: unknown) => error);
+          await waitUntilBlockedBy(holderPid);
+          await holder.query('UPDATE asset_reference_tracking SET rule_version = $1', [
+            ASSET_REFERENCE_RULE_VERSION + 1,
+          ]);
+          await holder.query('COMMIT');
+
+          const failure = await pass;
+          expect(failure).toBeInstanceOf(AssetReferenceRuleVersionError);
+          expect(failure).toMatchObject({ databaseVersion: ASSET_REFERENCE_RULE_VERSION + 1 });
+          expect(await entryExists(id)).toBe(true);
+        } catch (error) {
+          await holder.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          holder.release();
+          await setRuleVersion(ASSET_REFERENCE_RULE_VERSION);
+        }
+      });
     });
 
     test('an entry held only by a root outlives its pending deadline', async () => {

@@ -40,6 +40,10 @@
  *    stamp, in a statement of their own that sees both reference tables in a
  *    fresh snapshot. An entry still named by any document or any root is left
  *    alone, and an id whose root row did not exist changes nothing at all.
+ * 6. The tracking marker's reference-rule version is raised to this
+ *    package's if it records an older one (`raiseAssetReferenceRuleVersion`).
+ *    No marker is created: a root says nothing about whether documents
+ *    maintain references.
  *
  * Nothing here deletes an entry or a byte. Releasing is the collector's job,
  * after its own grace period and its own locked re-check.
@@ -74,12 +78,15 @@
  * records queue rather than deadlock -- then calls this: the one order in
  * which a root write, a merge and the collector cannot wait on each other in
  * a cycle. It passes only the owner's own partition as `principals`, never a
- * partition every owner shares.
+ * partition every owner shares: a host that lets several owners mutate one
+ * partition must also refuse those mutations while any root holds the entry,
+ * because this package cannot tell whose a root is.
  */
 import {
   commitReferencedEntries,
   lockEntriesInOrder,
   queryableCandidates,
+  raiseAssetReferenceRuleVersion,
   stampUnreferencedEntries,
 } from './references.js';
 import { isLosslessJsonString } from '../runtime/json-value.js';
@@ -257,4 +264,7 @@ export async function changeAssetRoots(
 
   // (5) Only what actually lost a root row, judged against both tables.
   await stampUnreferencedEntries(queryable, unrooted);
+
+  // (6) A root writer applies the rules that count roots; say so.
+  await raiseAssetReferenceRuleVersion(queryable);
 }

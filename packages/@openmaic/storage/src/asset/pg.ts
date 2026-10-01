@@ -137,7 +137,10 @@ export const DEFAULT_ASSET_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
  * entry pass. It exists because the two halves are separately configured and
  * the failure mode of enabling only the second is silent deletion of live
  * media: an empty `document_asset_refs` cannot be told apart from documents
- * that reference nothing, but the absence of this marker can.
+ * that reference nothing, but the absence of this marker can. Its
+ * `rule_version` is the highest reference-rule version a writer on this
+ * database applies (`ASSET_REFERENCE_RULE_VERSION`); a marker an older
+ * writer created reads 1, documents only.
  *
  * `document_asset_withdrawals` records that a host has retired a document
  * while keeping its rows, so the collector's one-time backfill does not walk
@@ -211,6 +214,8 @@ export const ASSET_PG_SCHEMA: readonly string[] = [
      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
      enabled_at TIMESTAMPTZ NOT NULL
    )`,
+  `ALTER TABLE asset_reference_tracking
+     ADD COLUMN IF NOT EXISTS rule_version INTEGER NOT NULL DEFAULT 1`,
   `CREATE TABLE IF NOT EXISTS document_asset_withdrawals (
      stage_id TEXT NOT NULL PRIMARY KEY,
      withdrawn_at TIMESTAMPTZ NOT NULL

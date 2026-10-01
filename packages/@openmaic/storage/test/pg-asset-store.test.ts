@@ -247,7 +247,7 @@ describe('PgAssetStore registry behavior with PGlite', () => {
     await ensureAssetSchema(recordingQueryable(db, statements));
     await ensureAssetSchema(recordingQueryable(db, statements));
     expect(statements).toEqual([...ASSET_PG_SCHEMA, ...ASSET_PG_SCHEMA].map(normalizeSql));
-    expect(ASSET_PG_SCHEMA).toHaveLength(17);
+    expect(ASSET_PG_SCHEMA).toHaveLength(18);
     expect(ASSET_PG_SCHEMA.every((statement) => !statement.includes(';'))).toBe(true);
   });
 

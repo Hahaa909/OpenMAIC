@@ -679,6 +679,8 @@ const EXPECTED_ASSET_PG_SCHEMA: readonly string[] = [
      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
      enabled_at TIMESTAMPTZ NOT NULL
    )`,
+  `ALTER TABLE asset_reference_tracking
+     ADD COLUMN IF NOT EXISTS rule_version INTEGER NOT NULL DEFAULT 1`,
   `CREATE TABLE IF NOT EXISTS document_asset_withdrawals (
      stage_id TEXT NOT NULL PRIMARY KEY,
      withdrawn_at TIMESTAMPTZ NOT NULL

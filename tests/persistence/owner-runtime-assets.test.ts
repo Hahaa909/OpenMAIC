@@ -642,6 +642,49 @@ describe('runtime and assets are keyed by the resolved owner', () => {
       expect(await intact.text()).toBe('legacy-shared-by-two');
     });
 
+    it('cannot be mutated by anyone while a reference root holds it', async () => {
+      const { changeAssetRoots } = await import('@openmaic/storage/asset/pg');
+      const { LEGACY_SHARED_ASSET_PRINCIPAL } = await import('@/lib/persistence/owner-assets');
+      const id = await legacyEntry('legacy-rooted');
+      await saveCourse('alice', 'stage-legacy-rooted', [id]);
+      // A root on a shared entry, as a caller that passed the shared partition
+      // among its principals would write it.
+      const root = { rootKind: 'material', rootId: 'mat-other-owner', assetIds: [id] };
+      await pool.query('BEGIN');
+      await changeAssetRoots(pool as never, {
+        add: [root],
+        principals: [LEGACY_SHARED_ASSET_PRINCIPAL],
+      });
+      await pool.query('COMMIT');
+
+      // Alice owns every course naming it, which used to be enough.
+      const put = await call('alice', `/assets/${id}/content`, {
+        method: 'PUT',
+        body: assetForm([9]),
+      });
+      expect(put.status).toBe(404);
+      await call('alice', `/assets/${id}`, { method: 'DELETE' });
+      const intact = await call('alice', `/assets/${id}/content`);
+      expect(await intact.text()).toBe('legacy-rooted');
+      const roots = await pool.query('SELECT root_id FROM asset_root_refs WHERE asset_id = $1', [
+        id,
+      ]);
+      expect(roots.rows).toEqual([{ root_id: 'mat-other-owner' }]);
+
+      // Once nothing roots it, the course rule applies again.
+      await pool.query('BEGIN');
+      await changeAssetRoots(pool as never, {
+        remove: [root],
+        principals: [LEGACY_SHARED_ASSET_PRINCIPAL],
+      });
+      await pool.query('COMMIT');
+      const unrootedPut = await call('alice', `/assets/${id}/content`, {
+        method: 'PUT',
+        body: assetForm([4, 2]),
+      });
+      expect(unrootedPut.status).toBe(204);
+    });
+
     it('cannot be mutated when no course names it', async () => {
       const id = await legacyEntry('legacy-orphan');
       const put = await call('alice', `/assets/${id}/content`, {

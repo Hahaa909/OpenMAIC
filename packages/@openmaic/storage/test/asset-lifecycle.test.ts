@@ -15,8 +15,10 @@ import { DSL_VERSION } from '@openmaic/dsl';
 import type { Scene } from '@openmaic/dsl';
 import type { AssetByteStore } from '../src/asset/byte-store.js';
 import {
+  ASSET_REFERENCE_RULE_VERSION,
   AssetCollectionFailure,
   AssetCollector,
+  AssetReferenceRuleVersionError,
   AssetReferenceTrackingNotEnabledError,
   type AssetCollectionEntryLevelFailure,
   type AssetCollectionPass,
@@ -973,6 +975,87 @@ describe('asset entry lifecycle with PGlite', () => {
         [id],
       );
 
+      expect((await collector().collectPass()).entriesCollected).toBe(1);
+    });
+
+    test('the marker records the reference-rule version, raised by a write and never lowered', async () => {
+      const ruleVersion = async () =>
+        Number(
+          (await db.query<{ v: number }>('SELECT rule_version AS v FROM asset_reference_tracking'))
+            .rows[0]!.v,
+        );
+      expect(ASSET_REFERENCE_RULE_VERSION).toBe(2);
+      await documentStore(true).saveDocument(documentWith('stage-1', []));
+      expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION);
+
+      // A marker an older writer left (documents only) is raised by the next write.
+      await db.query('UPDATE asset_reference_tracking SET rule_version = 1');
+      await documentStore(true).saveDocument(documentWith('stage-2', []));
+      expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION);
+
+      // A newer writer's version is never lowered.
+      await db.query('UPDATE asset_reference_tracking SET rule_version = $1', [
+        ASSET_REFERENCE_RULE_VERSION + 1,
+      ]);
+      await documentStore(true).saveDocument(documentWith('stage-3', []));
+      expect(await ruleVersion()).toBe(ASSET_REFERENCE_RULE_VERSION + 1);
+    });
+
+    test('a root change raises an existing marker and never creates one', async () => {
+      const id = await store.put(PRINCIPAL, new Blob(['rooted']));
+      const root = { rootKind: 'material', rootId: 'material-1', assetIds: [id] };
+      await db.transaction((tx: Queryable) =>
+        changeAssetRoots(tx, { add: [root], principals: [PRINCIPAL.key] }),
+      );
+      // No document store has declared anything: a root is not that evidence.
+      expect(await trackingMarkers()).toBe(0);
+
+      await documentStore(true).saveDocument(documentWith('stage-1', []));
+      await db.query('UPDATE asset_reference_tracking SET rule_version = 1');
+      await db.transaction((tx: Queryable) =>
+        changeAssetRoots(tx, { remove: [root], principals: [PRINCIPAL.key] }),
+      );
+      const raised = await db.query<{ v: number }>(
+        'SELECT rule_version AS v FROM asset_reference_tracking',
+      );
+      expect(Number(raised.rows[0]!.v)).toBe(ASSET_REFERENCE_RULE_VERSION);
+    });
+
+    test('the entry pass refuses newer reference rules, and the blob pass still runs', async () => {
+      const id = await store.put(PRINCIPAL, new Blob(['kept by a newer kind of reference']));
+      await documentStore(true).saveDocument(documentWith('stage-1', []));
+      await db.query(
+        `UPDATE asset_entries SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = $1`,
+        [id],
+      );
+      const doomed = await store.put(PRINCIPAL, new Blob(['unreferenced bytes']));
+      await store.remove(PRINCIPAL, doomed);
+      await db.query(
+        `UPDATE asset_blobs SET unreferenced_at = '2000-01-01T00:00:00.000Z'
+          WHERE NOT EXISTS (SELECT 1 FROM asset_entries WHERE content_hash = asset_blobs.content_hash)`,
+      );
+      await db.query('UPDATE asset_reference_tracking SET rule_version = $1', [
+        ASSET_REFERENCE_RULE_VERSION + 1,
+      ]);
+
+      const failure = await collector()
+        .collectPass()
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AssetReferenceRuleVersionError);
+      expect(failure).toMatchObject({
+        databaseVersion: ASSET_REFERENCE_RULE_VERSION + 1,
+        knownVersion: ASSET_REFERENCE_RULE_VERSION,
+      });
+      // Nothing released at the entry level...
+      expect(await store.resolve(PRINCIPAL, id)).not.toBeNull();
+      // ...and the byte level still ran.
+      expect((await db.query('SELECT content_hash FROM asset_blobs')).rows).toHaveLength(1);
+
+      // The version this collector knows lets the entry level run again.
+      await db.query('UPDATE asset_reference_tracking SET rule_version = $1', [
+        ASSET_REFERENCE_RULE_VERSION,
+      ]);
       expect((await collector().collectPass()).entriesCollected).toBe(1);
     });
 

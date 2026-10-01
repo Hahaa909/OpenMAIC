@@ -290,6 +290,26 @@ async function referencedAssetIds(
 }
 
 /**
+ * The version of the rules that decide whether an entry is referenced, as
+ * this package applies them: 1 counted `document_asset_refs` only; 2 counts
+ * `asset_root_refs` as well. It is recorded on the tracking marker by every
+ * writer of references, documents and roots alike, never lowered, and bumped
+ * whenever a new kind of reference starts keeping entries alive. A writer of a
+ * new kind must raise it in the transaction that writes its first reference
+ * row (or before), and its rows must lock the entry they name, as a foreign
+ * key does: the collector re-reads the version under the lock of every entry
+ * it is about to delete.
+ *
+ * A collector whose version is lower than the database's does not know every
+ * reference that keeps an entry alive, so it releases nothing (see
+ * `AssetReferenceRuleVersionError`), including when the version is raised
+ * while a pass is under way. This protects the next change of the
+ * rules, not this one: a collector from before the version existed does not
+ * read it.
+ */
+export const ASSET_REFERENCE_RULE_VERSION = 2;
+
+/**
  * Record that a document store on this database maintains reference rows.
  *
  * Written by every reference-maintaining transaction, so the marker appears as
@@ -306,9 +326,28 @@ async function referencedAssetIds(
  */
 export async function recordAssetReferenceTracking(queryable: Queryable): Promise<void> {
   await queryable.query(
-    `INSERT INTO asset_reference_tracking (singleton, enabled_at)
-     VALUES (TRUE, now())
+    `INSERT INTO asset_reference_tracking (singleton, enabled_at, rule_version)
+     VALUES (TRUE, now(), $1)
      ON CONFLICT DO NOTHING`,
+    [ASSET_REFERENCE_RULE_VERSION],
+  );
+  await raiseAssetReferenceRuleVersion(queryable);
+}
+
+/**
+ * Raise the marker's reference-rule version to this package's, if a marker
+ * exists and records an older one; never create a marker. A writer of any
+ * kind of reference calls it in the transaction that writes the reference,
+ * after its entry locks: a document write through
+ * {@link recordAssetReferenceTracking}, a root change directly (a root is no
+ * evidence that documents maintain references, so it must not create the
+ * marker that says so). Once raised it matches no row, so it locks nothing
+ * and the write paths do not queue on the singleton.
+ */
+export async function raiseAssetReferenceRuleVersion(queryable: Queryable): Promise<void> {
+  await queryable.query(
+    `UPDATE asset_reference_tracking SET rule_version = $1 WHERE rule_version < $1`,
+    [ASSET_REFERENCE_RULE_VERSION],
   );
 }
 
@@ -774,6 +813,21 @@ export async function forgetDocumentAssetWithdrawal(
 
 /** True when some document store on this database maintains reference rows. */
 export async function assetReferenceTrackingEnabled(queryable: Queryable): Promise<boolean> {
-  const result = await queryable.query('SELECT 1 FROM asset_reference_tracking LIMIT 1');
-  return result.rows.length > 0;
+  return (await assetReferenceTrackingState(queryable)).enabled;
+}
+
+/**
+ * Whether some document store on this database maintains reference rows, and
+ * the highest reference-rule version any writer on it has recorded.
+ */
+export async function assetReferenceTrackingState(
+  queryable: Queryable,
+): Promise<{ enabled: boolean; ruleVersion: number }> {
+  const result = await queryable.query<{ rule_version: number | string }>(
+    'SELECT rule_version FROM asset_reference_tracking LIMIT 1',
+  );
+  const row = result.rows[0];
+  return row
+    ? { enabled: true, ruleVersion: Number(row.rule_version) }
+    : { enabled: false, ruleVersion: 0 };
 }
