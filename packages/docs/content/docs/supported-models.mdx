@@ -3,15 +3,15 @@ title: Supported Models
 description: Built-in model and provider lists for the open-source OpenMAIC edition.
 ---
 
-This page lists the providers and models built into the open-source OpenMAIC edition. In [`openmaic.yml`](./configuration.mdx) a provider names one of these as its `preset`, and the model settings of the web app offer the same catalogue. Availability also depends on the provider account, region and server configuration, and a provider's `models` list can narrow what the model settings offer.
+This page lists the providers and models built into the open-source OpenMAIC edition. In [`openmaic.yml`](./configuration.mdx) a provider names one of these as its `preset`, and the browser settings (**Settings → Model Services**) offer the same built-in providers. Availability also depends on the provider account, region and server configuration.
 
 ## Presets
 
-A preset is a built-in provider template: which vendor, which endpoint, and which capabilities one account covers. Every provider in `openmaic.yml` or in the model settings names a preset.
+A preset is a built-in provider template: which vendor, which endpoint, and which capabilities one account covers. Every provider in `openmaic.yml` (or the workspace settings API) names a preset.
 
 **Single-capability presets** have the provider IDs of the tables below, one per capability: `openai` is OpenAI chat, while OpenAI images, speech and transcription are `openai-image`, `openai-tts` and `openai-whisper`. Three IDs differ from the registry ID because another preset already uses it: MiniMax web search is `minimax-search`, Doubao web search is `doubao-search`, and Lemonade image generation is `lemonade-image`.
 
-**Token plan presets** cover several capabilities with one key, each at the plan's own endpoint. When the first-run setup connects one, it also fills the slots the plan recommends models for.
+**Token plan presets** cover several capabilities with one key, each at the plan's own endpoint.
 
 | Preset | Plan | Covers |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ A preset is a built-in provider template: which vendor, which endpoint, and whic
 | `volcengine-ark` | Volcengine Ark Agent Plan | Chat, image, video, TTS, web search |
 | `kimi-coding-plan` | Kimi coding plan | Chat |
 
-`openai-compatible` connects any OpenAI-compatible chat server: it needs a `baseUrl`, and its `models` list is what the model settings offer.
+`openai-compatible` connects any OpenAI-compatible chat server: it needs a `baseUrl`, and its `models` list names the models it serves.
 
 All preset IDs:
 
@@ -34,7 +34,7 @@ All preset IDs:
 | Web search | `tavily`, `exa`, `bocha`, `brave`, `baidu`, `claude`, `minimax-search`, `doubao-search`, `searxng` |
 | Document parsing | `unpdf`, `mineru`, `mineru-cloud`, `alidocmind` |
 
-`azure`, `openai-compatible`, `searxng` and `mineru` need a `baseUrl`; `alidocmind` authenticates with `credentials` (a key pair). Self-hosted TTS, ASR, image, search and document presets, key-pair presets and Bedrock can only be configured in `openmaic.yml`; see [Configuration](./configuration.mdx).
+`azure`, `openai-compatible`, `searxng` and `mineru` need a `baseUrl`; `alidocmind` authenticates with `credentials` (a key pair). The workspace settings API refuses self-hosted TTS, ASR, image, search and document presets, key-pair presets and Bedrock; configure those in `openmaic.yml` (users can still enter some of them, such as VoxCPM2 or ComfyUI, in their browser settings). See [Configuration](./configuration.mdx).
 
 ## LLM models
 
@@ -124,7 +124,7 @@ This table lists model selectors and self-hosted backends. It does not enumerate
 
 ## Web Search providers
 
-Most web search providers have no model selector, so slots usually name them by provider id alone (`webSearch: tavily`). SearXNG can only be configured in `openmaic.yml`; the other providers need an API key or a base URL as listed. The preset IDs of MiniMax and Doubao web search are `minimax-search` and `doubao-search`.
+Most web search providers have no model selector, so slots usually name them by provider id alone (`webSearch: tavily`). SearXNG can only be configured on the server (`openmaic.yml` or the legacy variables); the other providers need an API key or a base URL as listed. The preset IDs of MiniMax and Doubao web search are `minimax-search` and `doubao-search`.
 
 | Provider     | Provider ID |
 | ------------ | ----------- |

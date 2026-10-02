@@ -4,19 +4,21 @@
 
 OpenMAIC generation does not automatically reuse the OpenClaw agent's current model or API key.
 
-OpenMAIC resolves every model and key on the server, from its own model configuration:
+OpenMAIC has two places that choose models:
 
-- `openmaic.yml` (written by the operator; path overridable with `OPENMAIC_CONFIG`) declares providers and assigns models to capability slots. Keys stay in `.env.local` and are referenced from the file as `${VAR}`.
-- The model settings in the OpenMAIC web app (**Settings → Models**) edit the slots and providers `openmaic.yml` leaves open, for the current workspace.
+- `openmaic.yml` (written by the operator; path overridable with `OPENMAIC_CONFIG`) declares providers and assigns models to capability slots, for every user. Keys stay in `.env.local` and are referenced from the file as `${VAR}`. The legacy provider variables (`OPENAI_API_KEY`, …) with `DEFAULT_MODEL` still work when there is no `openmaic.yml`.
+- The browser settings of the OpenMAIC web app (**Settings → Token Plan / Model Services / Course Model Config**) keep each user's keys and model choices in that browser and send them with each request. They apply only to slots the server leaves unassigned.
 
-This skill does not rely on runtime overrides for model, provider, API key, base URL, or provider type. The old request headers (`x-model`, `x-api-key`, `x-base-url`, `x-model-routes`, `x-*-provider`, …) are deprecated and ignored once a slot is configured; never use them as a workaround.
+The classroom generation API that this skill calls (`/api/generate-classroom`) carries no keys or model choices: it uses only the server-side configuration. So for this skill the model must be configured on the server (`openmaic.yml`, or the legacy variables with `DEFAULT_MODEL`); keys entered in the browser settings do not reach it.
 
-If the user wants to change the model or provider, they edit `openmaic.yml` (and `.env.local` for the key) or use the model settings in the web app.
+This skill does not rely on runtime overrides for model, provider, API key, base URL, or provider type. Never send request headers such as `x-model`, `x-api-key`, `x-base-url`, `x-model-routes` or `x-*-provider` as a workaround.
+
+If the user wants to change the model or provider, they edit `openmaic.yml` (and `.env.local` for the key).
 
 ## Interaction Flow
 
 1. Recommend one provider path first (see "Recommendation Paths" below). Do not start by asking for an API key.
-2. Ask whether the user wants to configure it in `openmaic.yml` + `.env.local` (recommended for self-hosting and anything reproducible) or in the web app's model settings after starting (simplest for a personal install).
+2. Configure it in `openmaic.yml` + `.env.local` (or, for an existing setup, the legacy variables with `DEFAULT_MODEL`). The browser settings are for people using the web app; they do not configure the generation API this skill uses.
 3. Tell the user exactly which file and fields to edit — they edit the files themselves. Do not offer to write the key for them, do not ask for the literal key in chat, and do not suggest temporary request-time overrides.
 4. Wait for the user to confirm they finished editing before continuing. `openmaic.yml` is read at startup: a running server must be restarted after it changes.
 5. If startup or generation later fails because of auth, provider, or model selection, direct the user back to the same configuration and wait for confirmation before retrying.
@@ -52,7 +54,7 @@ slots:
 
 with `ANTHROPIC_API_KEY=sk-ant-...` in `.env.local`.
 
-Slots written in `openmaic.yml` are locked for the web UI; slots left out follow their parent (`llm` for chat slots) and can be changed in the model settings.
+Slots written in `openmaic.yml` apply to every user and override what users pick in their browser settings; slots left out follow their parent (`llm` for chat slots), and only for slots no ancestor covers do the web app's browser settings decide.
 
 ## Recommendation Paths
 
@@ -92,11 +94,7 @@ slots:
 
 Same shape for `openai` (`OPENAI_API_KEY`), `anthropic`, `deepseek`, `qwen`, `glm`, `kimi`, `openrouter` and the other chat presets.
 
-### 3. Web App Only
-
-For a personal install where the user does not want to edit files: start OpenMAIC, open **Settings → Models**, and connect a service there. The key is entered in the browser, stored encrypted on the server, and never shown again. Nothing to edit in `openmaic.yml`.
-
-### 4. Existing Environment-Variable Setups
+### 3. Existing Environment-Variable Setups
 
 A deployment configured through provider variables (`OPENAI_API_KEY`, …), `server-providers.yml`, `DEFAULT_MODEL` and `MODEL_FALLBACK` still works while there is no `openmaic.yml`; the server translates it at startup and logs a deprecation notice. Recommend moving to `openmaic.yml` when the user touches the configuration anyway. `MODEL_ROUTES` is no longer read: a server that sets it without `openmaic.yml` refuses to start, and the per-stage models must be written as slots (see the Configuration docs, "Migrating from the legacy configuration").
 
@@ -148,7 +146,7 @@ These are all optional. Classroom generation works without them — they only un
 
 - **Server exits at startup with `Invalid model configuration in …/openmaic.yml`** — the message lists each problem with its path (an unset `${VAR}`, an unknown preset or slot, a provider not declared under `providers`, a chat slot without a model id). Relay it to the user unchanged.
 - **`MODEL_ROUTES does not carry over to the model configuration …`** — the user must write the per-stage models as slots in `openmaic.yml` and remove `MODEL_ROUTES`.
-- **`No model is configured for <slot>`** — assign that slot (or its parent, e.g. `llm`) in `openmaic.yml` or the model settings.
+- **`No model is configured for <slot>`** — assign that slot (or its parent, e.g. `llm`) in `openmaic.yml` (or the legacy `DEFAULT_MODEL`).
 - **`The <slot> capability is turned off`** — the slot is `null`; the operator turned it off on purpose.
 
 ## Recommended Prompts To The User

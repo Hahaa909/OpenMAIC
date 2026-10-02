@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 DEFAULT_MODEL=anthropic:claude-sonnet-4-6
 ```
 
-兩者都不想設定的話，啟動應用程式後在 **設定 → 模型** 中使用 **Connect a service**（連接服務）。既沒有 `openmaic.yml`、也沒有 `DEFAULT_MODEL`、也沒有在那裡連接服務時，沒有任何可用模型，生成會失敗。
+也可以兩者都不用：啟動應用程式後，在 **設定 → 模型服務** 中填入 key（或連接 **Token Plan**）並選擇模型；這些設定儲存在你的瀏覽器中，隨每個請求傳送。既沒有 `openmaic.yml`、也沒有 `DEFAULT_MODEL`、也沒有在瀏覽器中選擇模型時，沒有任何可用模型，生成會失敗。
 
 完整的 provider、圖片／影片生成、TTS、ASR、文件解析、網路搜尋、存取控制和 feature flag 設定請見[設定說明](./configuration.mdx)。
 

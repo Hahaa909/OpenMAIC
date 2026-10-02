@@ -3,15 +3,15 @@ title: 支持模型
 description: 开源版 OpenMAIC 的内置模型与 provider 列表。
 ---
 
-本页列出开源版 OpenMAIC 内置的服务商和模型。在 [`openmaic.yml`](./configuration.mdx) 中，服务商通过 `preset` 指定其中之一；Web 端的模型设置提供同一份目录。具体可用性还取决于服务商账号、所在区域和服务端配置，服务商的 `models` 列表也可以缩小模型设置中提供的选项。
+本页列出开源版 OpenMAIC 内置的服务商和模型。在 [`openmaic.yml`](./configuration.mdx) 中，服务商通过 `preset` 指定其中之一；浏览器设置（**设置 → 模型服务**）提供同一批内置服务商。具体可用性还取决于服务商账号、所在区域和服务端配置。
 
 ## 预设
 
-预设是内置的服务商模板：哪家厂商、哪个端点，以及一个账号覆盖哪些能力。`openmaic.yml` 或模型设置中的每个服务商都要指定一个预设。
+预设是内置的服务商模板：哪家厂商、哪个端点，以及一个账号覆盖哪些能力。`openmaic.yml`（或工作区设置 API）中的每个服务商都要指定一个预设。
 
 **单能力预设**使用下面各表中的 provider ID，每种能力一个：`openai` 是 OpenAI 对话，OpenAI 的图像、语音合成和语音识别分别是 `openai-image`、`openai-tts` 和 `openai-whisper`。有三个 ID 因为已被其他预设占用而与 registry ID 不同：MiniMax 联网搜索是 `minimax-search`，豆包联网搜索是 `doubao-search`，Lemonade 图像生成是 `lemonade-image`。
 
-**Token Plan 预设**用一个 key 覆盖多种能力，每种能力使用该套餐自己的端点。首次使用引导接入这类服务商时，还会为套餐推荐了模型的槽位填入模型。
+**Token Plan 预设**用一个 key 覆盖多种能力，每种能力使用该套餐自己的端点。
 
 | 预设 | 套餐 | 覆盖能力 |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ description: 开源版 OpenMAIC 的内置模型与 provider 列表。
 | `volcengine-ark` | 火山方舟 Agent Plan | 对话、图像、视频、TTS、联网搜索 |
 | `kimi-coding-plan` | Kimi 编程套餐 | 对话 |
 
-`openai-compatible` 用于接入任意 OpenAI 兼容的对话服务：需要填写 `baseUrl`，模型设置中提供的就是它的 `models` 列表。
+`openai-compatible` 用于接入任意 OpenAI 兼容的对话服务：需要填写 `baseUrl`，它的 `models` 列表写明它提供哪些模型。
 
 全部预设 ID：
 
@@ -34,7 +34,7 @@ description: 开源版 OpenMAIC 的内置模型与 provider 列表。
 | 联网搜索 | `tavily`、`exa`、`bocha`、`brave`、`baidu`、`claude`、`minimax-search`、`doubao-search`、`searxng` |
 | 文档解析 | `unpdf`、`mineru`、`mineru-cloud`、`alidocmind` |
 
-`azure`、`openai-compatible`、`searxng` 和 `mineru` 需要 `baseUrl`；`alidocmind` 使用 `credentials`（密钥对）认证。自托管的 TTS、ASR、图像、搜索和文档预设、密钥对预设以及 Bedrock 只能在 `openmaic.yml` 中配置，见[配置说明](./configuration.mdx)。
+`azure`、`openai-compatible`、`searxng` 和 `mineru` 需要 `baseUrl`；`alidocmind` 使用 `credentials`（密钥对）认证。工作区设置 API 会拒绝自托管的 TTS、ASR、图像、搜索和文档预设、密钥对预设以及 Bedrock；请在 `openmaic.yml` 中配置它们（用户仍可在浏览器设置中填写其中一部分，例如 VoxCPM2 或 ComfyUI）。见[配置说明](./configuration.mdx)。
 
 ## LLM 模型
 
@@ -124,7 +124,7 @@ description: 开源版 OpenMAIC 的内置模型与 provider 列表。
 
 ## Web Search 提供方
 
-大多数联网搜索服务商没有模型选择器，因此槽位通常只写服务商 ID（`webSearch: tavily`）。SearXNG 只能在 `openmaic.yml` 中配置；其他服务商按表中要求提供 API key 或 Base URL。MiniMax 和豆包联网搜索的预设 ID 分别是 `minimax-search` 和 `doubao-search`。
+大多数联网搜索服务商没有模型选择器，因此槽位通常只写服务商 ID（`webSearch: tavily`）。SearXNG 只能在服务端配置（`openmaic.yml` 或旧版变量）；其他服务商按表中要求提供 API key 或 Base URL。MiniMax 和豆包联网搜索的预设 ID 分别是 `minimax-search` 和 `doubao-search`。
 
 | 提供方       | Provider ID |
 | ------------ | ----------- |

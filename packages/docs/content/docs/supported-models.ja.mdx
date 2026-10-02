@@ -3,15 +3,15 @@ title: サポートモデル
 description: オープンソース版 OpenMAIC の組み込みモデルと provider 一覧。
 ---
 
-このページでは、オープンソース版 OpenMAIC に組み込まれているプロバイダーとモデルを一覧にしています。[`openmaic.yml`](./configuration.mdx) では、プロバイダーがこのいずれかを `preset` として指定し、Web アプリのモデル設定も同じカタログを提供します。実際に使えるかどうかはプロバイダーのアカウント、地域、サーバー設定にも依存し、プロバイダーの `models` 一覧でモデル設定に表示される選択肢を絞り込むこともできます。
+このページでは、オープンソース版 OpenMAIC に組み込まれているプロバイダーとモデルを一覧にしています。[`openmaic.yml`](./configuration.mdx) では、プロバイダーがこのいずれかを `preset` として指定し、ブラウザーの設定（**設定 → モデルサービス**）も同じ組み込みプロバイダーを提供します。実際に使えるかどうかはプロバイダーのアカウント、地域、サーバー設定にも依存します。
 
 ## プリセット
 
-プリセットは組み込みのプロバイダーテンプレートで、どのベンダーか、どのエンドポイントか、1 つのアカウントでどの機能をカバーするかを表します。`openmaic.yml` やモデル設定のすべてのプロバイダーはプリセットを指定します。
+プリセットは組み込みのプロバイダーテンプレートで、どのベンダーか、どのエンドポイントか、1 つのアカウントでどの機能をカバーするかを表します。`openmaic.yml`（またはワークスペース設定 API）のすべてのプロバイダーはプリセットを指定します。
 
 **単一機能のプリセット**は、以下の各表のプロバイダー ID を機能ごとに 1 つずつ使います。`openai` は OpenAI のチャットで、OpenAI の画像・音声合成・文字起こしはそれぞれ `openai-image`、`openai-tts`、`openai-whisper` です。3 つの ID は他のプリセットが既に使っているため、レジストリ ID と異なります。MiniMax の Web 検索は `minimax-search`、Doubao の Web 検索は `doubao-search`、Lemonade の画像生成は `lemonade-image` です。
 
-**Token Plan プリセット**は 1 つのキーで複数の機能をカバーし、各機能はプラン独自のエンドポイントを使います。初回セットアップでこれを接続すると、プランがモデルを推奨しているスロットにもモデルが設定されます。
+**Token Plan プリセット**は 1 つのキーで複数の機能をカバーし、各機能はプラン独自のエンドポイントを使います。
 
 | プリセット | プラン | カバーする機能 |
 | --- | --- | --- |
@@ -20,7 +20,7 @@ description: オープンソース版 OpenMAIC の組み込みモデルと provi
 | `volcengine-ark` | Volcengine Ark Agent Plan | チャット、画像、動画、TTS、Web 検索 |
 | `kimi-coding-plan` | Kimi コーディングプラン | チャット |
 
-`openai-compatible` は任意の OpenAI 互換チャットサーバーに接続します。`baseUrl` が必要で、モデル設定に表示されるのはその `models` 一覧です。
+`openai-compatible` は任意の OpenAI 互換チャットサーバーに接続します。`baseUrl` が必要で、`models` 一覧でそのサーバーが提供するモデルを指定します。
 
 すべてのプリセット ID：
 
@@ -34,7 +34,7 @@ description: オープンソース版 OpenMAIC の組み込みモデルと provi
 | Web 検索 | `tavily`、`exa`、`bocha`、`brave`、`baidu`、`claude`、`minimax-search`、`doubao-search`、`searxng` |
 | ドキュメント解析 | `unpdf`、`mineru`、`mineru-cloud`、`alidocmind` |
 
-`azure`、`openai-compatible`、`searxng`、`mineru` には `baseUrl` が必要で、`alidocmind` は `credentials`（キーペア）で認証します。セルフホストの TTS・ASR・画像・検索・ドキュメントのプリセット、キーペアのプリセット、Bedrock は `openmaic.yml` でのみ設定できます。[設定説明](./configuration.mdx)を参照してください。
+`azure`、`openai-compatible`、`searxng`、`mineru` には `baseUrl` が必要で、`alidocmind` は `credentials`（キーペア）で認証します。ワークスペース設定 API は、セルフホストの TTS・ASR・画像・検索・ドキュメントのプリセット、キーペアのプリセット、Bedrock を拒否します。これらは `openmaic.yml` で設定してください（VoxCPM2 や ComfyUI など一部は、ユーザーがブラウザーの設定で入力することもできます）。[設定説明](./configuration.mdx)を参照してください。
 
 ## LLM モデル
 
@@ -124,7 +124,7 @@ description: オープンソース版 OpenMAIC の組み込みモデルと provi
 
 ## Web Search プロバイダー
 
-ほとんどの Web 検索プロバイダーにはモデル選択がないため、スロットでは通常プロバイダー ID だけを書きます（`webSearch: tavily`）。SearXNG は `openmaic.yml` でのみ設定できます。その他のプロバイダーは表のとおり API キーまたは Base URL が必要です。MiniMax と Doubao の Web 検索のプリセット ID は `minimax-search` と `doubao-search` です。
+ほとんどの Web 検索プロバイダーにはモデル選択がないため、スロットでは通常プロバイダー ID だけを書きます（`webSearch: tavily`）。SearXNG はサーバー側（`openmaic.yml` または旧来の変数）でのみ設定できます。その他のプロバイダーは表のとおり API キーまたは Base URL が必要です。MiniMax と Doubao の Web 検索のプリセット ID は `minimax-search` と `doubao-search` です。
 
 | 提供元       | Provider ID |
 | ------------ | ----------- |

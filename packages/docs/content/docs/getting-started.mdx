@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 DEFAULT_MODEL=anthropic:claude-sonnet-4-6
 ```
 
-To skip both, start the app and use **Connect a service** in **Settings → Models**. Without `openmaic.yml`, `DEFAULT_MODEL` or a service connected there, no model is configured and generation fails.
+You can also skip both: start the app, add a key under **Settings → Model Services** (or connect a **Token Plan**) and pick a model there; those settings stay in your browser and are sent with each request. Without `openmaic.yml`, `DEFAULT_MODEL` or a model chosen in the browser, no model is configured and generation fails.
 
 See [Configuration](./configuration.mdx) for complete provider, image/video generation, TTS, ASR, document parsing, web search, access control, and feature flag configuration.
 

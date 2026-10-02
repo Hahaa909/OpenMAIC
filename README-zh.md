@@ -128,7 +128,7 @@ slots:
   video: null                      # 关闭某项能力
 ```
 
-写进文件的槽位会被锁定；没写的槽位沿用父槽位，可以在 Web 端的模型设置里选择，用户也可以在那里接入自己的服务（在那里保存的 Key 用 `OPENMAIC_SECRET_KEY` 加密存储）。服务启动时会校验该文件，出错时会指出出错的字段（YAML 语法错误则指出行号）。槽位说明、预设、回退模型和策略见[配置说明](packages/docs/content/docs/configuration.zh-cn.mdx)，预设和模型 ID 见[支持的模型](packages/docs/content/docs/supported-models.zh-cn.mdx)。
+写进文件的槽位对所有用户生效，并覆盖用户在浏览器设置中的选择；没写的槽位由每个用户在 **设置 → 模型服务** 中选择（在那里填写的 Key 只保存在该浏览器中，随每个请求发送）。服务启动时会校验该文件，出错时会指出出错的字段（YAML 语法错误则指出行号）。槽位说明、预设、回退模型和策略见[配置说明](packages/docs/content/docs/configuration.zh-cn.mdx)，预设和模型 ID 见[支持的模型](packages/docs/content/docs/supported-models.zh-cn.mdx)。
 
 支持的服务商：**OpenAI**、**Azure OpenAI**、**Anthropic**、**Amazon Bedrock**、**Google Gemini**、**DeepSeek**、**通义千问 Qwen**、**Kimi**、**MiniMax**、**Grok (xAI)**、**OpenRouter**、**TokenDance**、**豆包**、**腾讯混元 / TokenHub**、**小米 MiMo**、**智谱 GLM**、**Ollama**（本地）、**Lemonade**（本地 LLM / 图像 / TTS / ASR）、**FunASR**（本地 ASR）以及任何兼容 OpenAI API 的服务。
 
@@ -325,7 +325,7 @@ cp .env.example .env.local
 docker compose up --build
 ```
 
-如需用 `openmaic.yml` 配置模型，请先从 `openmaic.example.yml` 复制出该文件，再取消 `docker-compose.yml` 中对应挂载行的注释；否则启动后在模型设置里接入模型服务即可。
+如需用 `openmaic.yml` 配置模型，请先从 `openmaic.example.yml` 复制出该文件，再取消 `docker-compose.yml` 中对应挂载行的注释；否则启动后在 **设置 → 模型服务** 中填写 Key 即可。
 
 打开 **http://localhost:3000**。整套服务是两个容器：应用和 PostgreSQL；PostgreSQL 健康检查通过后应用才会启动。课程、生成的媒体和运行时会话都[存储在服务端](#服务端持久化postgresql)的命名卷（`openmaic-postgres`、`openmaic-data`）中，`docker compose down` 和重新构建后依然保留；`docker compose down -v` 会删除它们。
 
@@ -401,7 +401,7 @@ DATABASE_URL=postgres://openmaic:password@localhost:5432/openmaic pnpm start
 
 本地开发时，`pnpm db:up` 启动一个独立的开发数据库（以单独的项目和数据卷 `openmaic-dev-db` 运行 Compose 的 `postgres` 服务定义，本机所有检出共用）并发布到 `127.0.0.1`（端口 `OPENMAIC_DB_PORT`，默认 `5432`）；对应的 `DATABASE_URL` 已在 `.env.example` 中以注释给出，`pnpm db:down` 可将其停止。Serverless 平台（见 [Vercel 部署](#vercel-部署)）请把 `DATABASE_URL` 指向外部 PostgreSQL。
 
-和往常一样配置模型（`openmaic.yml` 加 `.env.local` 中的 key，或 设置 → 模型）。课程文档、文件夹、对话历史与学习者运行时会话、生成的媒体都保存在服务端。留在浏览器里的只有属于该设备、丢失也不会丢课的数据：应用设置与界面偏好、播放进度与编辑器当前场景、编辑器撤销历史、服务端已保存的讲解与媒体的本地缓存（以及因存储已满被拒、为重试保留的字节）、生成期间暂存的 PDF 图片，以及在该浏览器注册的 TTS 音色。**设置 → 清除本地缓存**只清除这些，不会动服务端的任何数据。
+和往常一样配置模型（`openmaic.yml` 加 `.env.local` 中的 key，或浏览器中的 **设置 → 模型服务**）。课程文档、文件夹、对话历史与学习者运行时会话、生成的媒体都保存在服务端。留在浏览器里的只有属于该设备、丢失也不会丢课的数据：应用设置与界面偏好、播放进度与编辑器当前场景、编辑器撤销历史、服务端已保存的讲解与媒体的本地缓存（以及因存储已满被拒、为重试保留的字节）、生成期间暂存的 PDF 图片，以及在该浏览器注册的 TTS 音色。**设置 → 清除本地缓存**只清除这些，不会动服务端的任何数据。
 
 **从纯浏览器构建升级。** 此前纯浏览器构建保存在浏览器中的课程会自动搬到服务端，无需任何操作，也没有界面提示：该浏览器首次打开升级后的应用、页面空闲时，单向导入器会把课程连同对话、学习者运行时、播放进度、智能体阵容、文件夹及其归类、测验进度和媒体复制给服务端为该浏览器解析出的所有者（默认是匿名 cookie 所有者），课程随后出现在课程库中。每个浏览器只导入一次：服务端把该浏览器绑定给第一个请求的所有者（`POST /api/identity/legacy-import-binding`），认领会把绑定带到账号（匿名所有者登录后被认领）。导入器的每个请求都携带浏览器 id，未持有绑定的所有者的请求会被拒绝（`409 LEGACY_IMPORT_NOT_BOUND`），因此之后在同一浏览器中使用的其他所有者不会得到任何导入。浏览器中的原始数据保持不变，**设置 → 清除本地缓存**也不会删除它们。服务端已存在的同名课程以服务端为准；课程 id 已被其他所有者占用时，以新 id 导入；在服务端删除过的课程不会被重新导入。导入进度记录在浏览器中（只有一个随机浏览器 id，不含任何所有者信息），中断后下次加载时继续，且不会重复导入；问题会以 `[legacy-browser-import]` 前缀记录在浏览器控制台中。该导入器是临时的，将在之后的几个版本中移除。
 
@@ -548,7 +548,7 @@ slots:
 
 [VoxCPM2](https://github.com/OpenBMB/VoxCPM) 是 OpenBMB 开源的 TTS 模型，支持声音克隆。OpenMAIC 自带适配器，把 VoxCPM 跑在自己机器上即可对接。
 
-**1. 部署 VoxCPM 后端。** 三种部署形态，背后是同一套 OpenMAIC 适配器，在 `openmaic.yml` 中用 `options.backend` 选择（见第 2 步）。
+**1. 部署 VoxCPM 后端。** 三种部署形态，背后是同一套 OpenMAIC 适配器，在设置里切换即可。
 
 | 后端 | 接口 | 适用场景 |
 | --- | --- | --- |
@@ -558,25 +558,25 @@ slots:
 
 每种后端的具体启动步骤见 [VoxCPM 仓库](https://github.com/OpenBMB/VoxCPM)。
 
-**2. 在 OpenMAIC 中配置。** VoxCPM2 运行在你自己的网络中，因此由部署在 `openmaic.yml` 中配置（不需要 API Key）；工作区不能在 **设置 → 模型** 中添加它：
+**2. 在 OpenMAIC 中配置。** 打开 **设置 → 模型服务 → 语音合成 → VoxCPM2**，选择后端类型并填入 Base URL，下方的 Request URL 预览会显示实际请求地址。
+
+<img src="assets/voxcpm/voxcpm-connection.png" width="85%" alt="VoxCPM2 连接设置：后端选择、Base URL、模型名" />
+
+也可以在服务端为所有人配置（不需要 API Key），写在 `openmaic.yml` 中：
 
 ```yaml
 providers:
   voxcpm:
     preset: voxcpm-tts
     baseUrl: http://localhost:8000/v1
-    options:
-      backend: vllm-omni          # vllm-omni（默认）| python-api | nano-vllm
 
 slots:
   tts: voxcpm
 ```
 
-音色注册只在 `vllm-omni` 后端可用；`python-api` 和 `nano-vllm` 会随每次请求发送音色提示。
+没有 `openmaic.yml` 时，旧版的 `TTS_VOXCPM_BASE_URL=http://localhost:8000/v1` 可以达到同样效果。
 
-没有 `openmaic.yml` 时，旧版的 `TTS_VOXCPM_BASE_URL=http://localhost:8000/v1` 可以设置端点，但无法选择后端。
-
-**3. 管理音色。** 把 VoxCPM2 分配给 `tts` 槽位后，打开 **设置 → 语音 → VoxCPM 音色**（只有 `tts` 解析到 `voxcpm-tts` 服务商时才会出现音色管理）。三种音色模式：
+**3. 管理音色。** 三种音色模式，都在 **设置 → 模型服务 → 语音合成 → VoxCPM2 → VoxCPM 音色** 里：
 
 <img src="assets/voxcpm/voxcpm-voice-manager.png" width="85%" alt="VoxCPM2 音色管理：Auto / Prompt / Clone 三种模式" />
 

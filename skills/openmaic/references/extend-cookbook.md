@@ -16,9 +16,9 @@ Two distinct cases:
 - **Register a NEW provider** (source change):
   1. Add the id to the `BuiltInProviderId` union in `lib/types/provider.ts`.
   2. Register its config + models in the `PROVIDERS` registry in `lib/ai/providers.ts`.
-  3. The registry entry becomes a preset automatically (`lib/config/provider-presets.ts`; the preset id is the registry id unless `lib/config/preset-ids.ts` overrides it), so `openmaic.yml` can declare it with `preset: your-id` and the model settings offer it. No env wiring is needed.
-  4. Optional, legacy only: to also accept `<PREFIX>_API_KEY` / `_BASE_URL` / `_MODELS` from the environment without `openmaic.yml`, add a `PREFIX: 'your-id'` entry to `LLM_ENV_MAP` in `lib/server/provider-config.ts`. That path is deprecated.
-  5. A new token plan (one key, several capabilities) is one entry in `lib/config/token-plan-presets.ts`; it becomes a preset whose recommended models fill the slots it covers in the first-run setup.
+  3. The registry entry becomes a preset automatically (`lib/config/provider-presets.ts`; the preset id is the registry id unless `lib/config/preset-ids.ts` overrides it), so `openmaic.yml` can declare it with `preset: your-id`; the registry entry also makes it appear under **Settings → Model Services** in the browser. No env wiring is needed for `openmaic.yml`.
+  4. Optional, legacy only: to also accept `<PREFIX>_API_KEY` / `_BASE_URL` / `_MODELS` from the environment without `openmaic.yml`, add a `PREFIX: 'your-id'` entry to `LLM_ENV_MAP` in `lib/server/provider-config.ts` (the browser settings then list it as server-configured). That path is deprecated.
+  5. A new token plan (one key, several capabilities) is one entry in `lib/config/token-plan-presets.ts`; it appears in the browser's **Settings → Token Plan** and becomes a preset that `openmaic.yml` can declare.
 
 **Gotcha:** OpenMAIC has **no hardcoded model fallback**. If no model is assigned to the `llm` slot (or the more specific slot a call uses), generation fails with `No model is configured for <slot>` rather than picking a vendor — always assign one.
 

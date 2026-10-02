@@ -148,7 +148,7 @@ slots:
   video: null                      # turn a capability off
 ```
 
-Slots you write are locked; slots you leave out follow their parent and can be chosen in the model settings of the web app, where users can also connect services of their own (keys saved there are encrypted with `OPENMAIC_SECRET_KEY`). The server validates the file at startup and names every mistake by its field (or, for broken YAML, its line). See [Configuration](packages/docs/content/docs/configuration.mdx) for the slot reference, presets, fallbacks and policy, and [Supported models](packages/docs/content/docs/supported-models.mdx) for preset and model IDs.
+Slots you write apply to every user and override what users pick in their browser settings; slots you leave out are chosen by each user under **Settings → Model Services** (keys entered there stay in that browser and are sent with each request). The server validates the file at startup and names every mistake by its field (or, for broken YAML, its line). See [Configuration](packages/docs/content/docs/configuration.mdx) for the slot reference, presets, fallbacks and policy, and [Supported models](packages/docs/content/docs/supported-models.mdx) for preset and model IDs.
 
 Supported providers: **OpenAI**, **Azure OpenAI**, **Anthropic**, **Amazon Bedrock**, **Google Gemini**, **DeepSeek**, **Qwen**, **Kimi**, **MiniMax**, **Grok (xAI)**, **OpenRouter**, **TokenDance**, **Doubao**, **Tencent Hunyuan/TokenHub**, **Xiaomi MiMo**, **GLM (Zhipu)**, **Ollama** (local), **Lemonade** (local LLM / image / TTS / ASR), **FunASR** (local ASR), and any OpenAI-compatible API.
 
@@ -368,7 +368,7 @@ cp .env.example .env.local
 docker compose up --build
 ```
 
-To configure models with `openmaic.yml`, create it from `openmaic.example.yml` and uncomment its mount in `docker-compose.yml`; otherwise connect a model service in the model settings once the app is running.
+To configure models with `openmaic.yml`, create it from `openmaic.example.yml` and uncomment its mount in `docker-compose.yml`; otherwise add keys under **Settings → Model Services** once the app is running.
 
 Open **http://localhost:3000**. The stack is two containers, the app and
 PostgreSQL; the app starts once PostgreSQL reports healthy. Courses, generated
@@ -503,7 +503,7 @@ matching `DATABASE_URL` is commented in `.env.example`, and `pnpm db:down` stops
 it again. Serverless hosts (see [Vercel Deployment](#vercel-deployment)) point
 `DATABASE_URL` at an external PostgreSQL database.
 
-Configure models as usual (`openmaic.yml` with keys in `.env.local`, or Settings → Models). Course documents, folders,
+Configure models as usual (`openmaic.yml` with keys in `.env.local`, or **Settings → Model Services** in the browser). Course documents, folders,
 chat history and learner runtime sessions, and generated media are stored on
 the server. What stays in the browser is what belongs to the device and can be
 lost without losing a course: app settings and UI preferences, the playback
@@ -1292,7 +1292,7 @@ OPENMAIC_AGENT_RUNTIME_ENABLED=true
 DATABASE_URL=postgres://openmaic:openmaic-dev@postgres:5432/openmaic
 ```
 
-The agent runs on the `agent` slot of `openmaic.yml` (or the model settings), which follows the default chat model unless it has its own assignment and needs a model with tool calling:
+The agent runs on the `agent` slot of `openmaic.yml` (the browser settings do not choose its model), which follows the default chat model unless it has its own assignment and needs a model with tool calling:
 
 ```yaml
 providers:
@@ -1351,7 +1351,7 @@ Without `openmaic.yml`, the legacy variables `PDF_MINERU_CLOUD_API_KEY` or `PDF_
 
 [VoxCPM2](https://github.com/OpenBMB/VoxCPM) is an open-source TTS model from OpenBMB with voice cloning. OpenMAIC ships an adapter; run VoxCPM on your own hardware and OpenMAIC will talk to it.
 
-**1. Run a VoxCPM backend.** Three deployment styles, all behind the same OpenMAIC adapter. You pick which one with `options.backend` in `openmaic.yml` (step 2).
+**1. Run a VoxCPM backend.** Three deployment styles, all behind the same OpenMAIC adapter. You toggle which one in Settings.
 
 | Backend | Endpoint | When to use |
 | --- | --- | --- |
@@ -1361,25 +1361,25 @@ Without `openmaic.yml`, the legacy variables `PDF_MINERU_CLOUD_API_KEY` or `PDF_
 
 See the [VoxCPM repo](https://github.com/OpenBMB/VoxCPM) for backend setup.
 
-**2. Point OpenMAIC at it.** VoxCPM2 runs on your own network, so the deployment configures it in `openmaic.yml` (no API key required); workspaces cannot add it in **Settings → Models**:
+**2. Point OpenMAIC at it.** Open **Settings → Model Services → Text-to-Speech → VoxCPM2**, pick the backend, and paste your Base URL. The Request URL preview confirms OpenMAIC will hit the right endpoint.
+
+<img src="assets/voxcpm/voxcpm-connection.png" width="85%" alt="VoxCPM2 connection settings: backend selector, Base URL, model" />
+
+Or configure it on the server for everyone (no API key required), in `openmaic.yml`:
 
 ```yaml
 providers:
   voxcpm:
     preset: voxcpm-tts
     baseUrl: http://localhost:8000/v1
-    options:
-      backend: vllm-omni          # vllm-omni (default) | python-api | nano-vllm
 
 slots:
   tts: voxcpm
 ```
 
-Voice registration works only on the `vllm-omni` backend; `python-api` and `nano-vllm` send the voice prompt with each request.
+Without `openmaic.yml`, the legacy `TTS_VOXCPM_BASE_URL=http://localhost:8000/v1` does the same.
 
-Without `openmaic.yml`, the legacy `TTS_VOXCPM_BASE_URL=http://localhost:8000/v1` sets the endpoint but cannot choose a backend.
-
-**3. Manage voices.** With VoxCPM2 assigned to the `tts` slot, open **Settings → Voice → VoxCPM voices** (the voice manager appears only when `tts` resolves to a `voxcpm-tts` provider). Three voice modes:
+**3. Manage voices.** Three voice modes, all under **Settings → Model Services → Text-to-Speech → VoxCPM2 → VoxCPM Voices**:
 
 <img src="assets/voxcpm/voxcpm-voice-manager.png" width="85%" alt="VoxCPM2 VoxCPM Voices section with Auto, Prompt and Clone modes" />
 
