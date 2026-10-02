@@ -8,6 +8,7 @@
  * operator transport, which re-validates every redirect hop.
  */
 import { attachModelFallback } from '@/lib/ai/model-fallbacks';
+import { getProviderPreset } from '@/lib/config/provider-presets';
 import { getModel, getProvider, isProviderKeyRequired } from '@/lib/ai/providers';
 import { fetchWithRedirectValidation } from '@/lib/server/fetch-with-redirect-validation';
 import { clientBaseUrlLlmFetch } from '@/lib/server/llm-provider-fetch';
@@ -86,8 +87,13 @@ export async function languageModelFor(
     if (problem) throw new ModelConfigurationError('INVALID_URL', problem);
   }
   const apiKey = target.apiKey ?? '';
+  // A self-hosted OpenAI-compatible server usually takes no key: its preset
+  // says so, while the registry entry it rides on (OpenAI's) asks for one.
+  // Every other preset keeps the registry's rule, so OpenAI itself still
+  // needs a key.
+  const keyOptional = getProviderPreset(target.presetId)?.apiKeyOptional === true;
   // Checked here rather than left to the adapter, so the refusal is typed.
-  if (isProviderKeyRequired(registryId) && !apiKey) {
+  if (!keyOptional && isProviderKeyRequired(registryId) && !apiKey) {
     throw new ModelConfigurationError(
       'MISSING_API_KEY',
       `API key required for provider: ${registryId} (the configured provider "${target.providerId}" has no key)`,
@@ -97,6 +103,7 @@ export async function languageModelFor(
     providerId: registryId,
     modelId,
     apiKey,
+    ...(keyOptional ? { requiresApiKey: false } : {}),
     baseUrl: target.baseUrl,
     proxy: target.proxy,
     fetchImpl: userEndpoint ? clientBaseUrlLlmFetch : fetchWithRedirectValidation,

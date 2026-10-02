@@ -30,6 +30,8 @@ import {
 import { presetIdFor, tokenPlanPresetId } from '@/lib/config/preset-ids';
 import { STAGE_SLOTS, type SlotCapability, type SlotId } from '@/lib/config/model-slots';
 import type { LlmStage } from '@/lib/server/model-routes';
+import { getCatalogThinkingCapability } from '@/lib/ai/model-metadata';
+import type { ThinkingCapability } from '@/lib/types/provider';
 
 export interface PresetCapabilityTarget {
   /** Entry of that capability's built-in registry that serves the calls. */
@@ -47,12 +49,22 @@ export interface ProviderPreset {
   name: string;
   kind: 'single' | 'token-plan';
   capabilities: Partial<Record<SlotCapability, PresetCapabilityTarget>>;
-  /** Assignments the first-run wizard fills for slots that are still empty. */
+  /**
+   * Assignments the preset recommends: the first-run wizard fills the slots
+   * still empty with them; connecting a token plan applies them over the
+   * slots (lib/model-settings/token-plan.ts).
+   */
   recommended?: Partial<Record<SlotId, string>>;
   /** True when the preset needs a caller-supplied base URL. */
   requiresBaseUrl?: boolean;
   /** True when the preset authenticates with a key pair (`credentials`) rather than one key. */
   requiresCredentials?: boolean;
+  /**
+   * True when a key is optional although the registry entry serving the
+   * preset asks for one: a self-hosted OpenAI-compatible server (Ollama,
+   * vLLM) usually takes none.
+   */
+  apiKeyOptional?: true;
   /**
    * False when the registry entry only supplies the transport, so its model
    * catalogue says nothing about the models behind the endpoint (a custom
@@ -61,7 +73,12 @@ export interface ProviderPreset {
   trustsModelCatalogue?: false;
 }
 
-type RegistryEntry = { name?: string; requiresBaseUrl?: boolean; requiresCredentials?: boolean };
+type RegistryEntry = {
+  name?: string;
+  requiresApiKey?: boolean;
+  requiresBaseUrl?: boolean;
+  requiresCredentials?: boolean;
+};
 
 const REGISTRIES: Record<SlotCapability, Record<string, RegistryEntry>> = {
   chat: PROVIDERS,
@@ -120,6 +137,7 @@ function singlePresets(): ProviderPreset[] {
     capabilities: { chat: { registryId: 'openai' } },
     requiresBaseUrl: true,
     trustsModelCatalogue: false,
+    apiKeyOptional: true,
   });
   return presets;
 }
@@ -143,6 +161,10 @@ export function tokenPlanToPreset(plan: TokenPlanPreset): ProviderPreset {
     };
     const root = capability === 'chat' ? 'llm' : capability;
     if (lead) recommended[root as SlotId] = lead;
+    // A capability without models to pick (web search) is served by the
+    // provider alone: the recommendation names its registry entry, which
+    // becomes a provider-only assignment.
+    else if (!target.defaultModels?.length) recommended[root as SlotId] = target.providerId;
     for (const [stage, model] of Object.entries(target.stageRoutes ?? {})) {
       const slot = STAGE_SLOTS[stage as LlmStage];
       if (slot) recommended[slot] = model;
@@ -177,9 +199,58 @@ export function registryDefaultBaseUrl(
   return entry?.defaultBaseUrl || undefined;
 }
 
+/**
+ * Whether a capability's provider needs a key to be called (a local server or
+ * a keyless search does not). Unknown entries are taken to need one.
+ */
+export function registryRequiresApiKey(capability: SlotCapability, registryId: string): boolean {
+  return REGISTRIES[capability][registryId]?.requiresApiKey !== false;
+}
+
 export interface CatalogueModel {
   id: string;
   name: string;
+  /** What the registry says the model can do (chat models), for the settings to show. */
+  capabilities?: {
+    streaming?: boolean;
+    tools?: boolean;
+    vision?: boolean;
+    thinking?: ThinkingCapability;
+  };
+  contextWindow?: number;
+  outputWindow?: number;
+}
+
+type RegistryModel = {
+  id: string;
+  name?: string;
+  capabilities?: CatalogueModel['capabilities'];
+  contextWindow?: number;
+  outputWindow?: number;
+};
+
+/**
+ * A model as the catalogue lists it: its name and what the registry knows of
+ * it. A chat model the registry does not list (a token plan's, or one a
+ * provider pins) still gets the thinking controls the metadata knows for it.
+ */
+export function catalogueModel(
+  capability: SlotCapability,
+  registryId: string,
+  id: string,
+  known?: RegistryModel,
+): CatalogueModel {
+  const thinking =
+    known?.capabilities?.thinking ??
+    (capability === 'chat' ? getCatalogThinkingCapability(registryId, id) : undefined);
+  const capabilities = { ...known?.capabilities, ...(thinking ? { thinking } : {}) };
+  return {
+    id,
+    name: known?.name ?? id,
+    ...(Object.keys(capabilities).length ? { capabilities } : {}),
+    ...(known?.contextWindow ? { contextWindow: known.contextWindow } : {}),
+    ...(known?.outputWindow ? { outputWindow: known.outputWindow } : {}),
+  };
 }
 
 /**
@@ -190,10 +261,25 @@ export interface CatalogueModel {
 export function presetModels(preset: ProviderPreset, capability: SlotCapability): CatalogueModel[] {
   const target = preset.capabilities[capability];
   if (!target) return [];
-  const entry = REGISTRIES[capability][target.registryId] as
-    | { models?: readonly { id: string; name?: string }[] }
-    | undefined;
-  const known = entry?.models ?? [];
+  const known = registryModels(capability, target.registryId);
   const ids = target.models ?? known.map((model) => model.id);
-  return ids.map((id) => ({ id, name: known.find((model) => model.id === id)?.name ?? id }));
+  return ids.map((id) =>
+    catalogueModel(
+      capability,
+      target.registryId,
+      id,
+      known.find((model) => model.id === id),
+    ),
+  );
+}
+
+/** The models a capability's registry entry lists. */
+export function registryModels(
+  capability: SlotCapability,
+  registryId: string,
+): readonly RegistryModel[] {
+  const entry = REGISTRIES[capability][registryId] as
+    | { models?: readonly RegistryModel[] }
+    | undefined;
+  return entry?.models ?? [];
 }

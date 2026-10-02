@@ -1,25 +1,18 @@
 'use client';
 
 import { forwardRef, useState } from 'react';
-import { ChevronDown, Lock, Plug } from 'lucide-react';
+import { ChevronDown, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import type {
-  ApplyResult,
-  ModelSettingsChange,
-  ModelSettingsView,
-  SlotView,
-  ApplyChange,
-} from '@/lib/model-settings/client';
+import type { ModelSettingsView, SlotView, ApplyChange } from '@/lib/model-settings/client';
 import { stationLit, type PlacedStation, type StationLine } from '@/lib/model-settings/diagram';
-import { switchOffChange, switchOnChange, type OffMemory } from '@/lib/model-settings/edit';
+import { providersFor, type OffMemory } from '@/lib/model-settings/edit';
+import { flipSwitch, switchChecked } from '@/lib/model-settings/services';
 import { cn } from '@/lib/utils';
 
-import { FirstRunSetup, type SetupOutcome } from './first-run-setup';
 import { SlotPicker } from './slot-picker';
 import { MS, SlotIcon, applyErrorText, slotName } from './slot-meta';
 import { lineText } from './station-text';
@@ -27,18 +20,17 @@ import { lineText } from './station-text';
 type T = (key: string, options?: Record<string, unknown>) => string;
 type Apply = ApplyChange;
 
-/** Shared by every node: which picker is open, how to apply, where providers are managed. */
+/** Shared by every node: which picker is open, how to apply, where services are managed. */
 export interface NodeContext {
   view: ModelSettingsView;
   apply: Apply;
   t: T;
   openKey: string | null;
   setOpenKey: (key: string | null) => void;
+  /** Open Model Services, where the services the slots use are set up. */
   onManageProviders: () => void;
   /** What each switched-off slot held, to restore when it is switched on. */
   offMemory: OffMemory;
-  /** Where a first-run setup that added its provider reports (outlives the card). */
-  onSetupOutcome: (outcome: SetupOutcome) => void;
 }
 
 function SlotLine({
@@ -58,11 +50,16 @@ function SlotLine({
   const key = line.labelKey ? t(`${MS}.stations.lines.${line.labelKey}`) : undefined;
   const open = openKey === slot.slot;
   const [switching, setSwitching] = useState(false);
+  // A switch wherever there is something to turn on or off: a slot that runs
+  // (speech input runs in the browser while it is unset), one switched off,
+  // or one some service could serve.
   const toggleable =
     !!line.toggle &&
     !slot.locked &&
     (slot.effective.status === 'assigned' ||
-      (slot.effective.status === 'disabled' && slot.assignment === null));
+      (slot.effective.status === 'disabled' && slot.assignment === null) ||
+      (slot.effective.status === 'unassigned' &&
+        (slot.capability === 'asr' || providersFor(view, slot.capability).length > 0)));
 
   const content = (
     <>
@@ -166,24 +163,17 @@ function SlotLine({
       )}
       {toggleable && (
         <Switch
-          checked={slot.effective.status === 'assigned'}
+          checked={switchChecked(slot)}
           disabled={switching}
           aria-label={t(`${MS}.card.toggle`, { name })}
           className="mr-1 h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
           onCheckedChange={async (on) => {
-            const change = on
-              ? switchOnChange(slot, ctx.offMemory)
-              : switchOffChange(slot, ctx.offMemory);
-            // Not known what it held before: let the user choose rather than guess.
-            if (!change) {
-              setOpenKey(slot.slot);
-              return;
-            }
             setSwitching(true);
             try {
-              const result = await apply(change, view);
-              if (on && result.ok) ctx.offMemory.delete(slot.slot);
-              if (!result.ok) toast.error(applyErrorText(result, t));
+              const result = await flipSwitch(apply, view, slot, on, ctx.offMemory);
+              // Nothing known to restore and nothing to serve it: let the user choose.
+              if (result === 'needs-service') setOpenKey(slot.slot);
+              else if (!result.ok) toast.error(applyErrorText(result, t));
             } finally {
               setSwitching(false);
             }
@@ -203,14 +193,14 @@ export const StationNode = forwardRef<
     x: number;
     y: number;
     width: number;
-    /** Root only: the first-run setup instead of an empty line. */
-    setup?: 'offer' | 'blocked';
+    /** Root only: nothing offers a language model yet (set one up in Model Services). */
+    empty?: 'workspace' | 'server';
     /** Expandable stations: whether the children are drawn, and how to toggle it. */
     expanded?: boolean;
     onExpand?: () => void;
     followers?: number;
   }
->(function StationNode({ station, ctx, x, y, width, setup, expanded, onExpand, followers }, ref) {
+>(function StationNode({ station, ctx, x, y, width, empty, expanded, onExpand, followers }, ref) {
   const { t } = ctx;
   const first = station.lines[0].view;
   const lit = stationLit(station);
@@ -222,10 +212,8 @@ export const StationNode = forwardRef<
   const ownChildren = station.children.filter(
     (slot) => slot.assignment !== undefined || slot.locked,
   ).length;
-  const setupKey = 'setup:llm';
-  // While setup is offered and nothing offers chat, the empty line has nothing to pick from.
-  const showLines =
-    !root || setup !== 'offer' || ctx.view.providers.some((p) => p.capabilities.chat);
+  // With nothing that offers a language model, the root's line has nothing to pick from.
+  const showLines = !root || !empty;
 
   return (
     <div
@@ -292,48 +280,21 @@ export const StationNode = forwardRef<
           />
         ))}
 
-      {root && setup === 'offer' && (
+      {root && empty === 'workspace' && (
         <div className="flex flex-col items-start gap-2 px-1.5 pb-0.5 pt-2">
-          <p className="text-xs leading-relaxed text-muted-foreground">{t(`${MS}.setup.prompt`)}</p>
-          <Popover
-            open={ctx.openKey === setupKey}
-            onOpenChange={(next) => ctx.setOpenKey(next ? setupKey : null)}
-          >
-            <PopoverTrigger asChild>
-              <Button size="sm">
-                <Plug className="size-3.5" aria-hidden="true" />
-                {t(`${MS}.setup.open`)}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="start"
-              sideOffset={6}
-              collisionPadding={12}
-              className="w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl p-0"
-            >
-              <FirstRunSetup
-                view={ctx.view}
-                apply={ctx.apply}
-                onOutcome={(outcome) => {
-                  ctx.setOpenKey(null);
-                  ctx.onSetupOutcome(outcome);
-                }}
-                t={t}
-              />
-            </PopoverContent>
-          </Popover>
+          <p className="text-xs leading-relaxed text-muted-foreground">{t(`${MS}.empty.prompt`)}</p>
           <button
             type="button"
             onClick={ctx.onManageProviders}
             className="text-xs font-medium text-primary underline-offset-2 hover:underline"
           >
-            {t(`${MS}.setup.orProvider`)}
+            {t(`${MS}.empty.open`)}
           </button>
         </div>
       )}
-      {root && setup === 'blocked' && (
+      {root && empty === 'server' && (
         <p className="px-1.5 pt-1 text-xs leading-relaxed text-muted-foreground">
-          {t(`${MS}.setup.askAdmin`)}
+          {t(`${MS}.empty.askAdmin`)}
         </p>
       )}
 

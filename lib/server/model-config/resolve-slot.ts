@@ -11,11 +11,14 @@
  * This is pure: it takes the layers as input and builds no SDK clients.
  * Nothing calls it yet.
  */
+import { officialRegionalEndpoint } from '@/lib/config/official-endpoints';
 import { PROVIDERS } from '@/lib/ai/providers';
 import { findModelById } from '@/lib/ai/model-aliases';
+import { withoutThinkingEffort } from '@/lib/ai/thinking-config';
 import {
   getSlot,
   slotLineage,
+  slotRefusesThinkingEffort,
   type SlotCapability,
   type SlotId,
   type SlotRequirement,
@@ -134,11 +137,28 @@ function findProvider(providerId: string, layers: readonly ModelConfigLayer[]) {
   return undefined;
 }
 
+/**
+ * What a model reference (`providerId:modelId`, or the provider alone)
+ * resolves to for a capability over the layers, outside any slot: the target
+ * the settings test when they check a provider. Throws SlotResolutionError
+ * when the provider is not declared or does not offer the capability.
+ */
+export function resolveModelReference(
+  ref: string,
+  capability: SlotCapability,
+  layers: readonly ModelConfigLayer[],
+  { providerOnly = false }: { providerOnly?: boolean } = {},
+): ResolvedModelTarget {
+  return resolveTarget(ref, capability, inPrecedence(layers), 'reference', providerOnly);
+}
+
 function resolveTarget(
   ref: string,
   capability: SlotCapability,
   layers: readonly ModelConfigLayer[],
   at: string,
+  /** The provider's connection alone: a chat reference without a model is accepted. */
+  providerOnly = false,
 ): ResolvedModelTarget {
   let parsed: { providerId: string; modelId?: string };
   try {
@@ -147,7 +167,7 @@ function resolveTarget(
     throw new SlotResolutionError(`${at}: invalid model reference`);
   }
   const { providerId, modelId } = parsed;
-  if (modelId === undefined && capability === 'chat') {
+  if (modelId === undefined && capability === 'chat' && !providerOnly) {
     throw new SlotResolutionError(`${at}: a chat model needs "providerId:modelId"`);
   }
   const found = findProvider(providerId, layers);
@@ -163,13 +183,21 @@ function resolveTarget(
       `${at}: the provider (preset "${preset.id}") does not offer ${capability}`,
     );
   }
+  // A service whose official endpoint is per region (Azure Speech) names its
+  // region with an endpoint of its own: one on the official host is the
+  // vendor's, not a custom one, and is used in its normalised form. Anything
+  // else stays custom (which only the deployment may configure for media).
+  const official =
+    provider.baseUrl !== undefined
+      ? officialRegionalEndpoint(capability, target.registryId, provider.baseUrl)
+      : undefined;
   return {
     providerId,
     providerSource: found.source,
     presetId: preset.id,
     registryId: target.registryId,
-    baseUrl: provider.baseUrl ?? target.baseUrl,
-    ...(provider.baseUrl !== undefined ? { customBaseUrl: true as const } : {}),
+    baseUrl: official ?? provider.baseUrl ?? target.baseUrl,
+    ...(provider.baseUrl !== undefined && !official ? { customBaseUrl: true as const } : {}),
     ...(provider.apiKey !== undefined ? { apiKey: provider.apiKey } : {}),
     ...(provider.credentials !== undefined ? { credentials: provider.credentials } : {}),
     ...(provider.proxy !== undefined ? { proxy: provider.proxy } : {}),
@@ -258,12 +286,17 @@ export function resolveSlot(
       fallback && requires.length
         ? requires.map((requirement) => checkRequirement(requirement, capability, fallback))
         : undefined;
+    // A slot that may not carry a thinking effort drops one it inherits; one
+    // set on the slot itself is refused when the configuration is saved.
+    const own = 'thinking' in spec ? (spec.thinking as ThinkingConfig | undefined) : undefined;
+    const thinking =
+      node !== slot && slotRefusesThinkingEffort(slot) ? withoutThinkingEffort(own) : own;
     return {
       ...base,
       ...target,
       status: 'assigned',
       capability,
-      ...('thinking' in spec && spec.thinking ? { thinking: spec.thinking as ThinkingConfig } : {}),
+      ...(thinking ? { thinking } : {}),
       ...('api' in spec && spec.api ? { api: spec.api } : {}),
       ...('contextWindow' in spec && spec.contextWindow
         ? { contextWindow: spec.contextWindow }

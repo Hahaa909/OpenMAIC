@@ -3,10 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelConfigLayer } from '@/lib/server/model-config/resolve-slot';
 import {
   applyModelSettingsChange,
+  importModelSettings,
   modelSettingsView,
   ModelSettingsError,
 } from '@/lib/server/model-config/settings';
 import { setDeploymentConfigForTests } from '@/lib/server/model-config/runtime';
+import {
+  tokenPlanAssignments,
+  tokenPlanConflicts,
+  tokenPlanRecommendation,
+} from '@/lib/model-settings/token-plan';
 
 const deployment = (config: ModelConfigLayer['config']) =>
   setDeploymentConfigForTests({
@@ -47,10 +53,15 @@ describe('modelSettingsView', () => {
       { id: 'mine', preset: 'openai', source: 'workspace', key: { set: true, mask: '…9876' } },
     ]);
     // Each provider lists the models it serves per capability, for the pickers.
-    expect(view.providers[0].capabilities.chat?.models).toContainEqual({
-      id: 'deepseek-v4-pro',
-      name: 'DeepSeek V4 Pro',
-    });
+    expect(view.providers[0].capabilities.chat?.models).toContainEqual(
+      expect.objectContaining({ id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }),
+    );
+    // With what the registry knows of each model, and the entry that serves it.
+    expect(view.providers[0].capabilities.chat?.registryId).toBe('deepseek');
+    expect(
+      view.providers[0].capabilities.chat?.models.find((model) => model.id === 'deepseek-v4-pro')
+        ?.capabilities,
+    ).toMatchObject({ tools: true });
     const slot = (id: string) => view.slots.find((entry) => entry.slot === id)!;
     expect(slot('llm')).toMatchObject({ locked: true, effective: { source: 'deployment' } });
     expect(slot('video')).toMatchObject({ locked: true, effective: { status: 'disabled' } });
@@ -102,6 +113,26 @@ describe('modelSettingsView', () => {
     const json = JSON.stringify(modelSettingsView(null));
     expect(json).not.toContain('gateway.internal');
     expect(json).not.toContain('endpoint-secret');
+  });
+
+  it("offers an OpenAI-compatible deployment provider's listed models for chat", () => {
+    deployment({
+      providers: {
+        gateway: {
+          preset: 'openai-compatible',
+          apiKey: 'sk-operator',
+          baseUrl: 'https://gateway.example/v1',
+          models: ['gpt-5.1', 'gpt-5.4-mini', 'deepseek-v4-flash-0731'],
+        },
+      },
+    });
+    const gateway = modelSettingsView(null).providers.find((entry) => entry.id === 'gateway')!;
+    expect(gateway).toMatchObject({ source: 'deployment', preset: 'openai-compatible' });
+    expect(gateway.capabilities.chat?.models.map((model) => model.id)).toEqual([
+      'gpt-5.1',
+      'gpt-5.4-mini',
+      'deepseek-v4-flash-0731',
+    ]);
   });
 
   it('never shows credentials a stored endpoint carries', () => {
@@ -207,6 +238,34 @@ describe('applyModelSettingsChange', () => {
     expect(await applyModelSettingsChange(next, { kind: 'slots', clear: ['image'] })).toEqual({
       slots: { 'course.outline': 'operator:deepseek-v4-flash' },
     });
+  });
+
+  it('refuses a thinking effort on the agent slot, whatever else the change sets', async () => {
+    await expect(
+      applyModelSettingsChange(null, {
+        kind: 'slots',
+        set: {
+          'course.outline': 'operator:deepseek-v4-flash',
+          agent: {
+            model: 'operator:deepseek-v4-flash',
+            thinking: { mode: 'enabled', effort: 'high' },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_ASSIGNMENT',
+      message: expect.stringContaining('slots.agent.thinking.effort'),
+    });
+    // The same effort on another slot, or no effort on the agent, is saved.
+    expect(
+      await applyModelSettingsChange(null, {
+        kind: 'slots',
+        set: {
+          classroom: { model: 'operator:deepseek-v4-flash', thinking: { effort: 'high' } },
+          agent: { model: 'operator:deepseek-v4-flash', thinking: { mode: 'enabled' } },
+        },
+      }),
+    ).toMatchObject({ slots: { agent: { thinking: { mode: 'enabled' } } } });
   });
 
   it('refuses an assignment that does not resolve', async () => {
@@ -332,6 +391,182 @@ describe('applyModelSettingsChange', () => {
     ).resolves.toMatchObject({ slots: { 'course.outline': 'mine:gpt-5.6', video: null } });
   });
 
+  it('drops the assignments a provider can no longer serve once its key is removed', async () => {
+    const current = {
+      providers: {
+        plan: { preset: 'tokendance', apiKey: 'sk-plan-key-0001' },
+        local: { preset: 'ollama', baseUrl: 'https://1.1.1.1/v1', models: ['llama4'] },
+      },
+      slots: {
+        classroom: 'plan:cogevol-base',
+        'course.outline': { model: 'operator:deepseek-v4-pro', fallback: 'plan:cogevol-base' },
+        webSearch: 'plan',
+        'agent.title': 'local:llama4',
+        image: null,
+      },
+    };
+    // A new key keeps them.
+    await expect(
+      applyModelSettingsChange(current, {
+        kind: 'provider',
+        id: 'plan',
+        preset: 'tokendance',
+        apiKey: 'sk-plan-key-0002',
+      }),
+    ).resolves.toMatchObject({ slots: current.slots });
+    // No key: the slots that used the plan follow their parents again.
+    const next = await applyModelSettingsChange(current, {
+      kind: 'provider',
+      id: 'plan',
+      preset: 'tokendance',
+      apiKey: '',
+    });
+    expect(next.providers?.plan).toEqual({ preset: 'tokendance' });
+    expect(next.slots).toEqual({ 'agent.title': 'local:llama4', image: null });
+    // A provider that needs no key keeps what it serves.
+    const keyless = await applyModelSettingsChange(next, {
+      kind: 'provider',
+      id: 'local',
+      preset: 'ollama',
+      apiKey: '',
+    });
+    expect(keyless.slots).toEqual({ 'agent.title': 'local:llama4', image: null });
+  });
+
+  it("connecting a token plan applies the plan's recommendation over the workspace's own picks", async () => {
+    // The workspace already picked its own models for some of the slots the plan recommends.
+    let config = await applyModelSettingsChange(null, {
+      kind: 'provider',
+      id: 'mine',
+      preset: 'openai',
+      apiKey: 'sk-mine-key-0001',
+    });
+    config = await applyModelSettingsChange(config, {
+      kind: 'slots',
+      set: {
+        'course.content.slide': 'mine:gpt-5.6',
+        'course.content.interactive': {
+          model: 'mine:gpt-5.6',
+          fallback: 'operator:deepseek-v4-pro',
+        },
+        webSearch: null,
+        'course.outline': 'mine:gpt-5.6',
+      },
+    });
+    config = await applyModelSettingsChange(config, {
+      kind: 'provider',
+      id: 'tokendance',
+      preset: 'tokendance',
+      apiKey: 'sk-plan-key-0001',
+    });
+    const view = modelSettingsView({ config, revision: 3, unreadableSecrets: [] });
+    const preset = view.presets.find((entry) => entry.id === 'tokendance')!;
+    const provider = view.providers.find((entry) => entry.id === 'tokendance')!;
+    const recommendation = tokenPlanRecommendation(view, preset, provider);
+    // The deployment's locked slots (llm, video) are not part of it.
+    expect(recommendation).toEqual({
+      'course.content.slide': 'tokendance:cogevol-slide-0828',
+      'course.content.interactive': 'tokendance:cogevol-interactive-0828',
+      tts: 'tokendance:minimax-speech-2.8-turbo',
+      image: 'tokendance:seedream-5.0-lite',
+      webSearch: 'tokendance',
+    });
+    expect(tokenPlanConflicts(view, recommendation).map((c) => c.slot.slot)).toEqual([
+      'course.content.slide',
+      'course.content.interactive',
+      'webSearch',
+    ]);
+
+    const set = tokenPlanAssignments(view, recommendation, 'overwrite');
+    expect(set).toEqual({
+      'course.content.slide': 'tokendance:cogevol-slide-0828',
+      // A replaced language-model assignment keeps its fallback.
+      'course.content.interactive': {
+        model: 'tokendance:cogevol-interactive-0828',
+        fallback: 'operator:deepseek-v4-pro',
+      },
+      tts: 'tokendance:minimax-speech-2.8-turbo',
+      image: 'tokendance:seedream-5.0-lite',
+      webSearch: 'tokendance',
+    });
+    const filled = await applyModelSettingsChange(config, { kind: 'slots', set });
+    const after = modelSettingsView({ config: filled, revision: 4, unreadableSecrets: [] });
+    const effective = (id: string) => after.slots.find((slot) => slot.slot === id)?.effective;
+    expect(effective('webSearch')).toMatchObject({
+      status: 'assigned',
+      providerId: 'tokendance',
+      registryId: 'bocha',
+    });
+    expect(effective('course.content.slide')).toMatchObject({
+      providerId: 'tokendance',
+      modelId: 'cogevol-slide-0828',
+    });
+    // A stage the plan does not name keeps the workspace's pick; locked slots stay the deployment's.
+    expect(effective('course.outline')).toMatchObject({ providerId: 'mine', modelId: 'gpt-5.6' });
+    expect(effective('llm')).toMatchObject({ source: 'deployment', providerId: 'operator' });
+    expect(effective('video')).toMatchObject({ status: 'disabled', source: 'deployment' });
+
+    // Keeping the workspace's setup fills only the slots with nothing of their own.
+    expect(tokenPlanAssignments(view, recommendation, 'keep')).toEqual({
+      tts: 'tokendance:minimax-speech-2.8-turbo',
+      image: 'tokendance:seedream-5.0-lite',
+    });
+
+    // Disconnecting frees the slots that named the plan: they follow their parents again.
+    const removed = await applyModelSettingsChange(filled, {
+      kind: 'remove-provider',
+      id: 'tokendance',
+    });
+    expect(removed.slots).toEqual({ 'course.outline': 'mine:gpt-5.6' });
+  });
+
+  it('connecting a token plan without a deployment applies the default model and the stages', async () => {
+    deployment({});
+    let config = await applyModelSettingsChange(null, {
+      kind: 'provider',
+      id: 'ds',
+      preset: 'deepseek',
+      apiKey: 'sk-ds-key-0001',
+    });
+    config = await applyModelSettingsChange(config, {
+      kind: 'slots',
+      set: { llm: 'ds:deepseek-v4-pro', 'course.content.slide': 'ds:deepseek-v4-flash' },
+    });
+    config = await applyModelSettingsChange(config, {
+      kind: 'provider',
+      id: 'tokendance',
+      preset: 'tokendance',
+      apiKey: 'sk-plan-key-0001',
+    });
+    const view = modelSettingsView({ config, revision: 3, unreadableSecrets: [] });
+    const preset = view.presets.find((entry) => entry.id === 'tokendance')!;
+    const provider = view.providers.find((entry) => entry.id === 'tokendance')!;
+    const set = tokenPlanAssignments(
+      view,
+      tokenPlanRecommendation(view, preset, provider),
+      'overwrite',
+    );
+    expect(set).toMatchObject({
+      llm: 'tokendance:cogevol-base',
+      'course.content.slide': 'tokendance:cogevol-slide-0828',
+      'course.content.interactive': 'tokendance:cogevol-interactive-0828',
+      video: 'tokendance:minimax-h3',
+    });
+    const filled = await applyModelSettingsChange(config, { kind: 'slots', set });
+    expect(filled.slots).toMatchObject({
+      llm: 'tokendance:cogevol-base',
+      'course.content.slide': 'tokendance:cogevol-slide-0828',
+    });
+    // Removing the plan's key (rather than the plan) frees its slots as well.
+    const keyless = await applyModelSettingsChange(filled, {
+      kind: 'provider',
+      id: 'tokendance',
+      preset: 'tokendance',
+      apiKey: '',
+    });
+    expect(keyless.slots).toBeUndefined();
+  });
+
   it('drops the assignments of a removed provider', async () => {
     const next = await applyModelSettingsChange(
       {
@@ -345,5 +580,34 @@ describe('applyModelSettingsChange', () => {
       { kind: 'remove-provider', id: 'mine' },
     );
     expect(next).toEqual({ slots: { image: null } });
+  });
+});
+
+describe('importModelSettings', () => {
+  it('imports a capability turned off, except where the deployment locks the slot', async () => {
+    deployment({ slots: { video: 'operator-video' } });
+    const result = await importModelSettings(null, {
+      slots: { tts: null, image: null, video: null },
+    });
+    expect(result.imported).toEqual([
+      { kind: 'slot', id: 'tts' },
+      { kind: 'slot', id: 'image' },
+    ]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ kind: 'slot', id: 'video', code: 'SLOT_LOCKED' }),
+    ]);
+    expect(result.config.slots).toEqual({ tts: null, image: null });
+  });
+
+  it('names the kind of every item: a provider and a slot may share an id', async () => {
+    // A provider called `tts` that the server refuses, beside the `tts` slot it takes.
+    const result = await importModelSettings(null, {
+      providers: { tts: { preset: 'azure-tts', apiKey: 'k', baseUrl: 'https://evil.com' } },
+      slots: { tts: null },
+    });
+    expect(result.imported).toEqual([{ kind: 'slot', id: 'tts' }]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ kind: 'provider', id: 'tts', code: 'INVALID_PROVIDER' }),
+    ]);
   });
 });

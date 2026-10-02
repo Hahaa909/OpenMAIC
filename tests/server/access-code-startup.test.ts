@@ -13,6 +13,7 @@ vi.mock('@/lib/persistence/asset-collector-schedule', () => ({
   startAssetCollectorSchedule: vi.fn(),
 }));
 vi.mock('@/lib/server/config-validation', () => ({ validateServerConfig: vi.fn() }));
+vi.mock('@/lib/server/instance-secret-check', () => ({ warnAboutInstanceSecret: vi.fn() }));
 vi.mock('@/lib/config/feature-flags', () => ({ isAgentRuntimeConfigured: () => false }));
 
 beforeEach(() => {

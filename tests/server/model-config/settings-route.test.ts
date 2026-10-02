@@ -177,6 +177,44 @@ describe('/api/model-config', () => {
     expect((await locked.json()).error.code).toBe('SLOT_LOCKED');
   });
 
+  it('refuses a thinking effort on the agent slot, and drops the one it inherits', async () => {
+    const refused = await put('alice', null, {
+      kind: 'slots',
+      set: { agent: { model: 'operator:deepseek-v4-flash', thinking: { effort: 'high' } } },
+    });
+    expect(refused.status).toBe(400);
+    const error = (await refused.json()).error;
+    expect(error.code).toBe('INVALID_ASSIGNMENT');
+    expect(error.message).toContain('the agent slot cannot set a thinking effort');
+    expect((await get('alice')).status).toBe(200);
+    expect((await (await get('alice')).json()).revision).toBeNull();
+
+    // On/off without an effort is fine on the agent itself.
+    const toggled = await put('alice', null, {
+      kind: 'slots',
+      set: { agent: { model: 'operator:deepseek-v4-flash', thinking: { mode: 'disabled' } } },
+    });
+    expect(toggled.status).toBe(200);
+
+    // A level picked for the default model is saved, and the agent that
+    // follows it runs without the effort.
+    const saved = await put('alice', 1, {
+      kind: 'slots',
+      set: {
+        llm: { model: 'operator:deepseek-v4-flash', thinking: { mode: 'enabled', effort: 'max' } },
+      },
+      clear: ['agent'],
+    });
+    expect(saved.status).toBe(200);
+    const { resolveAgentDriverModel } =
+      await import('@/lib/server/agent-runtime/agent-driver-model');
+    const driver = await resolveAgentDriverModel('user:alice');
+    expect(driver.connection).toMatchObject({
+      modelId: 'deepseek-v4-flash',
+      thinkingConfig: { mode: 'enabled' },
+    });
+  });
+
   it('answers a refused credential with 401 and a malformed body with 400', async () => {
     expect((await get('bad')).status).toBe(401);
     const malformed = await put('alice', 'x' as never, { kind: 'slots' });
@@ -206,18 +244,22 @@ describe('/api/model-config', () => {
     expect(response.status).toBe(200);
     let answer = await response.json();
     expect(JSON.stringify(answer)).not.toContain(SECRET);
-    expect(answer.imported).toEqual(['mine', 'llm']);
-    expect(answer.skipped.map((entry: { item: string }) => entry.item)).toEqual([
-      'operator',
-      'local',
-      'video',
+    expect(answer.imported).toEqual([
+      { kind: 'provider', id: 'mine' },
+      { kind: 'slot', id: 'llm' },
     ]);
+    expect(
+      answer.skipped.map((entry: { kind: string; id: string }) => `${entry.kind}:${entry.id}`),
+    ).toEqual(['provider:operator', 'provider:local', 'slot:video']);
     expect(answer.view.revision).toBe(1);
 
-    // Repeating it changes nothing.
+    // Repeating it changes nothing, and finds its own provider there.
     response = await importFor('alice', proposal);
     answer = await response.json();
     expect(answer.imported).toEqual([]);
+    expect(answer.skipped).toContainEqual(
+      expect.objectContaining({ kind: 'provider', id: 'mine', code: 'EXISTS_SAME' }),
+    );
     expect(answer.view.revision).toBe(1);
 
     // Another owner sees none of it.
@@ -265,12 +307,142 @@ describe('/api/model-config', () => {
     );
     expect(response.status).toBe(200);
     const answer = await response.json();
-    expect(answer.imported).toEqual(['good', 'llm']);
-    expect(answer.skipped.map((entry: { item: string }) => entry.item)).toEqual([
+    expect(answer.imported).toEqual([
+      { kind: 'provider', id: 'good' },
+      { kind: 'slot', id: 'llm' },
+    ]);
+    expect(answer.skipped.map((entry: { id: string }) => entry.id)).toEqual([
       'bad_id',
       'typed',
       'course.outline',
     ]);
+  });
+
+  it('lets the browser drop a provider only when the workspace stores the same key', async () => {
+    const { POST } = await import('@/app/api/model-config/import/route');
+    const importFor = (body: unknown) =>
+      POST(
+        new Request('http://localhost/api/model-config/import', {
+          method: 'POST',
+          headers: { 'x-test-session': 'alice', 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }) as never,
+      );
+    const OTHER = 'sk-browser-other-secret-9876';
+    // The workspace's `openai` holds key A, sealed in the database.
+    expect(
+      (
+        await put('alice', null, {
+          kind: 'provider',
+          id: 'openai',
+          preset: 'openai',
+          apiKey: SECRET,
+        })
+      ).status,
+    ).toBe(200);
+    const stored = await pool.query('SELECT * FROM workspace_model_config');
+    expect(stored.rows).toHaveLength(1);
+    expect(JSON.stringify(stored.rows)).not.toContain(SECRET);
+
+    const codeFor = async (body: unknown) => {
+      const response = await importFor(body);
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      const answer = JSON.parse(text);
+      // Neither key comes back, and the outcome says nothing of them but
+      // equal or not (the view shows its usual mask).
+      for (const key of [SECRET, OTHER]) {
+        expect(text).not.toContain(key);
+        expect(JSON.stringify(answer.skipped)).not.toContain(key.slice(-4));
+      }
+      expect(answer.imported).toEqual([]);
+      return answer.skipped.map((entry: { kind: string; id: string; code: string }) => [
+        entry.kind,
+        entry.id,
+        entry.code,
+      ]);
+    };
+
+    // Key B under the same id: the server keeps A, and says it is not B.
+    expect(await codeFor({ providers: { openai: { preset: 'openai', apiKey: OTHER } } })).toEqual([
+      ['provider', 'openai', 'EXISTS_DIFFERENT'],
+    ]);
+    // No key, or another endpoint: not the same setting either.
+    expect(await codeFor({ providers: { openai: { preset: 'openai' } } })).toEqual([
+      ['provider', 'openai', 'EXISTS_DIFFERENT'],
+    ]);
+    expect(
+      await codeFor({
+        providers: {
+          openai: { preset: 'openai', apiKey: SECRET, baseUrl: 'https://gateway.example.com/v1' },
+        },
+      }),
+    ).toEqual([['provider', 'openai', 'EXISTS_DIFFERENT']]);
+    // Key A: the same setting, which the browser may let go of.
+    expect(await codeFor({ providers: { openai: { preset: 'openai', apiKey: SECRET } } })).toEqual([
+      ['provider', 'openai', 'EXISTS_SAME'],
+    ]);
+
+    // Under another instance secret the stored key cannot be opened: nothing is confirmed.
+    vi.stubEnv('OPENMAIC_SECRET_KEY', 'another-instance-secret');
+    const { resetInstanceKeyForTests } = await import('@/lib/server/secret-box');
+    resetInstanceKeyForTests();
+    expect(await codeFor({ providers: { openai: { preset: 'openai', apiKey: SECRET } } })).toEqual([
+      ['provider', 'openai', 'EXISTS_DIFFERENT'],
+    ]);
+  });
+
+  it('keeps the browser settings, keys included, when the route refuses the proposal', async () => {
+    const { POST } = await import('@/app/api/model-config/import/route');
+    const { runModelSettingsImport } =
+      await import('@/lib/legacy-browser-import/model-settings-import');
+    const { MODEL_SETTINGS_IMPORT_ENDPOINT, MODEL_SETTINGS_IMPORT_KEY } =
+      await import('@/lib/legacy-browser-import/model-settings');
+    const { readUnimported } =
+      await import('@/lib/legacy-browser-import/model-settings-unimported');
+    const { BINDING_ENDPOINT } = await import('@/lib/legacy-browser-import/protocol');
+    const { MemoryStorage } = await import('../../legacy-browser-import/harness');
+
+    // A readable proposal with a valid provider and key, and one field the
+    // route does not expect.
+    const storage = new MemoryStorage();
+    storage.setItem(
+      MODEL_SETTINGS_IMPORT_KEY,
+      JSON.stringify({
+        providers: { mine: { preset: 'openai', apiKey: SECRET } },
+        slots: { llm: 'mine:gpt-5.6' },
+        unexpected: true,
+      }),
+    );
+    const statuses: number[] = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input === BINDING_ENDPOINT) return Response.json({ bound: true });
+      if (input !== MODEL_SETTINGS_IMPORT_ENDPOINT) throw new Error(`unexpected ${input}`);
+      const headers = new Headers(init?.headers);
+      headers.set('x-test-session', 'alice');
+      const response = await POST(
+        new Request(`http://localhost${input}`, { ...init, headers }) as never,
+      );
+      statuses.push(response.status);
+      return response;
+    });
+
+    expect(await runModelSettingsImport({ fetch, storage })).toBe('dropped');
+    expect(statuses).toEqual([400]);
+    expect(storage.getItem(MODEL_SETTINGS_IMPORT_KEY)).toBeNull();
+    expect(readUnimported(storage).items).toEqual([
+      expect.objectContaining({
+        kind: 'provider',
+        id: 'mine',
+        reason: 'refused',
+        settings: { preset: 'openai', apiKey: SECRET },
+      }),
+      expect.objectContaining({ kind: 'slot', id: 'llm', reason: 'refused' }),
+    ]);
+    // Nothing reached the workspace, and nothing is sent again.
+    expect((await (await get('alice')).json()).revision).toBeNull();
+    expect(await runModelSettingsImport({ fetch, storage })).toBe('none');
+    expect(statuses).toEqual([400]);
   });
 
   it('recomputes an import against a settings write that won the race', async () => {
@@ -295,9 +467,9 @@ describe('/api/model-config', () => {
       throw new persistence.WorkspaceConfigConflictError();
     });
     let answer = await (await importOnce()).json();
-    expect(answer.imported).toEqual(['mine']);
+    expect(answer.imported).toEqual([{ kind: 'provider', id: 'mine' }]);
     expect(answer.skipped).toEqual([
-      { item: 'llm', reason: 'The workspace already sets this slot' },
+      { kind: 'slot', id: 'llm', code: 'EXISTS', reason: 'The workspace already sets this slot' },
     ]);
     expect(answer.view.revision).toBe(2);
 

@@ -11,7 +11,7 @@ description: قائمة النماذج المدمجة ومزودي الخدمة 
 
 **الإعدادات المسبقة ذات القدرة الواحدة** تستخدم معرّفات المزودين في الجداول أدناه، واحدًا لكل قدرة: `openai` هو محادثة OpenAI، أما صور OpenAI وتحويل النص إلى كلام والتفريغ الصوتي فهي `openai-image` و`openai-tts` و`openai-whisper`. تختلف ثلاثة معرّفات عن معرّف السجل لأن إعدادًا مسبقًا آخر يستخدمه: بحث MiniMax على الويب هو `minimax-search`، وبحث Doubao على الويب هو `doubao-search`، وتوليد صور Lemonade هو `lemonade-image`.
 
-**إعدادات Token Plan المسبقة** تغطي عدة قدرات بمفتاح واحد، كل منها على عنوان الخطة الخاص. عندما يربط معالج التشغيل الأول أحدها، يملأ أيضًا الخانات التي توصي الخطة بنماذج لها.
+**إعدادات Token Plan المسبقة** تغطي عدة قدرات بمفتاح واحد، كل منها على عنوان الخطة الخاص. ربط أحدها في **الإعدادات ← Token Plan** يملأ أيضًا الخانات التي توصي الخطة بنماذج لها ولم تُعيّن بعد.
 
 | الإعداد المسبق | الخطة | يغطي |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ description: قائمة النماذج المدمجة ومزودي الخدمة 
 | القدرة | الإعدادات المسبقة |
 | --- | --- |
 | المحادثة | `openai` و`azure` و`atlascloud` و`anthropic` و`bedrock` و`google` و`glm` و`qwen` و`deepseek` و`kimi` و`siliconflow` و`doubao` و`openrouter` و`grok` و`tencent-hunyuan` و`xiaomi` و`ollama` و`lemonade` و`openai-compatible`، وخطط Token Plan |
-| TTS | `openai-tts` و`azure-tts` و`glm-tts` و`qwen-tts` و`minimax-tts` و`voxcpm-tts` و`doubao-tts` و`elevenlabs-tts` و`browser-native-tts` و`lemonade-tts` |
+| TTS | `openai-tts` و`azure-tts` و`glm-tts` و`qwen-tts` و`minimax-tts` و`voxcpm-tts` و`doubao-tts` و`elevenlabs-tts` و`google-tts` و`browser-native-tts` و`lemonade-tts` |
 | ASR | `openai-whisper` و`qwen-asr` و`azure-asr` و`browser-native` و`funasr-asr` و`lemonade-asr` |
 | الصور | `seedream` و`openai-image` و`qwen-image` و`nano-banana` و`minimax-image` و`grok-image` و`comfyui-image` و`lemonade-image` و`openrouter-image` |
 | الفيديو | `seedance` و`kling` و`veo` و`minimax-video` و`grok-video` و`happyhorse` و`openrouter-video` |
@@ -100,6 +100,7 @@ description: قائمة النماذج المدمجة ومزودي الخدمة 
 | Lemonade TTS       | `lemonade-tts`       | Kokoro v1 (`kokoro-v1`)                                                                                                                                                                                                                |
 | Doubao TTS 2.0     | `doubao-tts`         | لا يوجد محدد نموذج؛ تُستخدم معرّفات أصوات Doubao TTS 2.0.                                                                                                                                                                                      |
 | ElevenLabs TTS     | `elevenlabs-tts`     | Multilingual v2 (`eleven_multilingual_v2`)<br />Flash v2.5 (`eleven_flash_v2_5`)<br />Flash v2 (`eleven_flash_v2`)                                                                                                                     |
+| Google Gemini TTS  | `google-tts`         | Gemini 3.1 Flash TTS Preview (`gemini-3.1-flash-tts-preview`)<br />Gemini 2.5 Flash Preview TTS (`gemini-2.5-flash-preview-tts`)<br />Gemini 2.5 Pro Preview TTS (`gemini-2.5-pro-preview-tts`)                                        |
 | Browser Native TTS | `browser-native-tts` | لا يوجد محدد نموذج؛ تُستخدم قائمة أصوات المتصفح ونظام التشغيل.                                                                                                                                                                |
 
 ## نماذج ASR

@@ -98,3 +98,37 @@ describe('a persisted voice the model cannot speak', () => {
     expect(voiceServesModel('openai-tts', resolved!.voiceId, 'tts-1')).toBe(true);
   });
 });
+
+describe('Gemini TTS voices on the tts slot', () => {
+  const gemini = (modelId?: string): EffectiveTarget => ({
+    providerId: 'gv',
+    providerSource: 'workspace',
+    presetId: 'google-tts',
+    registryId: 'google-tts',
+    ...(modelId ? { modelId } : {}),
+  });
+
+  it('offers the prebuilt Gemini voices under the slot model and narrates with Kore by default', () => {
+    const [google] = getSelectableProvidersWithVoices(
+      slotTTSProvidersConfig(gemini('gemini-2.5-flash-preview-tts')),
+    );
+    expect(google.providerId).toBe('google-tts');
+    expect(ids(google.voices)).toEqual(expect.arrayContaining(['Kore', 'Puck', 'Zephyr']));
+    expect(google.modelGroups.map((group) => group.modelId)).toEqual([
+      'gemini-2.5-flash-preview-tts',
+    ]);
+
+    const capabilities = modelCapabilities(
+      modelSettingsViewFor({
+        tts: { registryId: 'google-tts', providerId: 'gv', presetId: 'google-tts' },
+      }),
+    );
+    expect(ttsSelection(capabilities, { voice: '', providerId: '', speed: 1 })).toMatchObject({
+      providerId: 'google-tts',
+      voice: 'Kore',
+    });
+    expect(
+      ttsSelection(capabilities, { voice: 'Puck', providerId: 'google-tts', speed: 1 }),
+    ).toMatchObject({ voice: 'Puck' });
+  });
+});

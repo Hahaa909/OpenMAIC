@@ -6,7 +6,8 @@
  * The order matches language models: the configured slot (deployment, then
  * workspace); else the provider the request names the old way (deprecated);
  * else the defaults an older deployment set by configuring providers; else a
- * loud error. A slot turned off fails whatever the request names.
+ * loud error. A slot turned off fails whatever the request names, and under
+ * `policy.allowWorkspaceProviders: false` the request's provider is ignored.
  *
  * A connection is `managed` when its endpoint is operator configuration
  * (deployment or legacy providers), which media routes already trust. A
@@ -27,6 +28,7 @@ import type { ResolvedModelTarget, SlotResolution } from './resolve-slot';
 import {
   backgroundWorkspaceId,
   lookupSlot,
+  requestProvidersAllowed,
   SlotDisabledError,
   SlotUnassignedError,
 } from './runtime';
@@ -165,6 +167,17 @@ async function fromTarget(
   };
 }
 
+/**
+ * The connection for a provider target outside slot resolution (a saved
+ * provider the settings test), under the same rules as a slot's.
+ */
+export function mediaConnectionFor(
+  slot: MediaSlot,
+  target: ResolvedModelTarget,
+): Promise<MediaConnection> {
+  return fromTarget(slot, target, 'configuration');
+}
+
 export interface MediaSlotOptions {
   workspaceId: string | null;
   /**
@@ -183,7 +196,9 @@ export async function resolveMediaSlot(
   const { configured } = lookup;
   if (configured.status === 'assigned') return fromTarget(slot, configured, 'configuration');
   if (configured.status === 'disabled') throw new SlotDisabledError(slot);
-  const requested = await legacyRequest?.();
+  // Under `policy.allowWorkspaceProviders: false` the provider a request names
+  // is ignored: only the configuration decides.
+  const requested = requestProvidersAllowed() ? await legacyRequest?.() : undefined;
   if (requested) return requested;
   const fallback = lookup.defaults();
   if (fallback.status === 'assigned') return fromTarget(slot, fallback as Assigned, 'default');

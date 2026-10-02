@@ -10,6 +10,8 @@
  * read-only. Every change is validated against the whole configuration before
  * it is stored, so a stored workspace configuration always resolves.
  */
+import { createHash, timingSafeEqual } from 'node:crypto';
+
 import { z } from 'zod';
 
 import {
@@ -21,16 +23,27 @@ import {
 } from '@/lib/config/model-slots';
 import {
   PROVIDER_PRESETS,
+  catalogueModel,
   getProviderPreset,
   presetModels,
   registryDefaultBaseUrl,
+  registryRequiresApiKey,
   type CatalogueModel,
   type ProviderPreset,
 } from '@/lib/config/provider-presets';
 import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
+import {
+  presetOfficialRegionalEndpoint,
+  presetRegionalEndpointTemplate,
+} from '@/lib/config/official-endpoints';
 
 import { isForceDisabled, isLocalEndpoint } from './media';
-import { checkModelConfigShape, type ModelConfigFile, type SlotAssignment } from './openmaic-yml';
+import {
+  checkModelConfigShape,
+  thinkingEffortIssue,
+  type ModelConfigFile,
+  type SlotAssignment,
+} from './openmaic-yml';
 import {
   resolveSlot,
   SlotResolutionError,
@@ -60,7 +73,16 @@ export interface ProviderView {
   key?: { set: boolean; mask?: string; unreadable?: boolean };
 }
 
-export type CapabilityModels = Partial<Record<SlotCapability, { models: CatalogueModel[] }>>;
+export type CapabilityModels = Partial<
+  Record<
+    SlotCapability,
+    {
+      models: CatalogueModel[];
+      /** The capability registry's entry that serves it (for names, icons and voices). */
+      registryId?: string;
+    }
+  >
+>;
 
 /** A preset a workspace can add a provider from, as the settings list it. */
 export interface PresetView {
@@ -70,9 +92,20 @@ export interface PresetView {
   capabilities: CapabilityModels;
   /** Needs a base URL of its own (an OpenAI-compatible endpoint). */
   requiresBaseUrl: boolean;
-  /** Whether a workspace provider of this preset may set its own base URL (chat only). */
+  /**
+   * Whether a workspace provider of this preset may set its own base URL: any
+   * for chat, the official regional one for a regional service (Azure Speech).
+   */
   customEndpoint: boolean;
-  /** Assignments the first-run wizard fills for empty slots. */
+  /**
+   * A regional service's official endpoint, with `<region>` for the region
+   * (`https://<region>.tts.speech.microsoft.com`): the only endpoint it takes.
+   */
+  regionalEndpoint?: string;
+  /**
+   * Assignments the preset recommends: the first-run wizard fills the empty
+   * slots with them; connecting a token plan applies them over the slots.
+   */
   recommended: Partial<Record<SlotId, string>>;
 }
 
@@ -207,9 +240,13 @@ function capabilityModels(
     // A provider's own model list narrows (or names) the chat models it serves.
     const models =
       capability === 'chat' && pinned?.length
-        ? pinned.map((id) => ({ id, name: offered.find((model) => model.id === id)?.name ?? id }))
+        ? pinned.map(
+            (id) =>
+              offered.find((model) => model.id === id) ??
+              catalogueModel(capability, registryId!, id),
+          )
         : offered;
-    result[capability] = { models };
+    result[capability] = { models, ...(registryId ? { registryId } : {}) };
   }
   return result;
 }
@@ -228,9 +265,25 @@ function localChatDefault(preset: ProviderPreset): boolean {
   return endpoint !== undefined && isLocalEndpoint(endpoint);
 }
 
-/** Whether a workspace provider of this preset must name its own endpoint. */
+/**
+ * Whether a workspace provider of this preset must name its own endpoint: a
+ * local model server, or a regional service whose default only names the
+ * region as a placeholder (it takes its official regional endpoint).
+ */
 function needsOwnEndpoint(preset: ProviderPreset): boolean {
-  return preset.requiresBaseUrl === true || localChatDefault(preset);
+  return (
+    preset.requiresBaseUrl === true ||
+    localChatDefault(preset) ||
+    presetRegionalEndpointTemplate(preset) !== undefined
+  );
+}
+
+/** The official regional endpoint a workspace provider names, normalised, else undefined. */
+function officialEndpointOf(provider: Pick<Provider, 'preset' | 'baseUrl'>): string | undefined {
+  const preset = getProviderPreset(provider.preset);
+  return preset && provider.baseUrl
+    ? presetOfficialRegionalEndpoint(preset, provider.baseUrl)
+    : undefined;
 }
 
 function workspacePresetProblem(preset: ProviderPreset): string | undefined {
@@ -348,7 +401,8 @@ export function modelSettingsView(stored: StoredWorkspaceConfig | null): ModelSe
       ...(provider.baseUrl ? { baseUrl: viewEndpoint(provider.baseUrl) } : {}),
       ...(provider.models ? { models: [...provider.models] } : {}),
       capabilities: capabilityModels(getProviderPreset(provider.preset), provider.models, {
-        chatOnly: provider.baseUrl !== undefined,
+        // An official regional endpoint is the service's own, not a custom one.
+        chatOnly: provider.baseUrl !== undefined && !officialEndpointOf(provider),
       }),
       key: {
         set: Boolean(provider.apiKey) || unreadable.has(id),
@@ -380,13 +434,15 @@ export function modelSettingsView(stored: StoredWorkspaceConfig | null): ModelSe
   const presets: PresetView[] = allowWorkspaceProviders
     ? PROVIDER_PRESETS.filter((preset) => !workspacePresetProblem(preset)).map((preset) => {
         const capabilities = capabilityModels(preset);
+        const regionalEndpoint = presetRegionalEndpointTemplate(preset);
         return {
           id: preset.id,
           name: preset.name,
           kind: preset.kind,
           capabilities,
           requiresBaseUrl: needsOwnEndpoint(preset),
-          customEndpoint: Boolean(preset.capabilities.chat),
+          customEndpoint: Boolean(preset.capabilities.chat) || regionalEndpoint !== undefined,
+          ...(regionalEndpoint ? { regionalEndpoint } : {}),
           // Only what can be assigned: a capability the operator switched off is out.
           recommended: Object.fromEntries(
             Object.entries(preset.recommended ?? {}).filter(
@@ -420,17 +476,27 @@ async function checkProvider(id: string, provider: Provider): Promise<void> {
   }
   // Only chat goes through the pinned, redirect-refusing transport: media,
   // search and document services are reached at a preset's own endpoints
-  // (lib/server/model-config/media.ts refuses anything else at run time).
+  // (lib/server/model-config/media.ts refuses anything else at run time). A
+  // regional service's own endpoint names its region on the official host.
+  const regional = presetRegionalEndpointTemplate(preset);
   if (provider.baseUrl && !preset.capabilities.chat) {
+    if (regional && presetOfficialRegionalEndpoint(preset, provider.baseUrl)) return;
     throw new ModelSettingsError(
       'INVALID_PROVIDER',
-      `A custom endpoint for ${preset.name} can only be configured by the deployment (openmaic.yml)`,
+      regional
+        ? `${preset.name} takes only its official regional endpoint (${regional})`
+        : `A custom endpoint for ${preset.name} can only be configured by the deployment (openmaic.yml)`,
     );
   }
   // A local model server's default endpoint is the server's own network: a
   // workspace names where its own one runs.
   if (needsOwnEndpoint(preset) && !provider.baseUrl) {
-    throw new ModelSettingsError('INVALID_PROVIDER', `The ${preset.name} preset needs a base URL`);
+    throw new ModelSettingsError(
+      'INVALID_PROVIDER',
+      regional
+        ? `The ${preset.name} preset needs its regional endpoint (${regional})`
+        : `The ${preset.name} preset needs a base URL`,
+    );
   }
   if (provider.baseUrl) {
     // An endpoint is stored and shown in the clear: a password in it is not.
@@ -444,6 +510,25 @@ async function checkProvider(id: string, provider: Provider): Promise<void> {
     if (problem) throw new ModelSettingsError('INVALID_PROVIDER', problem);
   }
   void id;
+}
+
+/**
+ * Drop the slot assignments that name a provider (as their model or their
+ * fallback), so those slots follow their parents again; `which` narrows the
+ * slots affected.
+ */
+function dropAssignmentsNaming(
+  slots: Record<string, SlotAssignment>,
+  providerId: string,
+  which?: (slot: SlotId) => boolean,
+): void {
+  for (const [slot, assignment] of Object.entries(slots)) {
+    if (assignment === null) continue;
+    if (which && !(isSlotId(slot) && which(slot))) continue;
+    const refs =
+      typeof assignment === 'string' ? [assignment] : [assignment.model, assignment.fallback];
+    if (refs.some((ref) => ref?.split(':')[0] === providerId)) delete slots[slot];
+  }
 }
 
 /**
@@ -496,6 +581,10 @@ export async function applyModelSettingsChange(
         throw new ModelSettingsError('SLOT_LOCKED', `${slot} is set by the deployment`);
       }
     }
+    for (const [slot, assignment] of Object.entries(change.set ?? {})) {
+      const issue = thinkingEffortIssue(slot as SlotId, assignment as SlotAssignment);
+      if (issue) throw new ModelSettingsError('INVALID_ASSIGNMENT', issue);
+    }
     for (const slot of change.clear ?? []) delete slots[slot];
     for (const [slot, assignment] of Object.entries(change.set ?? {})) {
       slots[slot] = assignment as SlotAssignment;
@@ -523,8 +612,12 @@ export async function applyModelSettingsChange(
         : change.apiKey === ''
           ? undefined
           : change.apiKey;
-    const baseUrl =
+    const typedBaseUrl =
       change.baseUrl === undefined ? existing?.baseUrl : (change.baseUrl ?? undefined);
+    // An official regional endpoint is stored in its normalised form.
+    const baseUrl =
+      (typedBaseUrl && officialEndpointOf({ preset: change.preset, baseUrl: typedBaseUrl })) ||
+      typedBaseUrl;
     const models = change.models === undefined ? existing?.models : (change.models ?? undefined);
     const provider: Provider = {
       preset: change.preset,
@@ -534,18 +627,24 @@ export async function applyModelSettingsChange(
     };
     await checkProvider(change.id, provider);
     providers[change.id] = provider;
+    // Removing the key leaves the provider unable to serve what needs one:
+    // the assignments that used it for that follow their parents again, as
+    // when the provider itself is removed.
+    if (change.apiKey === '') {
+      const preset = getProviderPreset(provider.preset)!;
+      dropAssignmentsNaming(slots, change.id, (slot) => {
+        const capability = getSlot(slot).capability;
+        const registryId = preset.capabilities[capability]?.registryId;
+        return !registryId || registryRequiresApiKey(capability, registryId);
+      });
+    }
   } else {
     if (!Object.hasOwn(providers, change.id)) {
       throw new ModelSettingsError('UNKNOWN_PROVIDER', 'No such workspace provider');
     }
     delete providers[change.id];
     // Assignments that named it lose it and follow their parents again.
-    for (const [slot, assignment] of Object.entries(slots)) {
-      if (assignment === null) continue;
-      const refs =
-        typeof assignment === 'string' ? [assignment] : [assignment.model, assignment.fallback];
-      if (refs.some((ref) => ref?.split(':')[0] === change.id)) delete slots[slot];
-    }
+    dropAssignmentsNaming(slots, change.id);
   }
 
   if (!Object.keys(slots).length) delete next.slots;
@@ -615,12 +714,31 @@ export interface ModelSettingsProposal {
   slots?: Record<string, SlotAssignment>;
 }
 
+/**
+ * An item of a proposal: provider ids and slot ids are separate namespaces (a
+ * provider may be called `tts`, like the slot), so every answer names the kind.
+ */
+export interface ModelSettingsItem {
+  kind: 'provider' | 'slot';
+  id: string;
+}
+
 export interface ModelSettingsImport {
   config: ModelConfigFile;
-  /** What was taken: provider ids and slot ids. */
-  imported: string[];
-  /** What was left out, and why. Never an existing setting: those always win. */
-  skipped: { item: string; reason: string }[];
+  /** What was taken. */
+  imported: ModelSettingsItem[];
+  /**
+   * What was left out, and why. For a provider id the workspace already
+   * declares (an existing setting always wins, and is not replaced; a repeated
+   * import finds its own items there), `code` is `EXISTS_SAME` when the stored
+   * provider is the proposed one (same preset, key, endpoint and models: the
+   * browser may let go of its copy) and `EXISTS_DIFFERENT` otherwise (including
+   * a stored key this instance cannot open); nothing else is said about the
+   * stored provider. A slot the workspace already sets is `EXISTS`.
+   * `PROVIDER_RESERVED` is a provider id the deployment declares, `MALFORMED`
+   * an item of the wrong shape, else the code of the check that refused it.
+   */
+  skipped: (ModelSettingsItem & { code: string; reason: string })[];
 }
 
 /** One proposed provider: what an edit may set. */
@@ -632,6 +750,37 @@ const importedProviderSchema = z
     models: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict();
+
+/** Equal secrets, compared in constant time (digests, so lengths do not show). */
+function sameSecret(a: string | undefined, b: string | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
+  return timingSafeEqual(digest(a), digest(b));
+}
+
+/**
+ * Whether a stored workspace provider is the proposed one, as an import would
+ * store it: same preset, key, endpoint (an official regional endpoint in its
+ * normalised form) and models.
+ */
+function storesProposedProvider(
+  stored: Provider,
+  proposed: z.infer<typeof importedProviderSchema>,
+): boolean {
+  const baseUrl =
+    (proposed.baseUrl &&
+      officialEndpointOf({ preset: proposed.preset, baseUrl: proposed.baseUrl })) ||
+    proposed.baseUrl;
+  const models = (list: string[] | undefined) => JSON.stringify(list?.length ? list : []);
+  // Evaluated in full, so the answer takes as long whichever part differs.
+  const sameKey = sameSecret(stored.apiKey, proposed.apiKey);
+  return (
+    sameKey &&
+    stored.preset === proposed.preset &&
+    stored.baseUrl === baseUrl &&
+    models(stored.models) === models(proposed.models)
+  );
+}
 
 /**
  * Merge a proposal into a workspace's configuration, one item at a time and
@@ -646,39 +795,55 @@ export async function importModelSettings(
 ): Promise<ModelSettingsImport> {
   const { layer: deployment } = deploymentConfig();
   let config: ModelConfigFile = current ?? {};
-  const imported: string[] = [];
+  const imported: ModelSettingsImport['imported'] = [];
   const skipped: ModelSettingsImport['skipped'] = [];
-  const attempt = async (item: string, change: ModelSettingsChange) => {
+  const attempt = async (item: ModelSettingsItem, change: ModelSettingsChange) => {
     try {
       config = await applyModelSettingsChange(config, change);
       imported.push(item);
     } catch (error) {
       if (!(error instanceof ModelSettingsError)) throw error;
-      skipped.push({ item, reason: error.message });
+      skipped.push({ ...item, code: error.code, reason: error.message });
     }
   };
 
   for (const [id, provider] of Object.entries(proposal.providers ?? {})) {
-    if (
-      Object.hasOwn(config.providers ?? {}, id) ||
-      Object.hasOwn(deployment?.config.providers ?? {}, id)
-    ) {
-      skipped.push({ item: id, reason: 'A provider with this id already exists' });
-      continue;
-    }
+    const item = { kind: 'provider', id } as const;
     const parsed = importedProviderSchema.safeParse(provider);
-    if (!parsed.success) {
-      skipped.push({ item: id, reason: 'Malformed provider settings' });
+    if (Object.hasOwn(config.providers ?? {}, id)) {
+      const same = parsed.success && storesProposedProvider(config.providers![id], parsed.data);
+      skipped.push(
+        same
+          ? { ...item, code: 'EXISTS_SAME', reason: 'The workspace already holds this provider' }
+          : {
+              ...item,
+              code: 'EXISTS_DIFFERENT',
+              reason: 'A provider with this id already exists with other settings',
+            },
+      );
       continue;
     }
-    await attempt(id, { kind: 'provider', id, ...parsed.data });
+    if (Object.hasOwn(deployment?.config.providers ?? {}, id)) {
+      skipped.push({
+        ...item,
+        code: 'PROVIDER_RESERVED',
+        reason: 'The deployment declares this provider id',
+      });
+      continue;
+    }
+    if (!parsed.success) {
+      skipped.push({ ...item, code: 'MALFORMED', reason: 'Malformed provider settings' });
+      continue;
+    }
+    await attempt(item, { kind: 'provider', id, ...parsed.data });
   }
   for (const [slot, assignment] of Object.entries(proposal.slots ?? {})) {
+    const item = { kind: 'slot', id: slot } as const;
     if (Object.hasOwn(config.slots ?? {}, slot)) {
-      skipped.push({ item: slot, reason: 'The workspace already sets this slot' });
+      skipped.push({ ...item, code: 'EXISTS', reason: 'The workspace already sets this slot' });
       continue;
     }
-    await attempt(slot, { kind: 'slots', set: { [slot]: assignment } });
+    await attempt(item, { kind: 'slots', set: { [slot]: assignment } });
   }
   return { config, imported, skipped };
 }

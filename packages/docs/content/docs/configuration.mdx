@@ -185,13 +185,13 @@ Write `null` on its slot. `video: null` turns video generation off for every wor
 
 Everything written under `slots` in `openmaic.yml` is **locked**: the model settings mark it **Set by the server** and cannot change it. Only the slots that are written are locked. A workspace can still assign a child of a locked slot, which overrides the locked value for that child's subtree. To fix a whole subtree, write each of its slots.
 
-The model settings (**Settings → Models** in the web app) read and edit the same tree for the current workspace:
+The model settings in the web app read and edit the same tree for the current workspace:
 
-- **Model map** tab: each slot is a card that shows its effective model, where it comes from (the deployment, the workspace, or inherited from a parent) and whether it is locked. The model on a card is edited on the card itself; slots written in `openmaic.yml` are read-only there.
-- **Providers** tab: the providers the workspace can use. Providers from `openmaic.yml` are listed read-only and without anything about their keys. Providers the workspace adds are editable; their keys are write-only and shown only as a mask such as `…abcd`.
-- **Connect a service**: when no chat model is configured yet, this first-run setup adds a provider and fills the slots its preset recommends that are still unassigned. After that it is an ordinary provider.
+- **Token Plan**: connecting a plan adds its provider with the key and fills the slots the plan recommends that are still unassigned. Disconnecting removes the provider; the slots that used it follow their parents again.
+- **Model Services**: one tab per capability (language models, images, video, text to speech, speech recognition, document parsing, web search) lists its services. Providers from `openmaic.yml` are shown read-only and without anything about their keys. A service the workspace sets up becomes a workspace provider: its key is write-only and shown only as a mask such as `…abcd`, a custom endpoint is possible for language models only (Azure Speech takes its official regional endpoint, such as `https://<region>.tts.speech.microsoft.com`), and self-hosted services and key pairs are configured in `openmaic.yml`. The test buttons check the saved provider on the server.
+- **Course Model Config**: the main model is the `llm` slot and each pipeline stage is its own slot (following the main model means the stage has no assignment of its own); the image, video, speech, search and transcription switches set their slot to `null`. Slots written in `openmaic.yml` are shown but cannot be changed there.
 
-Provider settings that a browser stored in earlier versions (providers with their keys and base URLs, the chosen model, token plan enrollment and each capability's selection) are imported into the workspace once. The import never replaces an existing workspace setting or a slot `openmaic.yml` locks, and it skips items that the policy or validation refuses. After any 2xx answer, even when items were skipped, and after a 400 or an unreadable proposal, the proposal and every key in it are removed from the browser: skipped items are not kept anywhere. It stays in the browser for a later attempt only on 401, 404, 409, a 5xx or a network error. Speech input that was explicitly switched off becomes `asr: null`. These have to be set up again by hand: per-stage models (on the model map, or `slots` in `openmaic.yml`), thinking settings (`thinking` on a slot), custom speech and transcription providers and AliDocMind's key pair (in `openmaic.yml`), the VoxCPM backend (`options.backend`), and Baidu search sub-sources (the server's defaults apply). The old per-browser switches for images, video, narration and research are not carried over: each capability now runs whenever its slot resolves.
+Provider settings that a browser stored in earlier versions (providers with their keys and base URLs, the chosen model, token plan enrollment and each capability's selection) are imported into the workspace once. The import never replaces an existing workspace setting or a slot `openmaic.yml` locks, and it skips items that the policy or validation refuses. After a 2xx answer, only what the workspace now holds leaves the browser: every item the server skipped (a custom endpoint for a media service, a preset a workspace may not use, a provider id the deployment declares, ...) is kept in this browser with its key, never sent again, announced once, and listed in Settings → Model Services with the reason until it is set up again or discarded. An Azure Speech provider with its regional endpoint is imported. A 400 refuses the whole proposal: it is not sent again, and its items are kept in this browser with their keys and listed like the skipped ones. An unreadable proposal is dropped. The proposal stays in the browser for a later attempt only on 401, 404, 409, a 5xx or a network error. Speech input that was explicitly switched off becomes `asr: null`, and narration, images or video switched off while a usable provider for them was set up become `tts: null`, `image: null` or `video: null` (a slot `openmaic.yml` locks is left as it is). These have to be set up again by hand: per-stage models (in Course Model Config, or `slots` in `openmaic.yml`), thinking settings (`thinking` on a slot), custom speech and transcription providers and AliDocMind's key pair (in `openmaic.yml`; they are kept in the browser and listed with the skipped items), the VoxCPM backend (`options.backend`), and Baidu search sub-sources (the server's defaults apply). Research switched off is not carried over (it only stopped course research; chat and the agent kept searching), nor is a switch that was off only by default: each capability now runs whenever its slot resolves.
 
 A workspace is an owner in the sense of the [persistence documentation](./deployment.mdx#server-side-persistence-postgresql): with the default Docker Compose setup (single-user mode) there is one workspace, and in a multi-user deployment each signed-in account has its own.
 
@@ -202,7 +202,7 @@ policy:
   allowWorkspaceProviders: false
 ```
 
-`allowWorkspaceProviders` (default `true`) decides whether workspaces may add providers of their own. With `false`, users only choose among the providers `openmaic.yml` declares, for the slots it leaves open; a multi-user deployment that pays for all usage typically sets it and locks the slots it wants fixed.
+`allowWorkspaceProviders` (default `true`) decides whether workspaces may add providers of their own. With `false`, users only choose among the providers `openmaic.yml` declares, for the slots it leaves open. Requests that still name their own model, key or endpoint (the deprecated `x-model`, `x-api-key` and `x-base-url` headers, and the provider fields of the media routes) are ignored then, and the header form of the provider test buttons is refused. A multi-user deployment that pays for all usage typically sets it and locks the slots it wants fixed.
 
 ### Secrets and OPENMAIC_SECRET_KEY
 
@@ -211,6 +211,8 @@ policy:
 - When `OPENMAIC_SECRET_KEY` is unset, the server creates a random secret on first use in `data/instance-secret.key` (inside the `openmaic-data` volume with Docker Compose) and uses it from then on.
 
 Keep the secret with the database backups: keys saved under a lost or changed secret cannot be read and have to be entered again (the model settings mark them). Set `OPENMAIC_SECRET_KEY` explicitly when more than one instance shares the database, or when the server has no persistent data directory (a container without the data volume); any string works, for example the output of `openssl rand -base64 32`.
+
+Without it, a data directory that does not survive a restart (a container without a volume, an ephemeral disk) means a new secret on every start, and several replicas each generate their own; on a read-only working directory no secret can be created and saving a key in the model settings fails. At startup the server warns when `OPENMAIC_SECRET_KEY` is unset and the data directory is not writable, and when the database holds keys sealed under a different secret than the current one (for example because `data/instance-secret.key` was lost); it starts anyway.
 
 ```bash
 OPENMAIC_SECRET_KEY=...        # instance secret for keys saved in the model settings
@@ -235,7 +237,7 @@ A deployment that wants users to reach internal services declares those provider
 
 Generation requests no longer need to carry keys or model choices: browserless API calls such as `/api/generate-classroom` resolve through the same slots as the web app, for the workspace of the caller.
 
-The older request headers `x-model`, `x-api-key`, `x-base-url`, `x-provider-type`, `x-model-routes`, `x-image-provider`, `x-image-model`, `x-video-provider` and `x-video-model`, and the equivalent body fields of the speech, search and document routes, are deprecated. They are honoured only while the slot they would affect has no assignment in `openmaic.yml` or the workspace; once it has one, the configuration wins, and a slot set to `null` refuses the request whatever it names. The server logs a warning the first time a request uses them. They will be removed two minor versions after the model settings described above ship.
+The older request headers `x-model`, `x-api-key`, `x-base-url`, `x-provider-type`, `x-model-routes`, `x-image-provider`, `x-image-model`, `x-video-provider` and `x-video-model`, and the equivalent body fields of the speech, search and document routes, are deprecated. They are honoured only while the slot they would affect has no assignment in `openmaic.yml` or the workspace; once it has one, the configuration wins, and a slot set to `null` refuses the request whatever it names. Under `policy.allowWorkspaceProviders: false` they are ignored altogether. The server logs a warning the first time a request uses them. They will be removed two minor versions after the model settings described above ship.
 
 ### Migrating from the legacy configuration
 
@@ -511,7 +513,7 @@ AZURE_OPENAI_BASE_URL=https://YOUR-RESOURCE.openai.azure.com/openai
 AZURE_OPENAI_MODELS=your-deployment-name
 ```
 
-To connect another OpenAI-compatible LLM service, declare an `openai-compatible` provider with its `baseUrl` and `models` in `openmaic.yml`, or add one in the **Providers** tab of **Settings → Models**.
+To connect another OpenAI-compatible LLM service, declare an `openai-compatible` provider with its `baseUrl` and `models` in `openmaic.yml`, or add one with **Add provider** under **Settings → Model Services → LLM**.
 
 ### Local models (Ollama and Lemonade)
 
@@ -545,7 +547,7 @@ TTS_OPENAI_BASE_URL=
 TTS_VOXCPM_BASE_URL=http://localhost:8000
 ```
 
-Supported TTS prefixes include `TTS_OPENAI_`, `TTS_AZURE_`, `TTS_GLM_`, `TTS_QWEN_`, `TTS_MINIMAX_`, `TTS_DOUBAO_`, `TTS_ELEVENLABS_`, `TTS_VOXCPM_`, and `TTS_LEMONADE_`. Local Lemonade TTS and VoxCPM2 do not require an API key. Browser-native TTS requires no server configuration.
+Supported TTS prefixes include `TTS_OPENAI_`, `TTS_AZURE_`, `TTS_GLM_`, `TTS_QWEN_`, `TTS_MINIMAX_`, `TTS_DOUBAO_`, `TTS_ELEVENLABS_`, `TTS_GOOGLE_`, `TTS_VOXCPM_`, and `TTS_LEMONADE_`. Local Lemonade TTS and VoxCPM2 do not require an API key. Browser-native TTS requires no server configuration.
 
 Administrators can force-disable a TTS provider on the server with `TTS_<PROVIDER>_ENABLED=false`. See the dedicated [VoxCPM2](./voxcpm.mdx) section for self-hosted TTS and voice cloning.
 
@@ -671,7 +673,7 @@ WEB_SEARCH_MINIMAX_API_KEY=
 WEB_SEARCH_MINIMAX_BASE_URL=https://api.minimaxi.com  # optional override
 ```
 
-Brave and SearXNG do not require an API key. Web search has no per-generation switch: it runs whenever the workspace's `webSearch` slot resolves, and turning it off (`webSearch: null` in `openmaic.yml`, or in **Settings → Models**) affects later generations of that workspace. Grok web search is provided through the Grok LLM search tool, not a standalone web-search provider.
+Brave and SearXNG do not require an API key. Web search has no per-generation switch: it runs whenever the workspace's `webSearch` slot resolves, and turning it off (`webSearch: null` in `openmaic.yml`, or with the search switch in **Settings → Course Model Config**) affects later generations of that workspace. Grok web search is provided through the Grok LLM search tool, not a standalone web-search provider.
 
 ### server-providers.yml
 
