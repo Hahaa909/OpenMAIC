@@ -7,6 +7,7 @@ import {
   ModelSettingsError,
 } from '@/lib/server/model-config/settings';
 import { setDeploymentConfigForTests } from '@/lib/server/model-config/runtime';
+import { wizardAssignments } from '@/lib/model-settings/edit';
 
 const deployment = (config: ModelConfigLayer['config']) =>
   setDeploymentConfigForTests({
@@ -47,10 +48,15 @@ describe('modelSettingsView', () => {
       { id: 'mine', preset: 'openai', source: 'workspace', key: { set: true, mask: '…9876' } },
     ]);
     // Each provider lists the models it serves per capability, for the pickers.
-    expect(view.providers[0].capabilities.chat?.models).toContainEqual({
-      id: 'deepseek-v4-pro',
-      name: 'DeepSeek V4 Pro',
-    });
+    expect(view.providers[0].capabilities.chat?.models).toContainEqual(
+      expect.objectContaining({ id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }),
+    );
+    // With what the registry knows of each model, and the entry that serves it.
+    expect(view.providers[0].capabilities.chat?.registryId).toBe('deepseek');
+    expect(
+      view.providers[0].capabilities.chat?.models.find((model) => model.id === 'deepseek-v4-pro')
+        ?.capabilities,
+    ).toMatchObject({ tools: true });
     const slot = (id: string) => view.slots.find((entry) => entry.slot === id)!;
     expect(slot('llm')).toMatchObject({ locked: true, effective: { source: 'deployment' } });
     expect(slot('video')).toMatchObject({ locked: true, effective: { status: 'disabled' } });
@@ -102,6 +108,26 @@ describe('modelSettingsView', () => {
     const json = JSON.stringify(modelSettingsView(null));
     expect(json).not.toContain('gateway.internal');
     expect(json).not.toContain('endpoint-secret');
+  });
+
+  it("offers an OpenAI-compatible deployment provider's listed models for chat", () => {
+    deployment({
+      providers: {
+        gateway: {
+          preset: 'openai-compatible',
+          apiKey: 'sk-operator',
+          baseUrl: 'https://gateway.example/v1',
+          models: ['gpt-5.1', 'gpt-5.4-mini', 'deepseek-v4-flash-0731'],
+        },
+      },
+    });
+    const gateway = modelSettingsView(null).providers.find((entry) => entry.id === 'gateway')!;
+    expect(gateway).toMatchObject({ source: 'deployment', preset: 'openai-compatible' });
+    expect(gateway.capabilities.chat?.models.map((model) => model.id)).toEqual([
+      'gpt-5.1',
+      'gpt-5.4-mini',
+      'deepseek-v4-flash-0731',
+    ]);
   });
 
   it('never shows credentials a stored endpoint carries', () => {
@@ -330,6 +356,75 @@ describe('applyModelSettingsChange', () => {
     await expect(
       applyModelSettingsChange(kept, { kind: 'slots', set: { video: null } }),
     ).resolves.toMatchObject({ slots: { 'course.outline': 'mine:gpt-5.6', video: null } });
+  });
+
+  it('drops the assignments a provider can no longer serve once its key is removed', async () => {
+    const current = {
+      providers: {
+        plan: { preset: 'tokendance', apiKey: 'sk-plan-key-0001' },
+        local: { preset: 'ollama', baseUrl: 'https://1.1.1.1/v1', models: ['llama4'] },
+      },
+      slots: {
+        classroom: 'plan:cogevol-base',
+        'course.outline': { model: 'operator:deepseek-v4-pro', fallback: 'plan:cogevol-base' },
+        webSearch: 'plan',
+        'agent.title': 'local:llama4',
+        image: null,
+      },
+    };
+    // A new key keeps them.
+    await expect(
+      applyModelSettingsChange(current, {
+        kind: 'provider',
+        id: 'plan',
+        preset: 'tokendance',
+        apiKey: 'sk-plan-key-0002',
+      }),
+    ).resolves.toMatchObject({ slots: current.slots });
+    // No key: the slots that used the plan follow their parents again.
+    const next = await applyModelSettingsChange(current, {
+      kind: 'provider',
+      id: 'plan',
+      preset: 'tokendance',
+      apiKey: '',
+    });
+    expect(next.providers?.plan).toEqual({ preset: 'tokendance' });
+    expect(next.slots).toEqual({ 'agent.title': 'local:llama4', image: null });
+    // A provider that needs no key keeps what it serves.
+    const keyless = await applyModelSettingsChange(next, {
+      kind: 'provider',
+      id: 'local',
+      preset: 'ollama',
+      apiKey: '',
+    });
+    expect(keyless.slots).toEqual({ 'agent.title': 'local:llama4', image: null });
+  });
+
+  it("connecting a token plan fills the empty web search slot with the plan's search", async () => {
+    const config = await applyModelSettingsChange(null, {
+      kind: 'provider',
+      id: 'tokendance',
+      preset: 'tokendance',
+      apiKey: 'sk-plan-key-0001',
+    });
+    const view = modelSettingsView({ config, revision: 1, unreadableSecrets: [] });
+    const preset = view.presets.find((entry) => entry.id === 'tokendance')!;
+    const set = wizardAssignments(view, preset, 'tokendance');
+    expect(set).toMatchObject({
+      webSearch: 'tokendance',
+      tts: 'tokendance:minimax-speech-2.8-turbo',
+      image: 'tokendance:seedream-5.0-lite',
+    });
+    // The deployment's own video choice (off) and default model are left alone.
+    expect(set).not.toHaveProperty('video');
+    expect(set).not.toHaveProperty('llm');
+    const filled = await applyModelSettingsChange(config, { kind: 'slots', set });
+    const after = modelSettingsView({ config: filled, revision: 2, unreadableSecrets: [] });
+    expect(after.slots.find((slot) => slot.slot === 'webSearch')?.effective).toMatchObject({
+      status: 'assigned',
+      providerId: 'tokendance',
+      registryId: 'bocha',
+    });
   });
 
   it('drops the assignments of a removed provider', async () => {

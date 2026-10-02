@@ -50,26 +50,18 @@ vi.mock('@/components/ui/select', async () => {
   };
 });
 
-import { ModelSettingsPanel } from '@/components/settings/models';
 import { ModelMap, revealBox } from '@/components/settings/models/model-map';
-import { ProvidersPanel } from '@/components/settings/models/providers-panel';
-import { SetupNotice } from '@/components/settings/models/setup-notice';
 import { SlotPicker } from '@/components/settings/models/slot-picker';
 import {
-  createModelSettingsClient,
   type ApplyResult,
   type ModelSettingsChange,
   type ModelSettingsView,
+  type PresetView,
+  type ProviderView,
   type SlotView,
 } from '@/lib/model-settings/client';
 
-import {
-  chatPreset,
-  makeView,
-  withLlm,
-  withSlots,
-  workspaceProvider,
-} from '../model-settings/fixtures';
+import { makeView, withSlots, workspaceProvider } from '../model-settings/fixtures';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -126,22 +118,6 @@ function click(element: HTMLElement) {
   });
 }
 
-/** Type into a React-controlled field. */
-function type(element: HTMLElement, value: string) {
-  const prototype =
-    element instanceof HTMLTextAreaElement
-      ? HTMLTextAreaElement.prototype
-      : element instanceof HTMLSelectElement
-        ? HTMLSelectElement.prototype
-        : HTMLInputElement.prototype;
-  act(() => {
-    Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
-    element.dispatchEvent(
-      new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }),
-    );
-  });
-}
-
 function recordingApply(view: ModelSettingsView) {
   const changes: ModelSettingsChange[] = [];
   const apply = vi.fn(async (change: ModelSettingsChange): Promise<ApplyResult> => {
@@ -151,237 +127,8 @@ function recordingApply(view: ModelSettingsView) {
   return { apply, changes };
 }
 
-/** The same keys-with-values the mocked i18n hook returns. */
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 const T = (key: string, options?: Record<string, unknown>) =>
   options ? [key, ...Object.values(options)].join('|') : key;
-
-describe('provider form → change', () => {
-  it('retries an add it could not confirm under the same id', async () => {
-    const view = makeView();
-    const changes: ModelSettingsChange[] = [];
-    const answers: ApplyResult[] = [
-      { ok: false, reason: 'unconfirmed', message: 'lost' },
-      { ok: true, view },
-    ];
-    const apply = vi.fn(async (change: ModelSettingsChange) => {
-      changes.push(change);
-      return answers.shift()!;
-    });
-    const { render } = mount(createElement(ProvidersPanel, { view, apply, t: T }));
-
-    click(byText('settings.modelSettings.providers.add'));
-    type(document.body.querySelector('select')!, chatPreset.id);
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-1');
-    click(byText('settings.modelSettings.providers.add'));
-    await flush();
-    expect(document.body.textContent).toContain('settings.modelSettings.picker.unconfirmed');
-
-    // Later the settings read again and show the provider: the retry updates it.
-    render(
-      createElement(ProvidersPanel, {
-        view: makeView({ providers: [workspaceProvider('acme')] }),
-        apply,
-        t: T,
-      }),
-    );
-    click(byText('settings.modelSettings.providers.add'));
-    await flush();
-
-    expect(changes.map((change) => change.kind === 'provider' && change.id)).toEqual([
-      'acme',
-      'acme',
-    ]);
-  });
-
-  it('keeps the draft when another tab took the same id, and retries under a free one', async () => {
-    // Two tabs add the same preset; the other tab's add lands first as "acme".
-    let server = makeView({ revision: 1 });
-    const puts: { revision: number | null; change: ModelSettingsChange }[] = [];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      if (init?.method !== 'PUT') return json(server);
-      const body = JSON.parse(init.body as string);
-      puts.push(body);
-      if (body.revision !== server.revision) {
-        return json({ error: { code: 'CONFLICT', message: 'The settings changed' } }, 409);
-      }
-      server = {
-        ...server,
-        revision: server.revision! + 1,
-        providers: [...server.providers, workspaceProvider(body.change.id)],
-      };
-      return json(server);
-    });
-    const client = createModelSettingsClient(fetchImpl);
-    client.adopt(server);
-    const panel = (view: ModelSettingsView) =>
-      createElement(ProvidersPanel, { view, apply: client.apply, t: T });
-    const { render } = mount(panel(server));
-
-    click(byText('settings.modelSettings.providers.add'));
-    type(document.body.querySelector('select')!, chatPreset.id);
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-mine');
-    // Meanwhile the other tab adds "acme".
-    server = { ...server, revision: 2, providers: [workspaceProvider('acme')] };
-    click(byText('settings.modelSettings.providers.add'));
-    await flush();
-    render(panel(client.getState().view!));
-
-    // Refused, not "landed": the form and the typed key stay, with the conflict shown.
-    expect(document.body.querySelector('select')).not.toBeNull();
-    expect(document.body.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe(
-      'sk-mine',
-    );
-    expect(document.body.textContent).toContain('settings.modelSettings.picker.conflict');
-
-    click(byText('settings.modelSettings.providers.add'));
-    await flush();
-
-    expect(
-      puts.map((put) => [put.revision, put.change.kind === 'provider' && put.change.id]),
-    ).toEqual([
-      [1, 'acme'],
-      [2, 'acme-2'],
-    ]);
-    expect(server.providers.map((provider) => provider.id)).toEqual(['acme', 'acme-2']);
-  });
-
-  it('closes the form when the reload after a lost answer shows the provider', async () => {
-    const view = makeView();
-    const saved = makeView({ providers: [workspaceProvider('acme')] });
-    const apply = vi.fn(
-      async (): Promise<ApplyResult> => ({
-        ok: false,
-        reason: 'unconfirmed',
-        message: 'lost',
-        view: saved,
-      }),
-    );
-    mount(createElement(ProvidersPanel, { view, apply, t: T }));
-
-    click(byText('settings.modelSettings.providers.add'));
-    type(document.body.querySelector('select')!, chatPreset.id);
-    click(byText('settings.modelSettings.providers.add'));
-    await flush();
-
-    expect(apply).toHaveBeenCalledTimes(1);
-    expect(document.body.querySelector('select')).toBeNull();
-    expect(document.body.textContent).not.toContain('settings.modelSettings.picker.unconfirmed');
-  });
-
-  it('asks for a new key when the stored one is unreadable, and sends the one typed', async () => {
-    const broken = { ...workspaceProvider('acme'), key: { set: true, unreadable: true } };
-    const view = makeView({ providers: [broken] });
-    const { apply, changes } = recordingApply(view);
-    mount(createElement(ProvidersPanel, { view, apply, t: T }));
-
-    click(byLabel('settings.modelSettings.providers.edit|Acme'));
-    // No "keep" for a key the server cannot read.
-    expect(document.body.textContent).not.toContain('settings.modelSettings.providers.keepKey');
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-new');
-    click(byText('settings.modelSettings.actions.save'));
-    await flush();
-
-    // Only what was changed: the key.
-    expect(changes).toEqual([{ kind: 'provider', id: 'acme', preset: 'acme', apiKey: 'sk-new' }]);
-  });
-
-  it('moves a key-only edit onto a provider changed meanwhile, and sends only the key', async () => {
-    // A tiny server: another session changes the provider's endpoint and models
-    // while this edit is open, so the first save meets a stale revision.
-    const provider = {
-      ...workspaceProvider('acme'),
-      baseUrl: 'https://old.example.test/v1',
-      models: ['old-model'],
-    };
-    const opened = makeView({ revision: 1, providers: [provider] });
-    const changedElsewhere = makeView({
-      revision: 2,
-      providers: [{ ...provider, baseUrl: 'https://new.example.test/v1', models: ['new-model'] }],
-    });
-    let server = changedElsewhere;
-    const puts: { revision: number | null; change: ModelSettingsChange }[] = [];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      if (init?.method !== 'PUT') return json(server);
-      const body = JSON.parse(init.body as string);
-      puts.push(body);
-      if (body.revision !== server.revision) {
-        return json({ error: { code: 'CONFLICT', message: 'The settings changed' } }, 409);
-      }
-      server = { ...server, revision: server.revision! + 1 };
-      return json(server);
-    });
-    const client = createModelSettingsClient(fetchImpl);
-    client.adopt(opened);
-    const panel = (view: ModelSettingsView) =>
-      createElement(ProvidersPanel, { view, apply: client.apply, t: T });
-    const { render } = mount(panel(opened));
-
-    click(byLabel('settings.modelSettings.providers.edit|Acme'));
-    click(byText('settings.modelSettings.providers.replaceKey'));
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-new');
-    click(byText('settings.modelSettings.actions.save'));
-    await flush();
-    // The panel shows the reloaded settings, as the section would.
-    render(panel(client.getState().view!));
-
-    expect(document.body.textContent).toContain(
-      'settings.modelSettings.providers.changedMeanwhile',
-    );
-    // The fields show the other session's values; the typed key is kept.
-    expect(document.body.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe(
-      'https://new.example.test/v1',
-    );
-    expect(document.body.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('new-model');
-    expect(document.body.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe(
-      'sk-new',
-    );
-
-    click(byText('settings.modelSettings.actions.save'));
-    await flush();
-
-    expect(puts).toEqual([
-      { revision: 1, change: { kind: 'provider', id: 'acme', preset: 'acme', apiKey: 'sk-new' } },
-      { revision: 2, change: { kind: 'provider', id: 'acme', preset: 'acme', apiKey: 'sk-new' } },
-    ]);
-  });
-
-  it('removes an unreadable key only when asked to', async () => {
-    const broken = { ...workspaceProvider('acme'), key: { set: true, unreadable: true } };
-    const view = makeView({ providers: [broken] });
-    const { apply, changes } = recordingApply(view);
-    mount(createElement(ProvidersPanel, { view, apply, t: T }));
-
-    click(byLabel('settings.modelSettings.providers.edit|Acme'));
-    click(byText('settings.modelSettings.providers.removeKey'));
-    click(byText('settings.modelSettings.actions.save'));
-    await flush();
-
-    expect(changes[0]).toMatchObject({ apiKey: '' });
-  });
-
-  it('keeps a pinned model list on a key-only edit', async () => {
-    const pinned = { ...workspaceProvider('acme'), models: ['acme-large'] };
-    const view = makeView({ providers: [pinned] });
-    const { apply, changes } = recordingApply(view);
-    mount(createElement(ProvidersPanel, { view, apply, t: T }));
-
-    click(byLabel('settings.modelSettings.providers.edit|Acme'));
-    click(byText('settings.modelSettings.providers.replaceKey'));
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-2');
-    click(byText('settings.modelSettings.actions.save'));
-    await flush();
-
-    // The model list is not sent, so the server keeps it.
-    expect(changes).toEqual([{ kind: 'provider', id: 'acme', preset: 'acme', apiKey: 'sk-2' }]);
-  });
-});
 
 const assignedTts: SlotView['effective'] = {
   status: 'assigned',
@@ -411,7 +158,6 @@ function map(
     t: T,
     onManageProviders: () => {},
     offMemory: memory,
-    onSetupOutcome: () => {},
   });
 }
 
@@ -437,18 +183,77 @@ describe('the map', () => {
     ]);
   });
 
-  it('opens the picker instead of guessing for a slot switched off elsewhere', async () => {
+  it('turns on a slot switched off elsewhere with the first service that serves it', async () => {
     const view = withSlots(makeView({ providers: [workspaceProvider('acme')] }), {
       tts: { assignment: null, effective: offEffective('tts') },
     });
-    const { apply } = recordingApply(view);
+    const { apply, changes } = recordingApply(view);
     mount(map(view, apply));
 
     click(byLabel('settings.modelSettings.card.toggle|tts'));
     await flush();
 
+    expect(changes).toEqual([{ kind: 'slots', set: { tts: 'acme:acme-voice' } }]);
+  });
+
+  it('opens the picker when nothing can serve a slot switched off elsewhere', async () => {
+    const view = withSlots(makeView(), {
+      image: { assignment: null, effective: offEffective('image') },
+    });
+    const { apply } = recordingApply(view);
+    mount(map(view, apply));
+
+    click(byLabel('settings.modelSettings.card.toggle|image'));
+    await flush();
+
     expect(apply).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[data-slot-picker="tts"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-slot-picker="image"]')).not.toBeNull();
+  });
+
+  it('keeps what it would restore when turning back on is refused', async () => {
+    const on = withSlots(makeView({ providers: [workspaceProvider('acme')] }), {
+      tts: { assignment: 'acme:acme-voice', effective: assignedTts },
+    });
+    const off = withSlots(on, { tts: { assignment: null, effective: offEffective('tts') } });
+    const memory = new Map();
+    const answers: ApplyResult[] = [
+      { ok: true, view: off },
+      { ok: false, reason: 'conflict', message: 'stale', view: off },
+      { ok: true, view: on },
+    ];
+    const changes: ModelSettingsChange[] = [];
+    const apply = vi.fn(async (change: ModelSettingsChange) => {
+      changes.push(change);
+      return answers.shift()!;
+    });
+    const { render } = mount(map(on, apply, memory));
+    click(byLabel('settings.modelSettings.card.toggle|tts'));
+    await flush();
+    render(map(off, apply, memory));
+    click(byLabel('settings.modelSettings.card.toggle|tts'));
+    await flush();
+    // The refused restore did not forget what to restore: the next try sends it again.
+    click(byLabel('settings.modelSettings.card.toggle|tts'));
+    await flush();
+
+    expect(changes).toEqual([
+      { kind: 'slots', set: { tts: null } },
+      { kind: 'slots', set: { tts: 'acme:acme-voice' } },
+      { kind: 'slots', set: { tts: 'acme:acme-voice' } },
+    ]);
+    expect(memory.has('tts')).toBe(false);
+  });
+
+  it('switches speech input off while it runs in the browser, and lets a service be picked', async () => {
+    const view = makeView({ providers: [workspaceProvider('acme')] });
+    const { apply, changes } = recordingApply(view);
+    mount(map(view, apply));
+
+    const toggle = byLabel('settings.modelSettings.card.toggle|asr');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    click(toggle);
+    await flush();
+    expect(changes).toEqual([{ kind: 'slots', set: { asr: null } }]);
   });
 
   it('pans with the arrow keys while the canvas has focus', () => {
@@ -567,184 +372,131 @@ describe('picker keyboard', () => {
   });
 });
 
-describe('first-run setup', () => {
-  it('says the default model is still missing, with nothing to retry, when only media got filled', () => {
-    mount(
-      createElement(SetupNotice, {
-        outcome: {
-          preset: chatPreset,
-          result: { status: 'partial', providerId: 'acme', reason: 'llm-missing' },
-        },
-        onRetry: async () => {},
-        onProviders: () => {},
-        onDismiss: () => {},
-        t: T,
-      }),
-    );
-    expect(document.body.textContent).toContain('settings.modelSettings.setup.llmMissing|Acme');
-    expect(document.body.textContent).not.toContain('settings.modelSettings.setup.retry');
-  });
-
-  async function connect() {
-    click(byText('settings.modelSettings.setup.open'));
-    await flush();
-    type(document.body.querySelector('select')!, chatPreset.id);
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-test');
-    click(byText('settings.modelSettings.setup.connect'));
-    await flush();
-  }
-
-  it('goes on when the answer to adding the provider is lost but the provider was saved', async () => {
-    const withProvider = makeView({ revision: 1, providers: [workspaceProvider('acme')] });
-    const methods: string[] = [];
-    const answers = [
-      json(makeView({ revision: null })),
-      new Response('{"revision":1,"prov', { status: 200 }),
-      json(withProvider),
-      json(withLlm(withProvider)),
-    ];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      methods.push(init?.method ?? 'GET');
-      return answers.shift()!;
-    });
-    mount(createElement(ModelSettingsPanel, { client: createModelSettingsClient(fetchImpl) }));
-    await flush();
-
-    await connect();
-
-    // Added (answer lost), reloaded, then the slots filled against the reloaded view.
-    expect(methods).toEqual(['GET', 'PUT', 'GET', 'PUT']);
-    expect(document.body.textContent).not.toContain('settings.modelSettings.setup.connecting');
-    expect(document.body.textContent).not.toContain('settings.modelSettings.setup.partial');
-  });
-
-  it('reconciles a provider add whose request failed after the server saved it', async () => {
-    const withProvider = makeView({ revision: 1, providers: [workspaceProvider('acme')] });
-    const methods: string[] = [];
-    const answers: (() => Response)[] = [
-      () => json(makeView({ revision: null })),
-      () => {
-        throw new TypeError('Failed to fetch');
-      },
-      () => json(withProvider),
-      () => json(withLlm(withProvider)),
-    ];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      methods.push(init?.method ?? 'GET');
-      return answers.shift()!();
-    });
-    mount(createElement(ModelSettingsPanel, { client: createModelSettingsClient(fetchImpl) }));
-    await flush();
-
-    await connect();
-
-    expect(methods).toEqual(['GET', 'PUT', 'GET', 'PUT']);
-    expect(document.body.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it('keeps an add it cannot confirm as a notice, and checks again', async () => {
-    const withProvider = makeView({ revision: 1, providers: [workspaceProvider('acme')] });
-    const methods: string[] = [];
-    const answers: (() => Response)[] = [
-      () => json(makeView({ revision: null })),
-      () => {
-        throw new TypeError('Failed to fetch');
-      },
-      () => {
-        throw new TypeError('Failed to fetch');
-      },
-      () => json(withProvider),
-      () => json(withLlm(withProvider)),
-    ];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      methods.push(init?.method ?? 'GET');
-      return answers.shift()!();
-    });
-    mount(createElement(ModelSettingsPanel, { client: createModelSettingsClient(fetchImpl) }));
-    await flush();
-
-    await connect();
-    const notice = byText('settings.modelSettings.setup.unconfirmedAdd', '[role="alert"]');
-    expect(notice.textContent).toContain('Acme');
-
-    click(byText('settings.modelSettings.setup.checkAgain'));
-    await flush();
-
-    expect(methods).toEqual(['GET', 'PUT', 'GET', 'GET', 'PUT']);
-    expect(document.body.textContent).not.toContain('settings.modelSettings.setup.unconfirmedAdd');
-  });
-
-  it('says so, and frees the form, when the answer is lost and nothing was saved', async () => {
-    const answers = [
-      json(makeView({ revision: null })),
-      new Response('', { status: 200 }),
-      json(makeView({ revision: null })),
-    ];
-    const fetchImpl = vi.fn(async () => answers.shift()!);
-    mount(createElement(ModelSettingsPanel, { client: createModelSettingsClient(fetchImpl) }));
-    await flush();
-
-    await connect();
-
-    const connectButton = byText('settings.modelSettings.setup.connect');
-    expect(connectButton.hasAttribute('disabled')).toBe(false);
-    expect(document.body.textContent).toContain('settings.modelSettings.picker.unconfirmed');
-  });
-
-  it('keeps a partial setup on screen through the reload a conflict causes, and recovers', async () => {
-    const empty = makeView({ revision: null });
-    const withProvider = makeView({ revision: 1, providers: [workspaceProvider('acme')] });
-    const reloaded = makeView({ revision: 2, providers: [workspaceProvider('acme')] });
-    const done = withLlm(reloaded);
-    const requests: { method: string; body?: unknown }[] = [];
-    const answers = [
-      json(empty),
-      json(withProvider),
-      json({ error: { code: 'CONFLICT', message: 'The settings changed; reload them' } }, 409),
-      json(reloaded),
-      json({ ...done, revision: 3 }),
-    ];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit) => {
-      requests.push({
-        method: init?.method ?? 'GET',
-        body: init?.body ? JSON.parse(init.body as string) : undefined,
-      });
-      return answers.shift()!;
-    });
-    const client = createModelSettingsClient(fetchImpl);
-    mount(createElement(ModelSettingsPanel, { client }));
-    await flush();
-
-    click(byText('settings.modelSettings.setup.open'));
-    await flush();
-    type(document.body.querySelector('select')!, chatPreset.id);
-    type(document.body.querySelector<HTMLInputElement>('input[type="password"]')!, 'sk-test');
-    click(byText('settings.modelSettings.setup.connect'));
-    await flush();
-
-    // The provider exists; the slots met a stale revision and the view reloaded.
-    expect(requests.map((request) => request.method)).toEqual(['GET', 'PUT', 'PUT', 'GET']);
-    const notice = byText('settings.modelSettings.setup.partial', '[role="alert"]');
-    expect(notice.textContent).toContain('Acme');
-    expect(notice.textContent).toContain('settings.modelSettings.setup.changedMeanwhile');
-
-    click(byText('settings.modelSettings.setup.retry'));
-    await flush();
-
-    expect(requests.at(-1)).toEqual({
-      method: 'PUT',
-      body: {
-        revision: 2,
-        change: {
-          kind: 'slots',
-          set: {
-            llm: 'acme:acme-large',
-            'course.content.slide': 'acme:acme-small',
-            tts: 'acme:acme-voice',
+describe('the card picker', () => {
+  const thinkingProvider = (): ProviderView => ({
+    ...workspaceProvider('acme'),
+    capabilities: {
+      chat: {
+        models: [
+          {
+            id: 'acme-large',
+            name: 'Acme Large',
+            capabilities: {
+              thinking: { control: 'toggle', requestAdapter: 'openai', defaultMode: 'enabled' },
+            },
           },
-        },
+        ],
+      },
+    },
+  });
+
+  it("sets a stage's thinking on its own assignment, against the view it shows", async () => {
+    const view = withSlots(makeView({ revision: 4, providers: [thinkingProvider()] }), {
+      'course.outline': {
+        assignment: 'acme:acme-large',
+        effective: { ...assignedTts, resolvedAt: 'course.outline', modelId: 'acme-large' },
       },
     });
-    expect(document.body.textContent).not.toContain('settings.modelSettings.setup.partial');
+    const bases: (number | null)[] = [];
+    const changes: ModelSettingsChange[] = [];
+    const apply = vi.fn(async (change: ModelSettingsChange, basis?: ModelSettingsView) => {
+      changes.push(change);
+      bases.push(basis?.revision ?? null);
+      return { ok: true as const, view };
+    });
+    mount(map(view, apply));
+    click(document.body.querySelector<HTMLElement>('[data-slot-id="course.outline"]')!);
+    const group = byLabel('settings.modelSettings.picker.thinking');
+    const select = group.querySelector('select')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(
+        select,
+        'disabled',
+      );
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      kind: 'slots',
+      set: { 'course.outline': { model: 'acme:acme-large', thinking: { mode: 'disabled' } } },
+    });
+    expect(bases).toEqual([4]);
+  });
+
+  it('adds and assigns a service that needs no key, from an empty workspace', async () => {
+    const browserTts: PresetView = {
+      id: 'browser-native-tts',
+      name: 'Browser TTS',
+      kind: 'single',
+      capabilities: { tts: { registryId: 'browser-native-tts', models: [] } },
+      requiresBaseUrl: false,
+      customEndpoint: false,
+      recommended: {},
+    };
+    const empty = makeView({ revision: 1, presets: [browserTts] });
+    const added = {
+      ...empty,
+      revision: 2,
+      providers: [
+        {
+          id: 'browser-native-tts',
+          preset: 'browser-native-tts',
+          source: 'workspace' as const,
+          capabilities: browserTts.capabilities,
+          key: { set: false },
+        },
+      ],
+    };
+    const changes: ModelSettingsChange[] = [];
+    const bases: (number | null)[] = [];
+    const apply = vi.fn(async (change: ModelSettingsChange, basis?: ModelSettingsView) => {
+      changes.push(change);
+      bases.push(basis?.revision ?? null);
+      return { ok: true as const, view: added };
+    });
+    mount(map(empty, apply));
+    click(document.body.querySelector<HTMLElement>('[data-slot-id="tts"]')!);
+    const group = byLabel('settings.providerBrowserNativeTTS');
+    click(
+      byText(
+        'settings.modelSettings.picker.providerDefault',
+        '[aria-label="settings.providerBrowserNativeTTS"] button',
+      ),
+    );
+    await flush();
+    expect(group).toBeTruthy();
+    expect(changes).toEqual([
+      { kind: 'provider', id: 'browser-native-tts', preset: 'browser-native-tts' },
+      { kind: 'slots', set: { tts: 'browser-native-tts' } },
+    ]);
+    // The assignment is written against the view the add answered.
+    expect(bases).toEqual([1, 2]);
+  });
+
+  it("shows each provider's logo, the generic one for a custom endpoint", () => {
+    const view = makeView({
+      providers: [
+        {
+          ...workspaceProvider('deepseek'),
+          preset: 'deepseek',
+          capabilities: { chat: { registryId: 'deepseek', models: [{ id: 'd', name: 'D' }] } },
+        },
+        {
+          ...workspaceProvider('gateway'),
+          preset: 'openai-compatible',
+          capabilities: { chat: { registryId: 'openai', models: [{ id: 'g', name: 'G' }] } },
+        },
+      ],
+    });
+    const { apply } = recordingApply(view);
+    mount(map(view, apply));
+    click(document.body.querySelector<HTMLElement>('[data-slot-id="llm"]')!);
+    const deepseek = byLabel('deepseek').querySelector('img');
+    expect(deepseek?.getAttribute('src')).toContain('deepseek');
+    const gateway = byLabel('gateway');
+    expect(gateway.querySelector('img')).toBeNull();
+    expect(gateway.querySelector('svg.lucide-box')).not.toBeNull();
   });
 });

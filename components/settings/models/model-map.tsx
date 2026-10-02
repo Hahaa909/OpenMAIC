@@ -3,13 +3,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Plus, Scan } from 'lucide-react';
 
-import type {
-  ApplyResult,
-  ModelSettingsChange,
-  ModelSettingsView,
-  ApplyChange,
-} from '@/lib/model-settings/client';
-import { needsFirstRunSetup } from '@/lib/model-settings/client';
+import type { ModelSettingsView, ApplyChange } from '@/lib/model-settings/client';
+import { findSlot } from '@/lib/model-settings/client';
 import {
   CANVAS_WIDTH,
   CHILD_GAP,
@@ -30,7 +25,6 @@ import type { OffMemory } from '@/lib/model-settings/edit';
 import { cn } from '@/lib/utils';
 
 import { MS } from './slot-meta';
-import type { SetupOutcome } from './first-run-setup';
 import { StationNode, type NodeContext } from './station-node';
 
 type T = (key: string, options?: Record<string, unknown>) => string;
@@ -46,6 +40,9 @@ export interface Viewport {
   y: number;
   k: number;
 }
+
+/** What each media switch turned off, kept for the page across the dialog opening and closing. */
+const PAGE_OFF_MEMORY: OffMemory = new Map();
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2;
@@ -141,15 +138,14 @@ export function ModelMap({
   apply,
   t,
   onManageProviders,
-  offMemory,
-  onSetupOutcome,
+  offMemory = PAGE_OFF_MEMORY,
 }: {
   view: ModelSettingsView;
   apply: ApplyChange;
   t: T;
   onManageProviders: () => void;
-  offMemory: OffMemory;
-  onSetupOutcome: (outcome: SetupOutcome) => void;
+  /** What the switches turned off; kept for the page unless a test passes its own. */
+  offMemory?: OffMemory;
 }) {
   const stations = useMemo(() => placeStations(view), [view]);
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -398,7 +394,6 @@ export function ModelMap({
     setOpenKey,
     onManageProviders,
     offMemory,
-    onSetupOutcome,
   };
 
   // Keyboard focus on a card outside the view pans the map to it.
@@ -416,13 +411,19 @@ export function ModelMap({
       return next;
     });
   };
-  const setup = needsFirstRunSetup(view)
-    ? view.presets.some((preset) => preset.capabilities.chat)
-      ? ('offer' as const)
-      : view.providers.some((provider) => provider.capabilities.chat)
-        ? undefined
-        : ('blocked' as const)
-    : undefined;
+  // No default model and nothing that offers one (the server's providers
+  // included): the root says where to set one up.
+  const llm = findSlot(view, 'llm');
+  const empty =
+    llm &&
+    llm.effective.status === 'unassigned' &&
+    !llm.locked &&
+    !view.providers.some((provider) => provider.capabilities.chat)
+      ? view.policy.allowWorkspaceProviders &&
+        view.presets.some((preset) => preset.capabilities.chat)
+        ? ('workspace' as const)
+        : ('server' as const)
+      : undefined;
   const followers = view.slots.filter(
     (slot) =>
       slot.capability === 'chat' &&
@@ -583,7 +584,7 @@ export function ModelMap({
                 x={box.x}
                 y={box.y}
                 width={box.w}
-                setup={station.kind === 'root' ? setup : undefined}
+                empty={station.kind === 'root' ? empty : undefined}
                 followers={station.kind === 'root' ? followers : undefined}
                 expanded={station.expandable ? expanded : undefined}
                 onExpand={
