@@ -184,7 +184,7 @@ export function GenerationToolbar({
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => onSettingsOpen('models')}
+                onClick={() => onSettingsOpen('model-services')}
                 className={cn(
                   pillCls,
                   'text-amber-600 dark:text-amber-400 animate-pulse',
