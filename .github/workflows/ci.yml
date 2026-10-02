@@ -11,19 +11,17 @@ on:
         main,
         integration/kv-asset-server-backend,
         integration/agent-workbench,
-        feat/persistence-default,
+        integration/material-library,
         integration/provider-config,
       ]
   pull_request:
     branches:
       [
         main,
-        feat/maic-editor-v0,
-        feat/maic-editor-v1,
         runtime-server-backend,
         integration/kv-asset-server-backend,
         integration/agent-workbench,
-        feat/persistence-default,
+        integration/material-library,
         integration/provider-config,
       ]
 

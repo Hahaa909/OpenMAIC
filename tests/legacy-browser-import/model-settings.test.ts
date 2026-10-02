@@ -429,6 +429,40 @@ describe('buildModelSettingsProposal', () => {
       },
     });
   });
+
+  it('imports Gemini TTS settings like any other keyed TTS service', () => {
+    // The shape an earlier build's settings store kept for google-tts.
+    const state: LegacyModelSettingsState = {
+      ttsEnabled: true,
+      ttsProviderId: 'google-tts',
+      ttsProvidersConfig: {
+        'google-tts': {
+          apiKey: ' gemini-browser-key ',
+          baseUrl: '',
+          modelId: 'gemini-2.5-pro-preview-tts',
+          enabled: true,
+        },
+        'minimax-tts': { apiKey: '', baseUrl: '', modelId: 'speech-2.8-hd', enabled: true },
+      },
+    };
+    expect(buildModelSettingsProposal(state)).toEqual({
+      providers: { 'google-tts': { preset: 'google-tts', apiKey: 'gemini-browser-key' } },
+      slots: { tts: 'google-tts:gemini-2.5-pro-preview-tts' },
+    });
+    // The untouched default entry (no key) proposes nothing.
+    expect(
+      buildModelSettingsProposal({
+        ttsProvidersConfig: {
+          'google-tts': {
+            apiKey: '',
+            baseUrl: '',
+            modelId: 'gemini-3.1-flash-tts-preview',
+            enabled: true,
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe('normalizeLegacyModelSettings', () => {

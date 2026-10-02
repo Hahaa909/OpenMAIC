@@ -22,6 +22,7 @@ import { defaultVoiceFor, slotVoxCPMBackend, ttsSelection } from '@/lib/audio/tt
 import { modelCapabilities } from '@/lib/model-settings/capabilities';
 import { assignService } from '@/lib/model-settings/services';
 import { QwenVoiceCloneManager, VoxCPMVoiceManager } from './tts-voice-managers';
+import { TTSSpeedField } from './tts-speed-field';
 import {
   ApiKeyField,
   EndpointServerOnlyHint,
@@ -248,28 +249,12 @@ export function TTSSettings({ view, apply, entry }: ServicePanelProps) {
 
       {entry.state !== 'server-only' && (
         <>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-sm">{t('settings.ttsSpeed')}</Label>
-              <span className="text-xs text-muted-foreground">
-                {cloneSpeedDisabled ? '1×' : `${ttsSpeed.toFixed(2)}×`}
-              </span>
-            </div>
-            <input
-              aria-label={t('settings.ttsSpeed')}
-              type="range"
-              min={ttsProvider?.speedRange?.min ?? 0.5}
-              max={ttsProvider?.speedRange?.max ?? 2}
-              step={0.05}
-              value={cloneSpeedDisabled ? 1 : ttsSpeed}
-              disabled={cloneSpeedDisabled}
-              onChange={(event) => setTTSSpeed(Number(event.target.value))}
-              className="w-full disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            {cloneSpeedDisabled && (
-              <p className="text-xs text-muted-foreground">{t('settings.qwenCloneSpeedHint')}</p>
-            )}
-          </div>
+          <TTSSpeedField
+            provider={ttsProvider}
+            speed={ttsSpeed}
+            cloneVoiceLocked={cloneSpeedDisabled}
+            onSpeedChange={setTTSSpeed}
+          />
 
           {keyless && !use.inUse && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm">

@@ -461,6 +461,51 @@ describe("the server's providers wherever chat models are offered", () => {
   });
 });
 
+describe('TTS panel → Gemini TTS', () => {
+  const geminiTts: PresetView = {
+    id: 'google-tts',
+    name: 'Google Gemini TTS',
+    kind: 'single',
+    capabilities: {
+      tts: {
+        registryId: 'google-tts',
+        models: [{ id: 'gemini-3.1-flash-tts-preview', name: 'Gemini 3.1 Flash TTS Preview' }],
+      },
+    },
+    requiresBaseUrl: false,
+    customEndpoint: false,
+    recommended: {},
+  };
+
+  it('saves its key as a workspace provider and locks the speed it ignores', async () => {
+    const view = makeView({ presets: [geminiTts] });
+    const added = {
+      ...view,
+      providers: [workspaceProvider('google-tts', geminiTts)],
+    };
+    const { apply, changes } = recordingApply(() => added);
+    const entry = serviceEntries(view, 'tts', ['google-tts'])[0];
+    expect(entry).toMatchObject({ id: 'google-tts', state: 'available' });
+    mount(createElement(TTSSettings, { view, apply, entry }));
+
+    const speed = byLabel('settings.ttsSpeed') as HTMLInputElement;
+    expect(speed.disabled).toBe(true);
+    expect(speed.value).toBe('1');
+    expect(document.body.textContent).toContain('settings.ttsSpeedUnsupported');
+
+    const key = byLabel('tts-api-key-google-tts');
+    type(key, 'gemini-key-1234');
+    blur(key);
+    await flush();
+    expect(changes[0]).toEqual({
+      kind: 'provider',
+      id: 'google-tts',
+      preset: 'google-tts',
+      apiKey: 'gemini-key-1234',
+    });
+  });
+});
+
 describe('review fixes', () => {
   it('makes the browser speech the narration from an empty workspace', async () => {
     const browserTts: PresetView = {
