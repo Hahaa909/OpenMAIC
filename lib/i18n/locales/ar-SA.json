@@ -1050,6 +1050,7 @@
     "courseMaterialCountLimit": "يمكنك رفع ما يصل إلى 5 ملفات لمواد المقرر",
     "courseMaterialTotalSizeLimit": "يجب أن يكون الحجم الإجمالي لمواد المقرر أقل من 150 ميغابايت",
     "unsupportedCourseMaterial": "لا يدعم {{parser}} نوع الملف هذا. الصيغ المدعومة: {{formats}}",
+    "unsupportedMaterialFormat": "المستخرج الحالي لا يدعم هذه الصيغة. غيّر المستخرج أو اختر ملفًا آخر.",
     "materialQuotaExceeded": "مساحة تخزين المواد ممتلئة. احذف بعض المواد ثم حاول مرة أخرى.",
     "materialUploadFailed": "فشل رفع {{name}}. يرجى المحاولة مرة أخرى.",
     "materialTooLarge": "{{name}} كبير جدًا: الحد الأقصى لحجم المادة {{size}}."

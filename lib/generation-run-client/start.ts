@@ -29,7 +29,7 @@ export class RunStartRefusedError extends Error {
   constructor(
     readonly reason:
       | 'generation.customAgentsUnavailable'
-      | 'upload.unsupportedCourseMaterial'
+      | 'upload.unsupportedMaterialFormat'
       | 'upload.courseMaterialCountLimit'
       | 'upload.courseMaterialTotalSizeLimit',
     readonly values: Record<string, string | number> = {},
@@ -119,7 +119,7 @@ export async function startClassicRun(input: {
     }
     const supported = new Set(policy.formats.map((format) => format.mime));
     if (input.materials.some((file) => !supported.has(materialMime(file)))) {
-      throw new RunStartRefusedError('upload.unsupportedCourseMaterial');
+      throw new RunStartRefusedError('upload.unsupportedMaterialFormat');
     }
     materialIds = [];
     try {

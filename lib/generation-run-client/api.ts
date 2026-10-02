@@ -172,7 +172,7 @@ export function formatBytes(bytes: number): string {
 
 function uploadFailureKey(status: number): string {
   if (status === 413) return 'upload.fileTooLarge';
-  if (status === 415) return 'upload.unsupportedCourseMaterial';
+  if (status === 415) return 'upload.unsupportedMaterialFormat';
   if (status === 429) return 'upload.materialQuotaExceeded';
   return 'upload.materialUploadFailed';
 }

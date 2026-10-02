@@ -1050,6 +1050,7 @@
     "courseMaterialCountLimit": "Du kannst bis zu 5 Dateien als Kursmaterial hochladen",
     "courseMaterialTotalSizeLimit": "Die Gesamtgröße der Kursmaterialien muss unter 150 MB liegen",
     "unsupportedCourseMaterial": "{{parser}} kann diesen Dateityp nicht lesen. Unterstützt: {{formats}}",
+    "unsupportedMaterialFormat": "Dieses Format wird vom aktuellen Extraktor nicht unterstützt. Wechsle den Extraktor oder wähle eine andere Datei.",
     "materialQuotaExceeded": "Dein Materialspeicher ist voll. Lösche einige Materialien und versuche es erneut.",
     "materialUploadFailed": "Hochladen von {{name}} fehlgeschlagen. Bitte versuche es erneut.",
     "materialTooLarge": "{{name}} ist zu groß: Ein Material darf höchstens {{size}} groß sein."

@@ -1050,6 +1050,7 @@
     "courseMaterialCountLimit": "Vous pouvez envoyer jusqu’à 5 supports de cours",
     "courseMaterialTotalSizeLimit": "La taille totale des supports de cours doit rester sous 150 Mo",
     "unsupportedCourseMaterial": "{{parser}} ne prend pas en charge ce type de fichier. Formats pris en charge : {{formats}}",
+    "unsupportedMaterialFormat": "Ce format n’est pas pris en charge par l’extracteur actuel. Changez d’extracteur ou choisissez un autre fichier.",
     "materialQuotaExceeded": "Votre espace de stockage des supports est plein. Supprimez des supports et réessayez.",
     "materialUploadFailed": "Échec de l'envoi de {{name}}. Veuillez réessayer.",
     "materialTooLarge": "{{name}} est trop volumineux : un support peut faire au plus {{size}}."
