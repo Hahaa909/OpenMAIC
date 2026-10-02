@@ -23,6 +23,7 @@ import {
   getReadyOwnerMaterials,
   type OwnerMaterialRecord,
 } from '@/lib/persistence/owner-materials';
+import { ensureSessionMaterialLinkSchema } from '@/lib/persistence/session-material-links';
 
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import { getMaterialByteStore } from '@/lib/server/materials/bytes';
@@ -54,10 +55,11 @@ async function createMaterialStore(connectionString: string): Promise<PgAgentSes
   // The material table references agent_sessions(id), so the agent-session
   // schema (provisioned by getAgentSessionStore) must exist first — the same
   // dependency the URL trust-gate table has inside that schema.
-  await withSchemaBootstrapLock(
-    pool as unknown as ConnectableQueryable,
-    ensureAgentSessionMaterialSchema,
-  );
+  await withSchemaBootstrapLock(pool as unknown as ConnectableQueryable, async (locked) => {
+    await ensureAgentSessionMaterialSchema(locked);
+    // Links reference agent_sessions too, and are read beside the copies.
+    await ensureSessionMaterialLinkSchema(locked);
+  });
   return new PgAgentSessionMaterialStore(pool);
 }
 

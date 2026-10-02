@@ -204,6 +204,12 @@ CREATE INDEX IF NOT EXISTS owner_material_extraction_cache_idx
   ON owner_material (owner_id, extraction_cache_key)
   WHERE extraction_cache_key IS NOT NULL;
 
+-- A source's derivatives: what a conversation's link reaches, and what moving
+-- or deleting a source must take along.
+CREATE INDEX IF NOT EXISTS owner_material_derived_from_idx
+  ON owner_material (derived_from)
+  WHERE derived_from IS NOT NULL;
+
 -- Flat, owner-scoped material folders. Unfiled is folder_id IS NULL, not a
 -- row. Names are unique per owner by their normalized form, as course folders
 -- are.
@@ -249,7 +255,7 @@ export async function ensureOwnerMaterialSchema(queryable: Queryable): Promise<v
   await ensureOwnerMergeSchema(queryable);
 }
 
-interface RawOwnerMaterialRow extends Record<string, unknown> {
+export interface RawOwnerMaterialRow extends Record<string, unknown> {
   id: string;
   owner_id: string;
   kind: string;
@@ -266,7 +272,8 @@ interface RawOwnerMaterialRow extends Record<string, unknown> {
   deleted_at: number | string | null;
 }
 
-const OWNER_MATERIAL_COLUMNS = `id,
+/** The columns {@link ownerMaterialRowToRecord} reads, in `SELECT` order. */
+export const OWNER_MATERIAL_COLUMNS = `id,
   owner_id,
   kind,
   derived_from,
@@ -281,7 +288,7 @@ const OWNER_MATERIAL_COLUMNS = `id,
   created_at,
   deleted_at`;
 
-function rowToRecord(row: RawOwnerMaterialRow): OwnerMaterialRecord {
+export function ownerMaterialRowToRecord(row: RawOwnerMaterialRow): OwnerMaterialRecord {
   return {
     id: row.id,
     ownerId: row.owner_id,
@@ -464,7 +471,7 @@ export async function registerOwnerMaterial(
         Date.now(),
       ],
     );
-    return rowToRecord(inserted.rows[0]);
+    return ownerMaterialRowToRecord(inserted.rows[0]);
   });
 }
 
@@ -492,7 +499,7 @@ export async function finalizeOwnerMaterial(
     [materialId, bytes, sha256],
   );
   if (!result.rows[0]) throw new Error(`material ${materialId} cannot be finalized`);
-  return rowToRecord(result.rows[0]);
+  return ownerMaterialRowToRecord(result.rows[0]);
 }
 
 /**
@@ -571,7 +578,7 @@ export async function publishOwnerMaterialUpload(
           RETURNING ${OWNER_MATERIAL_COLUMNS}`,
         [materialId, input.bytes, input.sha256, input.assetId],
       );
-      return rowToRecord(published.rows[0]!);
+      return ownerMaterialRowToRecord(published.rows[0]!);
     },
   );
 }
@@ -640,7 +647,7 @@ export async function listOwnerMaterials(
       ORDER BY created_at DESC`,
     [ownerId],
   );
-  return result.rows.map(rowToRecord);
+  return result.rows.map(ownerMaterialRowToRecord);
 }
 
 /** Resolve selected ready materials without exposing another owner's rows. */
@@ -659,7 +666,7 @@ export async function getReadyOwnerMaterials(
         AND deleted_at IS NULL`,
     [ownerId, [...materialIds]],
   );
-  return result.rows.map(rowToRecord);
+  return result.rows.map(ownerMaterialRowToRecord);
 }
 
 /** What {@link reassignMaterialFolders} did with one of the source owner's folders. */
