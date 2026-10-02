@@ -661,6 +661,14 @@ const EXPECTED_ASSET_PG_SCHEMA: readonly string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS document_asset_refs_asset_idx
      ON document_asset_refs (asset_id)`,
+  `CREATE TABLE IF NOT EXISTS asset_root_refs (
+     root_kind TEXT NOT NULL,
+     root_id TEXT NOT NULL,
+     asset_id TEXT NOT NULL REFERENCES asset_entries(id) ON DELETE CASCADE,
+     PRIMARY KEY (root_kind, root_id, asset_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS asset_root_refs_asset_idx
+     ON asset_root_refs (asset_id)`,
   `CREATE INDEX IF NOT EXISTS asset_entries_expires_idx
      ON asset_entries (expires_at) WHERE expires_at IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS asset_entries_unreferenced_idx
@@ -671,6 +679,8 @@ const EXPECTED_ASSET_PG_SCHEMA: readonly string[] = [
      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
      enabled_at TIMESTAMPTZ NOT NULL
    )`,
+  `ALTER TABLE asset_reference_tracking
+     ADD COLUMN IF NOT EXISTS rule_version INTEGER NOT NULL DEFAULT 1`,
   `CREATE TABLE IF NOT EXISTS document_asset_withdrawals (
      stage_id TEXT NOT NULL PRIMARY KEY,
      withdrawn_at TIMESTAMPTZ NOT NULL

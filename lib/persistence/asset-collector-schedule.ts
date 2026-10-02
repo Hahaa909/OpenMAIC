@@ -26,6 +26,7 @@
  */
 import {
   AssetCollector,
+  AssetReferenceRuleVersionError,
   AssetReferenceTrackingNotEnabledError,
   StorageLockUnavailableError,
 } from '@openmaic/storage/asset/collector';
@@ -258,6 +259,17 @@ export function startAssetCollectorSchedule(
             'restored away, or this collector is reading a different database from the one ' +
             'the provider initialized.',
           error,
+        );
+      } else if (error instanceof AssetReferenceRuleVersionError) {
+        // Some writer on this database applies newer reference rules than
+        // this process: an instance of a later release is (or was) running.
+        // Only the entry level is refused, so nothing is lost, but no entry is
+        // reclaimed until this process is upgraded.
+        console.error(
+          `Asset collection found reference rules version ${error.databaseVersion} on this ` +
+            `database, newer than the version ${error.knownVersion} this release applies, so ` +
+            'entry reclamation is refused. Byte reclamation is unaffected. Upgrade this ' +
+            'instance; an older release must not run against a database a newer one has used.',
         );
       } else if (error instanceof StorageLockUnavailableError) {
         // Contention, not breakage: some request path held a row this pass
