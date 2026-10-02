@@ -70,6 +70,11 @@ export interface OwnerMaterialEntry extends OwnerMaterialRecord {
   extractionError: string | null;
   /** The latest successful extraction of a source; `null` before the first. */
   extractionResult: OwnerExtractionResult | null;
+  /**
+   * For a derivative, where in its source it came from, as its source's
+   * result records it; `null` for a source or when the extractor said nothing.
+   */
+  lineage: { pageNumber?: number; timeMs?: number } | null;
 }
 
 interface RawOwnerMaterialEntryRow extends RawOwnerMaterialRow {
@@ -77,19 +82,41 @@ interface RawOwnerMaterialEntryRow extends RawOwnerMaterialRow {
   display_name: string | null;
   extraction_error: string | null;
   extraction_result: unknown;
+  derivative_lineage: { pageNumber?: unknown; timeMs?: unknown } | null;
 }
 
-/** The entry columns, every one qualified by `alias`. */
+/**
+ * The entry columns, every one qualified by `alias`. A derivative's page and
+ * time live in its source's result, so they are read from there whatever
+ * else the query returns.
+ */
 function entryColumns(alias: string): string {
-  return [
+  const columns = [
     ...OWNER_MATERIAL_COLUMNS.split(',').map((column) => column.trim()),
     'folder_id',
     'display_name',
     'extraction_error',
     'extraction_result',
-  ]
-    .map((column) => `${alias}.${column}`)
-    .join(', ');
+  ].map((column) => `${alias}.${column}`);
+  columns.push(`(SELECT jsonb_build_object('pageNumber', recorded->'pageNumber',
+                                         'timeMs', recorded->'timeMs')
+       FROM owner_material AS lineage_source,
+            jsonb_array_elements(
+              COALESCE(lineage_source.extraction_result->'derivatives', '[]'::jsonb)
+            ) AS recorded
+      WHERE lineage_source.id = ${alias}.derived_from AND recorded->>'id' = ${alias}.id
+      LIMIT 1) AS derivative_lineage`);
+  return columns.join(', ');
+}
+
+function lineageOf(
+  raw: RawOwnerMaterialEntryRow['derivative_lineage'],
+): OwnerMaterialEntry['lineage'] {
+  if (!raw) return null;
+  const lineage: { pageNumber?: number; timeMs?: number } = {};
+  if (typeof raw.pageNumber === 'number') lineage.pageNumber = raw.pageNumber;
+  if (typeof raw.timeMs === 'number') lineage.timeMs = raw.timeMs;
+  return Object.keys(lineage).length > 0 ? lineage : null;
 }
 
 export function ownerMaterialEntryOf(row: RawOwnerMaterialEntryRow): OwnerMaterialEntry {
@@ -99,6 +126,7 @@ export function ownerMaterialEntryOf(row: RawOwnerMaterialEntryRow): OwnerMateri
     displayName: row.display_name,
     extractionError: row.extraction_error,
     extractionResult: (row.extraction_result ?? null) as OwnerExtractionResult | null,
+    lineage: lineageOf(row.derivative_lineage),
   };
 }
 
@@ -182,6 +210,114 @@ export async function getSessionOwnerMaterial(
     [sessionId, materialId],
   );
   return result.rows[0] ? ownerMaterialEntryOf(result.rows[0]) : null;
+}
+
+export interface OwnerLibraryListOptions {
+  /** Omitted: every folder. `null`: Unfiled only. A string: that folder only. */
+  folderId?: string | null;
+  /** Case-insensitive literal text in the name, original filename or MIME type. */
+  query?: string;
+  /** Only sources with a successful extraction: the materials search can read. */
+  withTextOnly?: boolean;
+  /** Keyset cursor: list only materials after this id in the listing's order. */
+  before?: string;
+  /** Default 100, at most 200. */
+  limit?: number;
+}
+
+/** `%`, `_` and `\` taken literally in a LIKE pattern. */
+function likeLiteral(text: string): string {
+  return text.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+/**
+ * The session owner's live library, newest first: sources and their live
+ * derivatives, attached or not. A derivative is listed only while its source
+ * is live, and is filed with it. `folderId` distinguishes omitted (every
+ * folder) from `null` (Unfiled).
+ */
+export async function listSessionOwnerLibrary(
+  queryable: Queryable,
+  sessionId: string,
+  options: OwnerLibraryListOptions = {},
+): Promise<OwnerMaterialEntry[]> {
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 200);
+  const params: unknown[] = [sessionId];
+  const where: string[] = [];
+  if (options.folderId === null) {
+    where.push('material.folder_id IS NULL');
+  } else if (options.folderId !== undefined) {
+    params.push(options.folderId);
+    where.push(`material.folder_id = $${params.length}`);
+  }
+  if (options.query) {
+    params.push(`%${likeLiteral(options.query)}%`);
+    const p = `$${params.length}`;
+    where.push(
+      `(COALESCE(material.display_name, '') ILIKE ${p} ESCAPE '\\'
+        OR COALESCE(material.original_name, '') ILIKE ${p} ESCAPE '\\'
+        OR COALESCE(material.mime, '') ILIKE ${p} ESCAPE '\\')`,
+    );
+  }
+  if (options.withTextOnly) {
+    where.push(`material.kind = 'source' AND material.extraction_result IS NOT NULL`);
+  }
+  if (options.before !== undefined) {
+    params.push(options.before);
+    const p = `$${params.length}`;
+    where.push(`(material.created_at, material.id) < (
+        SELECT cursor.created_at, cursor.id FROM owner_material AS cursor
+         WHERE cursor.id = ${p} AND cursor.owner_id = session.owner_id)`);
+  }
+  params.push(limit);
+  const result = await queryable.query<RawOwnerMaterialEntryRow>(
+    `SELECT ${entryColumns('material')}
+       FROM agent_sessions AS session
+       JOIN owner_material AS material ON material.owner_id = session.owner_id
+       LEFT JOIN owner_material AS source ON source.id = material.derived_from
+      WHERE session.id = $1 AND session.deleted_at IS NULL
+        AND material.status = 'ready' AND material.deleted_at IS NULL
+        AND (material.derived_from IS NULL
+          OR (source.owner_id = material.owner_id AND source.status = 'ready'
+              AND source.deleted_at IS NULL))
+        ${where.map((condition) => `AND ${condition}`).join('\n        ')}
+      ORDER BY material.created_at DESC, material.id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return result.rows.map(ownerMaterialEntryOf);
+}
+
+/**
+ * Which of `materialIds` the session has attached: sources its links name and
+ * their derivatives, and sources it holds a copy of -- a copy row that names
+ * the source, or one the pre-upgrade binder keyed on the source id. A copy
+ * reaches only its source: its derivatives are the copy's own session rows.
+ */
+export async function attachedMaterialIds(
+  queryable: Queryable,
+  sessionId: string,
+  materialIds: readonly string[],
+): Promise<Set<string>> {
+  if (materialIds.length === 0) return new Set();
+  const result = await queryable.query<{ id: string }>(
+    `WITH linked AS (${LINKED_SOURCES})
+     SELECT material.id
+       FROM linked
+       JOIN owner_material AS material
+         ON material.id = linked.id OR material.derived_from = linked.id
+      WHERE material.id = ANY($2::text[])
+     UNION
+     SELECT COALESCE(copy.owner_material_id, copy.id) AS id
+       FROM agent_session_materials AS copy
+       JOIN agent_sessions AS session
+         ON session.id = copy.session_id AND session.deleted_at IS NULL
+      WHERE copy.session_id = $1
+        AND (copy.owner_material_id = ANY($2::text[])
+          OR (copy.owner_material_id IS NULL AND copy.id = ANY($2::text[])))`,
+    [sessionId, [...materialIds]],
+  );
+  return new Set(result.rows.map((row) => row.id));
 }
 
 /** One attached material: the id the conversation knows it by, and its owner row. */

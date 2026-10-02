@@ -60,7 +60,7 @@ import type { Queryable, WithTransaction } from '@openmaic/storage/document/pg';
 import { encodeJson } from '@openmaic/storage/pg-json';
 
 import { MATERIAL_ROOT_KIND, withMaterialRoots } from './material-roots';
-import { fenceOwnerWrite } from './owner-merges';
+import { fenceOwnerWrite, forwardOwnerWrite } from './owner-merges';
 
 /** Claims one explicit start may spend, takeovers of an expired lease included. */
 export const MAX_OWNER_EXTRACTION_CLAIMS = 3;
@@ -166,15 +166,21 @@ function statusJson(status: OwnerExtractionStatus): string {
  * are never re-run. Queueing resets the claim budget, never the token.
  * Returns the source's status afterwards, or `null` when the owner has no
  * such ready, undeleted source.
+ *
+ * `fence: 'request'` (the default) refuses a retired owner, as a request's
+ * write does. `fence: 'background'` follows a claim to the account: an agent
+ * run that started before its owner was claimed keeps working for the account
+ * its session moved to, as its other writes do.
  */
 export async function ensureOwnerMaterialExtraction(
   withTransaction: WithTransaction,
   ownerId: string,
   materialId: string,
+  options: { fence?: 'request' | 'background' } = {},
 ): Promise<{ status: OwnerExtractionStatus; queued: boolean } | null> {
   return withTransaction(async (tx) => {
-    // A request path: a retired owner is refused, not forwarded.
-    await fenceOwnerWrite(tx, ownerId);
+    if ((options.fence ?? 'request') === 'request') await fenceOwnerWrite(tx, ownerId);
+    else ownerId = await forwardOwnerWrite(tx, ownerId);
     const queued = await tx.query<{ id: string }>(
       `UPDATE owner_material
           SET extraction = $3::jsonb, extraction_claims = 0, extraction_token = NULL,
