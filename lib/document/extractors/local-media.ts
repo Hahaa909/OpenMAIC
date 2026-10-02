@@ -400,7 +400,13 @@ function sourceExtension(mime: string): string {
   return extensions[mime] ?? '.media';
 }
 
-function derivedStem(originalName: string | null, fallback: string): string {
+/** The name of a keyframe taken `timeMs` into the source named `stem`. */
+export function keyframeTitle(stem: string, timeMs: number): string {
+  return `${stem} at ${(timeMs / 1000).toFixed(3)} seconds`;
+}
+
+/** A source's file name without its extension, for naming what is derived from it. */
+export function derivedStem(originalName: string | null, fallback: string): string {
   if (!originalName) return fallback;
   const name = basename(originalName);
   const extension = extname(name);
@@ -750,7 +756,7 @@ export async function extractMediaMaterial(
             data: `data:${prepared.mime};base64,${prepared.buffer.toString('base64')}`,
             width: prepared.width,
             height: prepared.height,
-            description: `${stem} at ${(timeMs / 1000).toFixed(3)} seconds`,
+            description: keyframeTitle(stem, timeMs),
             metadata: { timeMs },
           };
           keyframes.push({ asset, timeMs });
