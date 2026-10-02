@@ -23,12 +23,15 @@ import {
   resolvedMaterialId,
 } from '@/lib/server/agent-runtime/material-resolver';
 import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
+import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import {
   attachOwnerMaterialsToSession,
   ensureSessionMaterialLinkSchema,
   getLinkedOwnerMaterial,
   getSessionOwnerMaterial,
   listLinkedOwnerMaterials,
+  listSessionOwnerLibrary,
+  attachedMaterialIds,
 } from '@/lib/persistence/session-material-links';
 
 import {
@@ -352,4 +355,174 @@ export async function textAcrossClaimScenario(h: ExtractionHarness): Promise<voi
   expect(read?.text).toContain('# Lesson');
   expect(read?.revision).toBe(stale.extractionResult!.revision);
   expect(await readOwnerMaterialText(staleGone)).toBeNull();
+}
+
+/** Run one material tool of a conversation with the production dependencies. */
+async function runTool(sessionId: string, name: string, params: Record<string, unknown>) {
+  const tool = buildMaterialTools({ sessionId, waitForDelay: async () => undefined }).find(
+    (candidate) => candidate.name === name,
+  )!;
+  return (await tool.execute('call', params as never)) as {
+    content: Array<{ text: string }>;
+    details: Record<string, unknown>;
+    isError?: boolean;
+  };
+}
+
+/**
+ * The library flow through the real tools: an unattached source is invisible
+ * in session scope, extracted on the owner chain in library scope, then read
+ * and searched by its own id with the revision of its result. Nothing is
+ * attached along the way.
+ */
+export async function libraryToolFlowScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  await seedSource(h, 'src-a');
+
+  expect((await runTool('ses-1', 'read_material', { materialId: 'src-a' })).details).toEqual({
+    status: 'not_found',
+  });
+  const listed = await runTool('ses-1', 'list_materials', { scope: 'library' });
+  expect(listed.details.materials).toEqual([
+    expect.objectContaining({
+      materialId: 'src-a',
+      attached: false,
+      extraction: { status: 'idle' },
+    }),
+  ]);
+
+  const extract = await runTool('ses-1', 'extract_material', {
+    materialId: 'src-a',
+    scope: 'library',
+  });
+  expect(extract.details).toEqual({ materialId: 'src-a', status: 'pending', started: true });
+  // Again: already queued, not started a second time.
+  expect(
+    (await runTool('ses-1', 'extract_material', { materialId: 'src-a', scope: 'library' })).details,
+  ).toMatchObject({ status: 'pending', started: false });
+
+  expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+  const waited = await runTool('ses-1', 'wait_for_materials', {
+    materialIds: ['src-a'],
+    scope: 'library',
+    timeoutSec: 1,
+  });
+  expect(waited.details).toMatchObject({ complete: true, materials: [{ status: 'done' }] });
+
+  const revision = (await stateOf(h, 'src-a')).extraction_result!.revision;
+  const read = await runTool('ses-1', 'read_material', { materialId: 'src-a', scope: 'library' });
+  expect(read.content[0]!.text).toContain('# Lesson');
+  expect(read.details).toMatchObject({ materialId: 'src-a', revision, offset: 0 });
+
+  const search = await runTool('ses-1', 'search_material', { query: 'lesson', scope: 'library' });
+  expect(search.details.hits).toEqual([expect.objectContaining({ materialId: 'src-a', revision })]);
+
+  // Library reads attach nothing.
+  expect(await linksOf(h, 'ses-1')).toEqual([]);
+}
+
+/**
+ * The library listing: omitted folderId lists every folder, null lists
+ * Unfiled only; query matches names and types literally; derivatives of a
+ * deleted source and other owners' materials never appear.
+ */
+export async function libraryListingScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  await seedSource(h, 'src-unfiled');
+  h.clock.now += 1;
+  await seedSource(h, 'src-filed', { folderId: 'fold-1' });
+  await seedDerivative(h, 'img-filed', 'src-filed');
+  await h.pool.query(`UPDATE owner_material SET folder_id = 'fold-1' WHERE id = 'img-filed'`);
+  await seedSource(h, 'src-gone');
+  await seedDerivative(h, 'img-gone', 'src-gone');
+  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+  await seedSource(h, 'src-100%_done');
+  await seedSource(h, 'src-foreign', { owner: OTHER });
+
+  const ids = async (options: Parameters<typeof listSessionOwnerLibrary>[2]) =>
+    (await listSessionOwnerLibrary(h.pool as never, 'ses-1', options)).map((m) => m.id).sort();
+
+  expect(await ids({})).toEqual(['img-filed', 'src-100%_done', 'src-filed', 'src-unfiled']);
+  expect(await ids({ folderId: null })).toEqual(['src-100%_done', 'src-unfiled']);
+  expect(await ids({ folderId: 'fold-1' })).toEqual(['img-filed', 'src-filed']);
+  // Literal: % and _ match only themselves.
+  expect(await ids({ query: '100%_' })).toEqual(['src-100%_done']);
+  expect(await ids({ query: 'UNFILED' })).toEqual(['src-unfiled']);
+  expect(await ids({ query: '%' })).toEqual(['src-100%_done']);
+
+  // Keyset paging, newest first.
+  const firstPage = await listSessionOwnerLibrary(h.pool as never, 'ses-1', { limit: 2 });
+  const secondPage = await listSessionOwnerLibrary(h.pool as never, 'ses-1', {
+    limit: 2,
+    before: firstPage.at(-1)!.id,
+  });
+  expect([...firstPage, ...secondPage].map((m) => m.id).sort()).toEqual(await ids({}));
+}
+
+/**
+ * What a listing derives from rows it may not include: a derivative's page
+ * and time come from its source's result even when the source is filtered
+ * out; a copy counts as attached; a text-only listing skips derivatives, so
+ * newer images never crowd an older source out of a search.
+ */
+export async function listingDerivedFieldsScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  await seedSource(h, 'src-a');
+  await h.pool.query(
+    `UPDATE owner_material
+        SET extraction = '{"status":"done"}'::jsonb,
+            extraction_result = $2::jsonb
+      WHERE id = $1`,
+    [
+      'src-a',
+      JSON.stringify({
+        revision: 'rev-a',
+        text: { assetId: 'pool-text', chars: 4 },
+        extractor: { id: 'x', version: '1', options: {} },
+        stats: {},
+        derivatives: [
+          {
+            id: 'img-a1',
+            kind: 'image',
+            assetId: 'p',
+            title: 't',
+            mime: 'image/png',
+            bytes: 3,
+            sha256: 's',
+            timeMs: 1500,
+          },
+        ],
+        completedAt: 0,
+      }),
+    ],
+  );
+  h.clock.now += 1;
+  for (let index = 0; index < 5; index += 1) {
+    await seedDerivative(h, index === 0 ? 'img-a1' : `img-a${index + 1}`, 'src-a');
+  }
+  await seedSource(h, 'src-copied');
+  await seedSource(h, 'src-old-copy');
+  await seedSource(h, 'src-none');
+  await seedCopy(h, 'ses-1', 'mat_copy', 'src-copied');
+  await seedCopy(h, 'ses-1', 'src-old-copy', null);
+
+  // The query matches the derivative only; its source is not in the result.
+  const byName = await listSessionOwnerLibrary(h.pool as never, 'ses-1', { query: 'img-a1' });
+  expect(byName.map((m) => [m.id, m.lineage])).toEqual([['img-a1', { timeMs: 1500 }]]);
+
+  expect(
+    [
+      ...(await attachedMaterialIds(h.pool as never, 'ses-1', [
+        'src-copied',
+        'src-old-copy',
+        'src-none',
+      ])),
+    ].sort(),
+  ).toEqual(['src-copied', 'src-old-copy']);
+
+  const withText = await listSessionOwnerLibrary(h.pool as never, 'ses-1', {
+    withTextOnly: true,
+    limit: 2,
+  });
+  expect(withText.map((m) => m.id)).toEqual(['src-a']);
 }

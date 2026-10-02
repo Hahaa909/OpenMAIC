@@ -17,7 +17,10 @@ import {
   bootLibraryHarness,
   deletedThroughLinkScenario,
   existingCopyScenario,
+  libraryListingScenario,
+  listingDerivedFieldsScenario,
   libraryReachScenario,
+  libraryToolFlowScenario,
   linkAcrossClaimScenario,
   resolverScenario,
   textAcrossClaimScenario,
@@ -87,6 +90,14 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
     it('keeps a link valid across a claim', async () => {
       await linkAcrossClaimScenario(await boot());
     });
+
+    it('lists the library by folder, Unfiled and literal query, in pages', async () => {
+      await libraryListingScenario(await boot());
+    });
+
+    it('derives lineage, attachment and searchable sources beyond the rows listed', async () => {
+      await listingDerivedFieldsScenario(await boot());
+    });
   });
 
   describe('resolver', () => {
@@ -96,6 +107,12 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
 
     it('reads a source’s text across a claim, with the revision it found', async () => {
       await textAcrossClaimScenario(await boot());
+    });
+  });
+
+  describe('tools', () => {
+    it('extracts, waits for, reads and searches a library source by its own id', async () => {
+      await libraryToolFlowScenario(await boot());
     });
   });
 });
