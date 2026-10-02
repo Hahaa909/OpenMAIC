@@ -89,13 +89,6 @@ const SHIPPED: readonly (readonly [
     'd440298e2262b7ce4688848c2a8e23ca7d26b29e2b75cfc7011c0e60308178c5',
   ],
   [
-    'classroom-generation-jobs',
-    1,
-    'baseline',
-    false,
-    'f020fcefde84c2c397b05db5ae43d98702ec53b87267781191c48a002af3322d',
-  ],
-  [
     'legacy-classroom-imports',
     1,
     'baseline',
@@ -158,9 +151,29 @@ const SHIPPED: readonly (readonly [
     true,
     '7f6f57d0c4ca3056e8a01de8fa243bc20db5e300099275aee7b5a10de5387edf',
   ],
+  [
+    'generation-runs',
+    3,
+    'run_report',
+    true,
+    '0280652b73aa1ec86924e6ef495705bb980f48781b851914571e10a60038de75',
+  ],
 ];
 
+/**
+ * Stores no release provisions any more. A database may still record their
+ * versions (the tables are left in place), so a new store must not take one
+ * of these names: it would inherit those recorded versions.
+ * - `classroom-generation-jobs`: the headless API's job table of pre-release
+ *   builds, replaced by generation runs.
+ */
+const RETIRED_STORES: readonly string[] = ['classroom-generation-jobs'];
+
 describe('shipped schema migrations', () => {
+  it('reuse no retired store name', () => {
+    for (const set of APP_SCHEMA_STORES) expect(RETIRED_STORES).not.toContain(set.store);
+  });
+
   it('are exactly the pinned (store, version, name, transaction, checksum) rows', async () => {
     const actual: (readonly [string, number, string, boolean, string])[] = [];
     for (const set of APP_SCHEMA_STORES) {
