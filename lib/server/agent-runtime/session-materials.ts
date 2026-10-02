@@ -317,7 +317,7 @@ async function bindOwnerMaterial(
   ownerMaterialId: string,
   record: Pick<
     OwnerMaterialRecord,
-    'id' | 'ownerId' | 'assetId' | 'ossKey' | 'mime' | 'originalName' | 'bytes'
+    'id' | 'ownerId' | 'assetId' | 'ossKey' | 'sha256' | 'mime' | 'originalName' | 'bytes'
   >,
 ): Promise<AgentSessionMaterial> {
   const existing = await store.getMaterialByOwnerMaterialId(sessionId, ownerMaterialId);

@@ -278,6 +278,7 @@ async function defaultReadSource(claim: OwnerExtractionClaim): Promise<Buffer> {
     ownerId: claim.ownerId,
     assetId: claim.assetId,
     ossKey: claim.ossKey,
+    sha256: claim.sha256,
   });
 }
 

@@ -3,7 +3,7 @@
  * PGlite: allocation and publication, the cleanup deletes and their root
  * withdrawal, and the pool-first reader.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { PGlite } from '@electric-sql/pglite';
 import type { Queryable, WithTransaction } from '@openmaic/storage/document/pg';
@@ -50,6 +50,7 @@ class PGlitePool {
 const OWNER = 'user:alice';
 const ACCOUNT = 'user:alice-account';
 const BYTES = Buffer.from('lesson bytes');
+const DIGEST = createHash('sha256').update(BYTES).digest('hex');
 
 describe('owner material uploads in the asset pool', () => {
   let db: PGlite;
@@ -210,6 +211,7 @@ describe('owner material uploads in the asset pool', () => {
           ownerId: OWNER,
           assetId,
           ossKey: '',
+          sha256: DIGEST,
         }),
       ).toEqual(BYTES);
     });
@@ -331,6 +333,7 @@ describe('owner material uploads in the asset pool', () => {
           ownerId: OWNER,
           assetId: null,
           ossKey: 'materials/legacy',
+          sha256: DIGEST,
         }),
       ).toEqual(BYTES);
     });
@@ -356,6 +359,7 @@ describe('owner material uploads in the asset pool', () => {
         ownerId: OWNER,
         assetId: null,
         ossKey: 'materials/migrated',
+        sha256: DIGEST,
       };
 
       expect(await readOwnerMaterialBytes(stale)).toEqual(BYTES);
@@ -365,7 +369,7 @@ describe('owner material uploads in the asset pool', () => {
       await reserve('mat_claimed');
       const assetId = await allocate();
       await publish('mat_claimed', assetId);
-      const beforeClaim = { id: 'mat_claimed', ownerId: OWNER, assetId, ossKey: '' };
+      const beforeClaim = { id: 'mat_claimed', ownerId: OWNER, assetId, ossKey: '', sha256: null };
       // What a claim does to these two rows, in its one transaction.
       await db.query('UPDATE owner_material SET owner_id = $2 WHERE id = $1', [
         'mat_claimed',
@@ -388,8 +392,119 @@ describe('owner material uploads in the asset pool', () => {
           ownerId: OWNER,
           assetId: null,
           ossKey: 'materials/gone',
+          sha256: DIGEST,
         }),
       ).rejects.toBeInstanceOf(OwnerMaterialBytesUnavailableError);
+    });
+
+    it('refuses an old object that does not match its recorded digest, or has none', async () => {
+      objects.set('materials/damaged', Buffer.from('lesson bytEs'));
+      objects.set('materials/undigested', BYTES);
+      const legacy = (id: string, ossKey: string, sha256: string | null) =>
+        readOwnerMaterialBytes({ id, ownerId: OWNER, assetId: null, ossKey, sha256 });
+
+      await expect(legacy('mat_damaged', 'materials/damaged', DIGEST)).rejects.toBeInstanceOf(
+        OwnerMaterialBytesUnavailableError,
+      );
+      await expect(legacy('mat_undigested', 'materials/undigested', null)).rejects.toBeInstanceOf(
+        OwnerMaterialBytesUnavailableError,
+      );
+    });
+
+    /**
+     * A ready row the backfill moved but whose old object it could not delete:
+     * a pointer and a root, and still its `oss_key`.
+     */
+    const retainedOldObject = async (id: string, old: Buffer = BYTES) => {
+      const ossKey = `materials/${id}`;
+      await reserve(id, ossKey);
+      await db.query(`UPDATE owner_material SET status = 'ready', sha256 = $2 WHERE id = $1`, [
+        id,
+        DIGEST,
+      ]);
+      objects.set(ossKey, old);
+      const assetId = await allocate();
+      await withMaterialRoots(
+        provider,
+        { ownerId: OWNER, fence: 'background', materialIds: [id] },
+        async ({ tx, changeRoots }) => {
+          await changeRoots({ add: [{ materialId: id, assetIds: [assetId] }] });
+          await tx.query('UPDATE owner_material SET asset_id = $2 WHERE id = $1', [id, assetId]);
+        },
+      );
+      return { id, ownerId: OWNER, assetId, ossKey, sha256: DIGEST };
+    };
+
+    it('reads the retained old object when the pool has no entry for the pointer', async () => {
+      const record = await retainedOldObject('mat_retained');
+      await db.query('DELETE FROM asset_entries WHERE id = $1', [record.assetId]);
+
+      expect(await readOwnerMaterialBytes(record)).toEqual(BYTES);
+    });
+
+    it('reads the retained old object when every pool read throws', async () => {
+      const record = await retainedOldObject('mat_retained_throws');
+      const resolve = vi
+        .spyOn(Object.getPrototypeOf(provider.assetStore), 'resolve')
+        .mockRejectedValue(new Error('pool unavailable'));
+
+      try {
+        expect(await readOwnerMaterialBytes(record)).toEqual(BYTES);
+        // The first read and the fenced retry both tried the pool.
+        expect(resolve).toHaveBeenCalledTimes(2);
+      } finally {
+        resolve.mockRestore();
+      }
+    });
+
+    it('reads the retained old object after a SQL error in the fenced pool read, and the connection recovers', async () => {
+      const record = await retainedOldObject('mat_retained_sql');
+      // Every pool read now fails in the database, leaving its transaction aborted.
+      await db.query('ALTER TABLE asset_entries RENAME TO asset_entries_away');
+      try {
+        expect(await readOwnerMaterialBytes(record)).toEqual(BYTES);
+        // Not left inside an aborted transaction.
+        expect((await db.query<{ one: number }>('SELECT 1 AS one')).rows).toEqual([{ one: 1 }]);
+      } finally {
+        await db.query('ALTER TABLE asset_entries_away RENAME TO asset_entries');
+      }
+    });
+
+    it('refuses a retained old object that does not match its recorded digest', async () => {
+      const record = await retainedOldObject('mat_retained_damaged', Buffer.from('lesson bytEs'));
+      await db.query('DELETE FROM asset_entries WHERE id = $1', [record.assetId]);
+
+      await expect(readOwnerMaterialBytes(record)).rejects.toBeInstanceOf(
+        OwnerMaterialBytesUnavailableError,
+      );
+    });
+
+    it('refuses a damaged retained old object when every pool read throws', async () => {
+      const record = await retainedOldObject(
+        'mat_retained_damaged_throws',
+        Buffer.from('lesson bytEs'),
+      );
+      const resolve = vi
+        .spyOn(Object.getPrototypeOf(provider.assetStore), 'resolve')
+        .mockRejectedValue(new Error('pool unavailable'));
+
+      try {
+        await expect(readOwnerMaterialBytes(record)).rejects.toBeInstanceOf(
+          OwnerMaterialBytesUnavailableError,
+        );
+      } finally {
+        resolve.mockRestore();
+      }
+    });
+
+    it('takes the digest from the fenced re-read, not from a stale record', async () => {
+      const record = await retainedOldObject('mat_retained_stale_digest');
+      await db.query('DELETE FROM asset_entries WHERE id = $1', [record.assetId]);
+
+      // A record taken before the pointer: no pointer, no digest of its own.
+      expect(
+        await readOwnerMaterialBytes({ ...record, assetId: null, ossKey: '', sha256: null }),
+      ).toEqual(BYTES);
     });
   });
 });

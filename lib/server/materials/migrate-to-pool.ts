@@ -8,8 +8,11 @@
  * 1. reads the object and checks it against the digest recorded at upload;
  * 2. allocates a pending pool entry for it under the owner's own partition;
  * 3. publishes the pointer and the `('material', id)` root in one transaction
- *    (`withMaterialRoots`), only if the row has no pointer yet -- a second
- *    migrator of the same row gives up, and its allocation expires;
+ *    (`withMaterialRoots`), only if the row is still a ready source with no
+ *    pointer -- a second migrator of the same row gives up, and so does a pass
+ *    whose row was deleted meanwhile. A pass that gives up this way removes its
+ *    own allocation, which nothing names, so it does not hold quota until it
+ *    expires; a publication whose outcome is uncertain keeps it;
  * 4. re-reads the row, and only when the pointer is there, committed, deletes
  *    the object and clears `oss_key`.
  *
@@ -103,6 +106,25 @@ export async function migrateOwnerMaterialsToPool(
   const byteStore = getMaterialByteStore();
   const report = emptyReport();
 
+  /**
+   * Remove an allocation whose publication committed without naming it. Under
+   * the owner the row has now: a claim since the allocation moved it to the
+   * account. A failure leaves it to expire.
+   */
+  const releaseAllocation = async (row: CandidateRow, assetId: string): Promise<void> => {
+    try {
+      await provider.withTransaction(async (tx) => {
+        const ownerId = await forwardOwnerWrite(tx, row.owner_id);
+        await provider.assetStoreIn(tx).remove(assetPrincipalForOwner(ownerId), assetId);
+      });
+    } catch (error) {
+      console.warn(
+        `[material-backfill] unused allocation for material ${row.id} left to expire`,
+        error,
+      );
+    }
+  };
+
   /** Steps 1-3 for a row with no pointer. `true` when this pass published one. */
   const publish = async (row: CandidateRow): Promise<boolean> => {
     let bytes: Buffer;
@@ -163,9 +185,13 @@ export async function migrateOwnerMaterialsToPool(
         return true;
       },
     );
-    if (published) report.migrated += 1;
-    else report.skippedLost += 1;
-    return published;
+    if (published) {
+      report.migrated += 1;
+      return true;
+    }
+    report.skippedLost += 1;
+    await releaseAllocation(row, assetId);
+    return false;
   };
 
   /** Step 4: delete the old object only once the committed row points into the pool. */

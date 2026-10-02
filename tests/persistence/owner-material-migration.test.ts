@@ -196,7 +196,13 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     const c = await legacySource('mat-c');
     // A session's own copy, and a record taken before the backfill.
     objects.set('materials/session-1/copy/raw', a);
-    const before = { id: 'mat-a', ownerId: ANON, assetId: null, ossKey: 'objects/mat-a' };
+    const before = {
+      id: 'mat-a',
+      ownerId: ANON,
+      assetId: null,
+      ossKey: 'objects/mat-a',
+      sha256: digest(a),
+    };
 
     expect(await run()).toEqual({ ...zero, scanned: 3, migrated: 3, oldBytesRemoved: 3 });
 
@@ -210,7 +216,13 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
       expect(await rootsOf(id)).toEqual([row!.asset_id]);
       expect((await entryOf(row!.asset_id!))?.committed_at).not.toBeNull();
       expect(
-        await readOwnerMaterialBytes({ id, ownerId: ANON, assetId: row!.asset_id, ossKey: '' }),
+        await readOwnerMaterialBytes({
+          id,
+          ownerId: ANON,
+          assetId: row!.asset_id,
+          ossKey: '',
+          sha256: digest(bytes),
+        }),
       ).toEqual(bytes);
     }
     expect(deletes.sort()).toEqual(['objects/mat-a', 'objects/mat-b', 'objects/mat-c']);
@@ -259,6 +271,12 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     expect(await rootsOf('mat-a')).toEqual([]);
     expect(deletes).toEqual([]);
     expect(objects.get('objects/mat-a')).toEqual(bytes);
+    // A publication that threw is not known to have failed: its allocation
+    // stays, pending, for the collector.
+    const kept = (
+      await h.pool.query<{ committed_at: unknown }>('SELECT committed_at FROM asset_entries')
+    ).rows;
+    expect(kept).toEqual([{ committed_at: null }]);
 
     expect(await run()).toMatchObject({ migrated: 1, oldBytesRemoved: 1, failed: 0 });
   });
@@ -269,10 +287,23 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     pool.loseCommitAfter = /UPDATE owner_material SET asset_id = \$2 WHERE id = \$1/;
 
     expect(await run()).toMatchObject({ scanned: 1, migrated: 0, failed: 1 });
-    // It did commit, but this pass cannot know: the object stays.
-    expect((await rowOf('mat-a'))?.asset_id).not.toBeNull();
+    // It did commit, but this pass cannot know: the object stays, and so does
+    // the allocation, which the row now names.
+    const pointed = await rowOf('mat-a');
+    expect(pointed?.asset_id).not.toBeNull();
     expect(deletes).toEqual([]);
     expect(objects.get('objects/mat-a')).toEqual(bytes);
+    expect(await entryCount()).toBe(1);
+    expect(await rootsOf('mat-a')).toEqual([pointed!.asset_id]);
+    expect(
+      await readOwnerMaterialBytes({
+        id: 'mat-a',
+        ownerId: ANON,
+        assetId: pointed!.asset_id,
+        ossKey: '',
+        sha256: digest(bytes),
+      }),
+    ).toEqual(bytes);
 
     // The next pass goes by the committed row: no second publication.
     expect(await run()).toEqual({ ...zero, scanned: 1, oldBytesRemoved: 1 });
@@ -333,7 +364,7 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     expect(deletes).toEqual([]);
   });
 
-  it('gives up on a row another backfill published first, and keeps that one pointer', async () => {
+  it('gives up on a row another backfill published first, keeps that one pointer, and removes its own allocation', async () => {
     await boot();
     const bytes = await legacySource('mat-a');
     // While this pass reads the object, a second pass migrates the same row
@@ -351,14 +382,75 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     expect(second).toMatchObject({ migrated: 1, oldBytesRemoved: 1 });
     const row = await rowOf('mat-a');
     expect(await rootsOf('mat-a')).toEqual([row!.asset_id]);
-    // The loser's allocation is a pending entry nothing names, left to expire.
+    // The loser's allocation, which nothing names, is gone: only the winner's
+    // entry is left, and only it counts against the owner's quota.
     const entries = (
       await h.pool.query<{ id: string; committed_at: unknown }>(
         'SELECT id, committed_at FROM asset_entries ORDER BY id',
       )
     ).rows;
-    expect(entries).toHaveLength(2);
-    expect(entries.filter((entry) => entry.committed_at === null)).toHaveLength(1);
+    expect(entries.map((entry) => entry.id)).toEqual([row!.asset_id]);
+    expect(entries[0]?.committed_at).not.toBeNull();
+  });
+
+  it('removes its allocation when the row was deleted before the publication', async () => {
+    await boot();
+    const bytes = await legacySource('mat-a');
+    onRead = async () => {
+      await h.pool.query(`UPDATE owner_material SET deleted_at = 1 WHERE id = 'mat-a'`);
+    };
+
+    expect(await run()).toMatchObject({ scanned: 1, migrated: 0, skippedLost: 1, failed: 0 });
+    expect(await entryCount()).toBe(0);
+    expect(await rootsOf('mat-a')).toEqual([]);
+    expect(deletes).toEqual([]);
+    expect(objects.get('objects/mat-a')).toEqual(bytes);
+  });
+
+  it('removes a losing allocation made for the account after a claim, under the account', async () => {
+    await boot();
+    const bytes = await legacySource('mat-a');
+    // The claim lands before this pass allocates, so its allocation is made
+    // for the account; the second pass then publishes first.
+    onRead = async () => {
+      await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+      objects.set('objects/mat-a', bytes);
+      await run();
+      objects.set('objects/mat-a', bytes);
+    };
+
+    expect(await run()).toMatchObject({ scanned: 1, migrated: 0, skippedLost: 1 });
+
+    const row = await rowOf('mat-a');
+    expect(row?.owner_id).toBe(ACCOUNT);
+    const entries = (
+      await h.pool.query<{ id: string; principal: string }>(
+        'SELECT id, principal FROM asset_entries',
+      )
+    ).rows;
+    expect(entries).toEqual([
+      { id: row!.asset_id, principal: assetPrincipalForOwner(ACCOUNT).key },
+    ]);
+  });
+
+  it('leaves a losing allocation to expire when removing it fails, without failing the row', async () => {
+    await boot();
+    const bytes = await legacySource('mat-a');
+    onRead = async () => {
+      objects.set('objects/mat-a', bytes);
+      await run();
+      objects.set('objects/mat-a', bytes);
+    };
+    pool.failOn = /^\s*DELETE FROM asset_entries/;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(await run()).toMatchObject({ scanned: 1, migrated: 0, skippedLost: 1, failed: 0 });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('unused allocation for material mat-a left to expire'),
+      expect.anything(),
+    );
+    // The winner's entry, and this pass's allocation, kept to expire.
+    expect(await entryCount()).toBe(2);
   });
 
   it('follows a claim that lands mid-backfill to the account', async () => {
@@ -380,6 +472,7 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
         ownerId: ACCOUNT,
         assetId: row!.asset_id,
         ossKey: '',
+        sha256: digest(bytes),
       }),
     ).toEqual(bytes);
   });
