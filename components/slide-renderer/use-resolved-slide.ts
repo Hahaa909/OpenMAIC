@@ -8,8 +8,7 @@ import { useMayGenerateForStage } from '@/lib/classroom/generation-permission';
 import { useAssetUrlLeases, type AssetUrlLeaseState } from '@/lib/media/use-asset-url';
 import { mayNameAPoolAsset } from '@/lib/media/media-placeholder';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
-import { mediaGenerationDisabled as isMediaGenerationDisabled } from '@/lib/model-settings/capabilities';
-import { useModelCapabilities } from '@/lib/model-settings/use-model-settings';
+import { useSettingsStore } from '@/lib/store/settings';
 import {
   MISSING_ASSET_LEASE,
   isConcreteMediaAddress,
@@ -203,9 +202,8 @@ export function poolLeasableSlideRefs(
 
 export function useResolvedSlideMedia(slide: Slide): ResolvedSlideMedia {
   const stageId = useMediaStageId();
-  const capabilities = useModelCapabilities();
-  const imageGenerationDisabled = isMediaGenerationDisabled(capabilities, 'image');
-  const videoGenerationDisabled = isMediaGenerationDisabled(capabilities, 'video');
+  const imageGenerationDisabled = useSettingsStore((state) => !state.imageGenerationEnabled);
+  const videoGenerationDisabled = useSettingsStore((state) => !state.videoGenerationEnabled);
   const signature = useMediaGenerationStore((state) => {
     if (!stageId) return '';
     return slide.elements

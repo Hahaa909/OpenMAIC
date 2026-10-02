@@ -135,7 +135,7 @@ async function runScenario(
       await runAgentLoop(
         {
           config: scenario.config,
-          // The server resolves the key from its configuration.
+          apiKey: '', // Server resolves API key from env/YAML
           model,
         },
         {

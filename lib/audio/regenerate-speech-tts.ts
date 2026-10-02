@@ -6,7 +6,7 @@
  * read/delete key for documents and cached rows created before allocation.
  */
 import { db } from '@/lib/device-storage/database';
-import { serverTTSAvailable } from '@/lib/audio/tts-selection';
+import { useSettingsStore } from '@/lib/store/settings';
 import { generateAndStoreTTS } from '@/lib/hooks/use-scene-generator';
 import { useStageStore } from '@/lib/store/stage';
 import { resolveAudioBlob } from '@/lib/media/resolve-audio-bytes';
@@ -38,12 +38,10 @@ export async function resolveLegacySpeechAudioId(
   return (await db.audioFiles.get(legacyId)) ? legacyId : undefined;
 }
 
-/**
- * Managed (server) TTS is on: the workspace's tts slot resolves to a provider
- * other than browser speech, which has no cached file to manage.
- */
+/** Managed (server) TTS is on — browser-native TTS has no cached file to manage. */
 export function isManagedTtsActive(): boolean {
-  return serverTTSAvailable();
+  const s = useSettingsStore.getState();
+  return s.ttsEnabled && s.ttsProviderId !== 'browser-native-tts';
 }
 
 /** True if an audio blob is cached under this exact audioId. */

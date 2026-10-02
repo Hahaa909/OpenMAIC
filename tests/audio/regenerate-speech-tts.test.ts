@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
-
 const mocks = vi.hoisted(() => ({
   audioGet: vi.fn(),
   audioBulkGet: vi.fn(),
   generateAndStoreTTS: vi.fn(),
+  settings: vi.fn(),
   poolRemove: vi.fn(),
   stageState: { stage: null, scenes: [] } as {
     stage: Record<string, unknown> | null;
@@ -36,6 +35,10 @@ vi.mock('@/lib/document-store', () => ({ accessDocument: mocks.accessDocument })
 
 vi.mock('@/lib/hooks/use-scene-generator', () => ({
   generateAndStoreTTS: mocks.generateAndStoreTTS,
+}));
+
+vi.mock('@/lib/store/settings', () => ({
+  useSettingsStore: { getState: mocks.settings },
 }));
 
 vi.mock('@/lib/media/asset-pool', () => ({
@@ -69,8 +72,7 @@ describe('allocated speech audio identities', () => {
         : null,
       readOnlyLegacy: false,
     }));
-    // The workspace's tts slot resolves to a server provider.
-    setModelSettingsViewForTests({ tts: { registryId: 'managed-tts' } });
+    mocks.settings.mockReturnValue({ ttsEnabled: true, ttsProviderId: 'managed-tts' });
     mocks.assetRefExists.mockReset().mockResolvedValue(false);
   });
 

@@ -51,12 +51,8 @@ import type {
   SessionDocumentSource,
   UserRequirements,
 } from '@/lib/types/generation';
-import {
-  courseGenerationUsable,
-  requireModelCapabilities,
-} from '@/lib/model-settings/capabilities';
-import { withResearchDecision } from '@/lib/generation/research-decision';
-import { useModelCapabilities } from '@/lib/model-settings/use-model-settings';
+import { useSettingsStore } from '@/lib/store/settings';
+import { hasUsableLLMProvider } from '@/lib/store/settings-validation';
 import { useUserProfileStore, AVATAR_OPTIONS } from '@/lib/store/user-profile';
 import {
   StageListItem,
@@ -175,10 +171,11 @@ function HomePage() {
   const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
     useDraftCache<string>({ key: 'requirementDraft' });
 
-  // Generation needs the course slots it resolves (outline, content, actions)
-  // to name a model, whether or not the llm root does (the server's view;
-  // while it cannot be read the server has the last word).
-  const hasUsableProvider = courseGenerationUsable(useModelCapabilities());
+  // A usable LLM provider exists ⇒ a concrete model is always selected (#580
+  // invariant). Gate generation on this single condition (state A vs B)
+  // instead of inspecting modelId directly.
+  const providersConfig = useSettingsStore((s) => s.providersConfig);
+  const hasUsableProvider = hasUsableLLMProvider(providersConfig);
   const [recentOpen, setRecentOpen] = useState(true);
   const persistRecentOpen = (next: boolean) => {
     setRecentOpen(next);
@@ -583,12 +580,28 @@ function HomePage() {
 
     setError(null);
 
-    // The material list is frozen for the duration of prep: `preparingGenerate`
-    // makes add/remove inert, so it cannot change under the session build
-    // below. Capture it at click time and build the session from this
-    // snapshot, never from live form state. (The extractor is the workspace's
-    // document slot, resolved on the server.)
+    // The material list and the extractor provider config are frozen for the
+    // duration of prep: `preparingGenerate` makes add/remove inert and
+    // disables the toolbar affordances (including the extractor Select and the
+    // web-search toggle), so neither can change under the session build below.
+    // Capture both at click time and build the session from this snapshot,
+    // never from live form state or live store state.
     const frozenMaterials = [...form.courseMaterials].sort((a, b) => a.order - b.order);
+    const settingsSnapshot = useSettingsStore.getState();
+    const frozenPdfProviderId = settingsSnapshot.pdfProviderId;
+    const frozenPdfProviderConfig = settingsSnapshot.pdfProvidersConfig?.[
+      settingsSnapshot.pdfProviderId
+    ]
+      ? {
+          apiKey: settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].apiKey,
+          baseUrl: settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].baseUrl,
+          accessKeyId:
+            settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].accessKeyId,
+          accessKeySecret:
+            settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].accessKeySecret,
+        }
+      : undefined;
+
     // Flip the generating UI state before material bytes are copied locally.
     setPreparingGenerate(true);
     try {
@@ -597,23 +610,24 @@ function HomePage() {
         requirement: form.requirement,
         userNickname: userProfile.nickname || undefined,
         userBio: userProfile.bio || undefined,
-        // Research follows the workspace's webSearch slot; decided below from
-        // a successful read (and again when generation starts).
+        // Course-level web search now lives in settings (课程模型配置 → 联网调研)
+        webSearch: useSettingsStore.getState().webSearchEnabled || undefined,
         interactiveMode: form.vocationalTestMode ? true : form.interactiveMode,
         ...(form.vocationalTestMode ? { taskEngineMode: true } : {}),
       };
 
-      // Nothing is saved from settings that could not be read.
-      const capabilities = await requireModelCapabilities();
-      if (!capabilities) throw new Error(t('generation.modelSettingsUnavailable'));
-      Object.assign(
-        requirements,
-        withResearchDecision({ requirements }, capabilities).requirements,
-      );
-
       let documentSources: SessionDocumentSource[] | undefined;
+      let pdfProviderId: string | undefined;
+      let pdfProviderConfig:
+        | { apiKey?: string; baseUrl?: string; accessKeyId?: string; accessKeySecret?: string }
+        | undefined;
 
       if (frozenMaterials.length > 0) {
+        // The session is built from the click-time snapshot (frozen above),
+        // never from live store state.
+        pdfProviderId = frozenPdfProviderId;
+        pdfProviderConfig = frozenPdfProviderConfig;
+
         const storedDocumentKeys: string[] = [];
         try {
           documentSources = [];
@@ -631,6 +645,7 @@ function HomePage() {
               }),
               order: index + 1,
               storageKey,
+              providerId: pdfProviderId,
             });
           }
         } catch (error) {
@@ -650,6 +665,8 @@ function HomePage() {
         pdfStorageKey: documentSources?.[0]?.storageKey,
         pdfFileName: documentSources?.[0]?.name,
         documentMimeType: documentSources?.[0]?.mimeType,
+        pdfProviderId,
+        pdfProviderConfig,
         sceneOutlines: null,
         currentStep: 'generating' as const,
       };

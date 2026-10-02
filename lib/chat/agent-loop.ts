@@ -12,6 +12,7 @@
  */
 
 import type { StatelessEvent, DirectorState } from '@/lib/types/chat';
+import type { ThinkingConfig } from '@/lib/types/provider';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('AgentLoop');
@@ -54,12 +55,11 @@ export interface AgentLoopRequest {
     [key: string]: unknown;
   };
   userProfile?: { nickname?: string; bio?: string };
-  /**
-   * A `provider:model` for harnesses that pick the model per run (deprecated
-   * on the server, honored only while the slot is unassigned). The app never
-   * sends one: the workspace's model settings decide.
-   */
+  apiKey: string;
+  baseUrl?: string;
   model?: string;
+  providerType?: string;
+  thinkingConfig?: ThinkingConfig;
 }
 
 /** Per-iteration outcome extracted from the done event */
@@ -184,7 +184,11 @@ export async function runAgentLoop(
       config: request.config,
       directorState,
       userProfile: request.userProfile,
-      ...(request.model ? { model: request.model } : {}),
+      apiKey: request.apiKey,
+      baseUrl: request.baseUrl,
+      model: request.model,
+      providerType: request.providerType,
+      thinkingConfig: request.thinkingConfig,
     };
 
     // Fetch

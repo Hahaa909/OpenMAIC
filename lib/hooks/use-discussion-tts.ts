@@ -1,9 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSettingsStore } from '@/lib/store/settings';
-import { useTTSSelection } from '@/lib/audio/use-tts-selection';
-import { slotTTSProvidersConfig } from '@/lib/audio/tts-selection';
 import { useBrowserTTS } from '@/lib/hooks/use-browser-tts';
 import {
   resolveAgentVoice,
@@ -57,13 +55,7 @@ interface PreparedSegment {
 
 export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: DiscussionTTSOptions) {
   const { locale, t } = useI18n();
-  // The tts slot's provider (the only one the server synthesizes with) and
-  // the user's voice for it.
-  const ttsSelectionValue = useTTSSelection();
-  const ttsProvidersConfig = useMemo(
-    () => ttsSelectionValue?.providersConfig ?? slotTTSProvidersConfig(null),
-    [ttsSelectionValue],
-  );
+  const ttsProvidersConfig = useSettingsStore((s) => s.ttsProvidersConfig);
   const ttsSpeed = useSettingsStore((s) => s.ttsSpeed);
   const ttsMuted = useSettingsStore((s) => s.ttsMuted);
   const ttsVolume = useSettingsStore((s) => s.ttsVolume);
@@ -71,9 +63,8 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
   const playbackSettingsRef = useRef({ playbackSpeed, ttsMuted, ttsVolume });
   playbackSettingsRef.current = { playbackSpeed, ttsMuted, ttsVolume };
   // Global lecture voice — used as fallback for teacher agent
-  const globalTtsProviderId = (ttsSelectionValue?.providerId ??
-    'browser-native-tts') as TTSProviderId;
-  const globalTtsVoice = ttsSelectionValue?.voice ?? 'default';
+  const globalTtsProviderId = useSettingsStore((s) => s.ttsProviderId);
+  const globalTtsVoice = useSettingsStore((s) => s.ttsVoice);
   const agentVoiceOverrides = useSettingsStore((s) => s.agentVoiceOverrides);
   const { profiles: voiceProfiles } = useAllVoiceProfiles();
 
@@ -254,12 +245,17 @@ export function useDiscussionTTS({ enabled, agents, onAudioStateChange }: Discus
       const res = await fetch('/api/generate/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // The tts slot names the provider and model on the server.
         body: JSON.stringify({
           text: item.text,
           audioId: item.partId,
+          ttsProviderId: item.providerId,
+          ttsModelId: item.modelId || providerConfig?.modelId,
           ttsVoice: item.voiceId,
           ttsSpeed: ttsSpeed,
+          ttsApiKey: providerConfig?.apiKey,
+          // Managed providers resolve their base URL server-side; only send the
+          // client's own base URL (custom providers).
+          ttsBaseUrl: providerConfig?.baseUrl || providerConfig?.customDefaultBaseUrl,
           ttsProviderOptions: providerOptions,
         }),
         signal: controller.signal,

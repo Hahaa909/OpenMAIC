@@ -16,7 +16,7 @@ import {
   readActionResumeState,
   saveActionResumePosition,
 } from '@/lib/playback/action-resume';
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
+import { useSettingsStore } from '@/lib/store/settings';
 import type { Action } from '@/lib/types/action';
 import type { Scene } from '@/lib/types/stage';
 import type { ActionEngine } from '@/lib/action/engine';
@@ -674,8 +674,18 @@ describe('PlaybackEngine action navigation', () => {
         speak: vi.fn((utterance) => spoken.push(utterance)),
       },
     });
-    // The workspace's tts slot is browser speech.
-    setModelSettingsViewForTests({ tts: { registryId: 'browser-native-tts' } });
+    const ttsProvidersConfig = useSettingsStore.getState().ttsProvidersConfig;
+    useSettingsStore.setState({
+      ttsEnabled: true,
+      ttsProviderId: 'browser-native-tts',
+      ttsProvidersConfig: {
+        ...ttsProvidersConfig,
+        'browser-native-tts': {
+          ...ttsProvidersConfig['browser-native-tts'],
+          enabled: true,
+        },
+      },
+    });
 
     const { engine: actionEngine } = createActionEngine();
     const { player } = createAudioPlayer(async () => false);

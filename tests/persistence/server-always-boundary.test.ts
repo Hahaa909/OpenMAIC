@@ -258,8 +258,7 @@ export function importerLegacyWrites(files: readonly SourceFile[]): string[] {
       String.raw`\bnew\s+LegacyBrowserDatabase\b`,
       String.raw`\bDexie\s*\.\s*delete\b`,
       String.raw`\bdeleteDatabase\b`,
-      // The model settings import removes only its own key once the server has it.
-      String.raw`\.removeItem\s*\((?!\s*MODEL_SETTINGS_IMPORT_KEY\s*\))`,
+      String.raw`\.removeItem\s*\(`,
       String.raw`\blocalStorage\s*\.\s*clear\s*\(`,
       String.raw`\bstorage\s*\.\s*clear\s*\(`,
       String.raw`\bclearLegacyQuizStateSnapshot\b`,
@@ -379,8 +378,6 @@ describe('the guards bite on synthetic sources', () => {
         file('lib/legacy-browser-import/e.ts', 'clearLegacyQuizStateSnapshot(sceneId, snapshot);'),
         file('lib/legacy-browser-import/f.ts', 'localStorage.clear();'),
         file('lib/legacy-browser-import/g.ts', 'await db.mediaFiles.put(row); // Dexie.delete'),
-        file('lib/legacy-browser-import/h.ts', 'storage.removeItem(MODEL_SETTINGS_IMPORT_KEY);'),
-        file('lib/legacy-browser-import/i.ts', "storage.removeItem('settings-storage');"),
         file('lib/other.ts', "await Dexie.delete('MAIC-Database');"),
       ]),
     ).toEqual([
@@ -390,7 +387,6 @@ describe('the guards bite on synthetic sources', () => {
       'lib/legacy-browser-import/d.ts',
       'lib/legacy-browser-import/e.ts',
       'lib/legacy-browser-import/f.ts',
-      'lib/legacy-browser-import/i.ts',
     ]);
   });
 

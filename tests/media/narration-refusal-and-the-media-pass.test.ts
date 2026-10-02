@@ -17,8 +17,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
-
 const mocks = vi.hoisted(() => ({
   mutateDocument: vi.fn(),
   saveStageData: vi.fn(),
@@ -34,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   placeAllocations: vi.fn(),
   pendingAllocation: vi.fn(),
   forgetAllocation: vi.fn(),
+  settings: vi.fn(),
 }));
 
 vi.mock('@/lib/document-store', () => ({ mutateDocument: mocks.mutateDocument }));
@@ -56,6 +55,9 @@ vi.mock('@/lib/device-storage/database', () => ({
       where: () => ({ equals: () => ({ toArray: async () => [] }) }),
     },
   },
+}));
+vi.mock('@/lib/store/settings', () => ({
+  useSettingsStore: { getState: mocks.settings },
 }));
 vi.mock('@/lib/media/persist-media-reference', async () => {
   const actual = await vi.importActual<typeof import('@/lib/media/persist-media-reference')>(
@@ -173,10 +175,15 @@ describe('a narration clip that does not fit, and the course that still needs im
     mocks.placeAllocations.mockReset().mockReturnValue(false);
     mocks.pendingAllocation.mockReset().mockReturnValue(undefined);
     mocks.forgetAllocation.mockReset();
-    // The workspace's image and video slots resolve to a provider.
-    setModelSettingsViewForTests({
-      image: { registryId: 'seedream' },
-      video: { registryId: 'seedance' },
+    mocks.settings.mockReset().mockReturnValue({
+      imageGenerationEnabled: true,
+      videoGenerationEnabled: true,
+      imageProviderId: 'image-provider',
+      imageModelId: 'image-model',
+      imageProvidersConfig: {},
+      videoProviderId: 'video-provider',
+      videoModelId: 'video-model',
+      videoProvidersConfig: {},
     });
     useMediaGenerationStore.setState({ tasks: {} });
 

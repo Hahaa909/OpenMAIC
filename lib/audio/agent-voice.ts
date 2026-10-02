@@ -19,10 +19,12 @@ import {
   VOXCPM_TTS_PROVIDER_ID,
   normalizeVoxCPMBackend,
 } from '@/lib/audio/voxcpm';
-import { ttsSelection } from '@/lib/audio/tts-selection';
+import { useSettingsStore } from '@/lib/store/settings';
 
-/** What a voice's options depend on: the model (the provider's key and endpoint stay on the server). */
 interface TTSProviderConfigShape {
+  apiKey?: string;
+  baseUrl?: string;
+  customDefaultBaseUrl?: string;
   modelId?: string;
   providerOptions?: Record<string, unknown>;
 }
@@ -87,7 +89,12 @@ export async function resolveAgentVoiceOptions(
         language: opts.language,
         backend: normalizeVoxCPMBackend(opts.providerConfig?.providerOptions?.backend),
       },
-      { ttsModelId: opts.providerConfig?.modelId },
+      {
+        ttsApiKey: opts.providerConfig?.apiKey || undefined,
+        ttsBaseUrl:
+          opts.providerConfig?.baseUrl || opts.providerConfig?.customDefaultBaseUrl || undefined,
+        ttsModelId: opts.providerConfig?.modelId,
+      },
     )),
   };
 }
@@ -101,10 +108,10 @@ export async function resolveAgentVoiceOptions(
  * Fire-and-forget; the on-use ensure remains the correctness path for the rest.
  */
 export function warmUpAgentVoices(agents: AgentConfig[]): void {
-  const selection = ttsSelection();
-  const providerId = selection?.providerId;
+  const settings = useSettingsStore.getState();
+  const providerId = settings.ttsProviderId;
   if (providerId !== VOXCPM_TTS_PROVIDER_ID) return;
-  const providerConfig = selection?.providersConfig[providerId];
+  const providerConfig = settings.ttsProvidersConfig?.[providerId];
 
   const narrator = pickNarratorAgent(agents);
   if (!narrator || !effectiveVoiceDesign(narrator)) return;

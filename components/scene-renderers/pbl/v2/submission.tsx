@@ -62,9 +62,8 @@ import type {
 import { trimmedPBLText } from '@/lib/pbl/v2/readers';
 import type { PBLSSEEvent } from '@/lib/pbl/v2/api/sse';
 import { applyInstructorEvent } from './apply-instructor-event';
-import { PROVIDERS } from '@/lib/ai/providers';
-import { useModelSettingsView } from '@/lib/model-settings/use-model-settings';
-import { effectiveTarget } from '@/lib/model-settings/capabilities';
+import { getCurrentModelConfig, getStageRoutesHeaderValue } from '@/lib/utils/model-config';
+import { useSettingsStore } from '@/lib/store/settings';
 import { normalizeProjectRuntime } from '@/lib/pbl/v2/operations/kernel/progress';
 import {
   appendRuntimeEvent,
@@ -438,6 +437,7 @@ export function PBLV2SubmissionPanel({
     });
     let workingProject = structuredClone(snapshot);
     try {
+      const modelConfig = getCurrentModelConfig();
       const runStream = async (
         endpoint: string,
         body: Record<string, unknown>,
@@ -450,8 +450,15 @@ export function PBLV2SubmissionPanel({
           streamStatus,
           draft,
         });
-        // The server runs the workspace's classroom model.
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'x-model': modelConfig.modelString || '',
+          'x-api-key': modelConfig.apiKey || '',
+        };
+        if (modelConfig.baseUrl) headers['x-base-url'] = modelConfig.baseUrl;
+        if (modelConfig.providerType) headers['x-provider-type'] = modelConfig.providerType;
+        const stageRoutesHeader = getStageRoutesHeaderValue();
+        if (stageRoutesHeader) headers['x-model-routes'] = stageRoutesHeader;
         try {
           const stored = localStorage.getItem('locale');
           if (stored) headers['x-user-locale'] = stored;
@@ -917,17 +924,12 @@ function SubmissionModal({
   onSubmit,
 }: SubmissionModalProps) {
   const { t } = useI18n();
-  // Whether the model the evaluation runs on (the workspace's classroom slot)
-  // can read images, as far as the model catalogue says. Reactive so that
+  // Whether the currently-selected model can read images. Reactive so that
   // switching models (in Settings) updates the image-caption gating live.
-  const classroomModel = effectiveTarget(useModelSettingsView(), 'classroom');
-  const hasVision =
-    !!classroomModel?.modelId &&
-    !!findModelById(
-      classroomModel.registryId,
-      PROVIDERS[classroomModel.registryId as keyof typeof PROVIDERS]?.models,
-      classroomModel.modelId,
-    )?.capabilities?.vision;
+  const hasVision = useSettingsStore((s) => {
+    const model = findModelById(s.providerId, s.providersConfig[s.providerId]?.models, s.modelId);
+    return !!model?.capabilities?.vision;
+  });
   const [mode, setMode] = useState<'paste' | 'file'>('paste');
   const [text, setText] = useState('');
   const [filename, setFilename] = useState('');

@@ -31,8 +31,6 @@ import {
   SlotUnassignedError,
 } from './runtime';
 
-export { adapterOptions } from './adapter-options';
-
 /** The server-providers section whose force-off switch covers a slot. */
 const FORCE_OFF_SECTION = {
   tts: 'tts',
@@ -74,8 +72,6 @@ export interface MediaConnection {
   /** Multi-part credentials (AliDocMind's key pair). */
   credentials?: Record<string, string>;
   proxy?: string;
-  /** The provider's non-secret options (openmaic.yml `options`): its adapter's settings. */
-  options?: Record<string, string | number | boolean>;
   /** The provider is operator configuration (deployment or server providers). */
   managed: boolean;
   /**
@@ -154,7 +150,6 @@ async function fromTarget(
     ...(target.baseUrl !== undefined ? { baseUrl: target.baseUrl } : {}),
     ...(target.credentials !== undefined ? { credentials: target.credentials } : {}),
     ...(target.proxy !== undefined ? { proxy: target.proxy } : {}),
-    ...(target.options !== undefined ? { options: target.options } : {}),
     managed,
     // A workspace provider reaches only its preset's own public endpoint (a
     // custom one and a local-default preset are refused above), exactly the

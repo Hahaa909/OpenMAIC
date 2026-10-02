@@ -9,10 +9,8 @@
  */
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
-
 const mocks = vi.hoisted(() => ({
-  parallelSceneConcurrency: 0,
+  getCurrentModelConfig: vi.fn(),
   settingsState: vi.fn(),
   audioPut: vi.fn(),
   audioDelete: vi.fn(),
@@ -25,9 +23,9 @@ const mocks = vi.hoisted(() => ({
   toastWarning: vi.fn(),
 }));
 
-// How many narration clips may be generated at once (GET /api/health).
-vi.mock('@/lib/generation/server-generation-settings', () => ({
-  getParallelSceneConcurrency: async () => mocks.parallelSceneConcurrency,
+vi.mock('@/lib/utils/model-config', () => ({
+  getCurrentModelConfig: mocks.getCurrentModelConfig,
+  getStageRoutesHeaderValue: () => undefined,
 }));
 
 vi.mock('@/lib/store/settings', () => ({
@@ -95,6 +93,7 @@ describe('server-backed narration storage', () => {
     mocks.audioDelete.mockReset().mockResolvedValue(undefined);
     mocks.poolPut.mockReset().mockResolvedValue('ast_audio_allocated');
     mocks.poolRemove.mockReset().mockResolvedValue(undefined);
+    mocks.getCurrentModelConfig.mockReturnValue({});
     mocks.settingsState.mockReturnValue({
       imageProviderId: '',
       imageProvidersConfig: {},
@@ -102,13 +101,11 @@ describe('server-backed narration storage', () => {
       videoProviderId: '',
       videoProvidersConfig: {},
       videoGenerationEnabled: false,
-      ttsVoiceProviderId: 'server-tts',
+      ttsProviderId: 'server-tts',
       ttsProvidersConfig: { 'server-tts': { apiKey: 'tts-key', modelId: 'tts-model' } },
       ttsVoice: 'narrator',
       ttsSpeed: 1,
     });
-    // The workspace's tts slot resolves to this provider.
-    setModelSettingsViewForTests({ tts: { registryId: 'server-tts', modelId: 'tts-model' } });
     mocks.isTTSProviderEnabled.mockReturnValue(true);
     mocks.pickNarratorAgent.mockReturnValue(undefined);
     mocks.resolveAgentVoiceOptions.mockResolvedValue({});

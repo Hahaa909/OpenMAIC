@@ -28,7 +28,7 @@ import {
 import type { AssetUrlLeaseState } from '@/lib/media/use-asset-url';
 import type { MediaTask } from '@/lib/store/media-generation';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
+import { useSettingsStore } from '@/lib/store/settings';
 import { resolveThumbnailMediaValue } from '@/lib/utils/stage-storage';
 import { resolveVideoExportMediaBinding } from '@/lib/video-export-app/collect';
 import { resolveActionVideoMedia } from '@/lib/action/engine';
@@ -51,18 +51,8 @@ const hookLeases = vi.hoisted(() => ({
 }));
 const componentStores = vi.hoisted(() => ({
   media: { tasks: {} as Record<string, MediaTask> },
+  settings: { imageGenerationEnabled: false, videoGenerationEnabled: false },
 }));
-
-/** Which media the workspace can generate (its image and video slots). */
-const generation = { image: false, video: false };
-function setMediaGeneration(next: Partial<typeof generation>) {
-  Object.assign(generation, next);
-  setModelSettingsViewForTests({
-    ...(generation.image ? { image: { registryId: 'seedream' } } : {}),
-    ...(generation.video ? { video: { registryId: 'seedance' } } : {}),
-  });
-}
-setMediaGeneration({});
 
 vi.mock('@/lib/media/use-asset-url', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/media/use-asset-url')>();
@@ -87,6 +77,19 @@ vi.mock('@/lib/store/media-generation', () => {
     },
   );
   return { useMediaGenerationStore };
+});
+
+vi.mock('@/lib/store/settings', () => {
+  const useSettingsStore = Object.assign(
+    (selector: (state: typeof componentStores.settings) => unknown) =>
+      selector(componentStores.settings),
+    {
+      getState: () => componentStores.settings,
+      setState: (state: Partial<typeof componentStores.settings>) =>
+        Object.assign(componentStores.settings, state),
+    },
+  );
+  return { useSettingsStore };
 });
 
 const SceneProviderWithOptionalChildren = SceneProvider as ComponentType<
@@ -400,7 +403,7 @@ const componentSurfaces: readonly {
 describe('real media consumer matrix', () => {
   afterEach(() => {
     useMediaGenerationStore.setState({ tasks: {} });
-    setMediaGeneration({ image: false, video: false });
+    useSettingsStore.setState({ imageGenerationEnabled: false, videoGenerationEnabled: false });
     vi.unstubAllGlobals();
   });
 
@@ -428,7 +431,7 @@ describe('real media consumer matrix', () => {
     const source = fullTask(ref, task('done', { objectUrl: 'blob:shared-image' }), 'image');
     const targeted = fullTask(ref, task('pending'), 'image');
     if (!source || !targeted) throw new Error('Expected media tasks');
-    setMediaGeneration({ image: true });
+    useSettingsStore.setState({ imageGenerationEnabled: true });
     useMediaGenerationStore.setState({
       tasks: {
         [ref]: source,
@@ -457,7 +460,7 @@ describe('real media consumer matrix', () => {
     const source = fullTask(ref, task('done', { objectUrl: 'blob:shared-base-video' }), 'video');
     const targeted = fullTask(ref, task('pending'), 'video');
     if (!source || !targeted) throw new Error('Expected media tasks');
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({
       tasks: {
         [ref]: source,
@@ -479,7 +482,7 @@ describe('real media consumer matrix', () => {
     const source = fullTask(ref, task('done', { objectUrl: 'blob:shared-editor-video' }), 'video');
     const targeted = fullTask(ref, task('pending'), 'video');
     if (!source || !targeted) throw new Error('Expected media tasks');
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({
       tasks: {
         [ref]: source,
@@ -503,7 +506,7 @@ describe('real media consumer matrix', () => {
       'video',
     );
     if (!recovered) throw new Error('Expected recovered video task');
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({
       tasks: {
         gen_vid_unique_legacy: { ...recovered, placeholderRef: 'gen_vid_1' },
@@ -598,7 +601,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('VideoElement pairs the storage-full notice with the Retry', () => {
     const ref = 'gen_vid_quota';
     const element = videoElement(ref);
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(quotaTask(ref, 'video')) } });
 
     const markup = renderInMediaScene(
@@ -613,7 +616,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('VideoElement draws neither for a refusal a retry cannot change', () => {
     const ref = 'gen_vid_refused';
     const element = videoElement(ref);
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(refusedTask(ref, 'video')) } });
 
     const markup = renderInMediaScene(
@@ -635,7 +638,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('ImageElement pairs the storage-full notice with the Retry', () => {
     const ref = 'gen_img_quota';
     const element = imageElement(ref);
-    setMediaGeneration({ image: true });
+    useSettingsStore.setState({ imageGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(quotaTask(ref, 'image')) } });
 
     const markup = renderInMediaScene(
@@ -650,7 +653,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('ImageElement draws neither for a refusal a retry cannot change', () => {
     const ref = 'gen_img_refused';
     const element = imageElement(ref);
-    setMediaGeneration({ image: true });
+    useSettingsStore.setState({ imageGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(refusedTask(ref, 'image')) } });
 
     const markup = renderInMediaScene(
@@ -668,7 +671,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('the thumbnail pairs the storage-full notice with the Retry', () => {
     const ref = 'gen_img_thumb_quota';
     const element = imageElement(ref);
-    setMediaGeneration({ image: true });
+    useSettingsStore.setState({ imageGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(quotaTask(ref, 'image')) } });
 
     const markup = renderToStaticMarkup(
@@ -686,7 +689,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('the thumbnail draws neither for a refusal a retry cannot change', () => {
     const ref = 'gen_img_thumb_refused';
     const element = imageElement(ref);
-    setMediaGeneration({ image: true });
+    useSettingsStore.setState({ imageGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(refusedTask(ref, 'image')) } });
 
     const markup = renderToStaticMarkup(
@@ -707,7 +710,7 @@ describe('a failed media task explains itself beside a Retry, and only there', (
   it('the video thumbnail draws neither for a refusal a retry cannot change', () => {
     const ref = 'gen_vid_thumb_refused';
     const element = videoElement(ref);
-    setMediaGeneration({ video: true });
+    useSettingsStore.setState({ videoGenerationEnabled: true });
     useMediaGenerationStore.setState({ tasks: { [ref]: requireTask(refusedTask(ref, 'video')) } });
 
     const markup = renderToStaticMarkup(

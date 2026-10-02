@@ -24,6 +24,13 @@ export interface GenerationSessionState {
   pdfStorageKey?: string;
   pdfFileName?: string;
   documentMimeType?: string;
+  pdfProviderId?: string;
+  pdfProviderConfig?: {
+    apiKey?: string;
+    baseUrl?: string;
+    accessKeyId?: string;
+    accessKeySecret?: string;
+  };
   // Web search context
   researchContext?: string;
   researchSources?: Array<{ title: string; url: string }>;

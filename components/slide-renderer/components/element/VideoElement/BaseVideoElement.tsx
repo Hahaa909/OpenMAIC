@@ -12,8 +12,7 @@ import { mediaResolutionCanRetry } from '@/lib/media/resolve-media-ref';
 import { RotateCcw, Film, ShieldAlert, VideoOff } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
-import { mediaGenerationDisabled as isMediaGenerationDisabled } from '@/lib/model-settings/capabilities';
-import { useModelCapabilities } from '@/lib/model-settings/use-model-settings';
+import { useSettingsStore } from '@/lib/store/settings';
 import { useSceneData } from '@/lib/contexts/scene-context';
 import type { SlideContent } from '@/lib/types/stage';
 import { useResolvedVideoMedia } from './useResolvedVideoMedia';
@@ -39,7 +38,7 @@ export function BaseVideoElement({ elementInfo }: BaseVideoElementProps) {
 
   // Only subscribe to media store when inside a classroom (stageId provided via context).
   const stageId = useMediaStageId();
-  const mediaGenerationDisabled = isMediaGenerationDisabled(useModelCapabilities(), 'video');
+  const mediaGenerationDisabled = useSettingsStore((state) => !state.videoGenerationEnabled);
   const tasks = useMediaGenerationStore((state) => state.tasks);
   const { mediaRef, task, resolution, resolvedSrc, resolvedPoster } = useResolvedVideoMedia(
     elementInfo,

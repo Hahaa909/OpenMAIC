@@ -47,10 +47,7 @@ import {
 } from '@/lib/media/resolve-media-ref';
 import { withAssetUrl } from '@/lib/media/use-asset-url';
 import { mayNameAPoolAsset } from '@/lib/media/media-placeholder';
-import {
-  currentModelCapabilities,
-  mediaGenerationDisabled,
-} from '@/lib/model-settings/capabilities';
+import { useSettingsStore } from '@/lib/store/settings';
 import {
   beginStageDeletionCascade,
   isStageDeleted,
@@ -870,9 +867,7 @@ export async function getFirstSlideByStages(
             mediaElements.size > 0 ||
             (backgroundRef && isResolvableThumbnailMediaRef(backgroundRef))
           ) {
-            const capabilities = currentModelCapabilities();
-            const imageDisabled = mediaGenerationDisabled(capabilities, 'image');
-            const videoDisabled = mediaGenerationDisabled(capabilities, 'video');
+            const settings = useSettingsStore.getState();
             const mediaRecords = await db.mediaFiles.where('stageId').equals(stageId).toArray();
             const mediaMap = new Map(
               mediaRecords.map((record) => [getMediaRecordElementId(record.id), record] as const),
@@ -914,7 +909,7 @@ export async function getFirstSlideByStages(
                   task,
                   record?.type === 'image' ? record.blob : undefined,
                   record?.mimeType || 'image/png',
-                  imageDisabled,
+                  !settings.imageGenerationEnabled,
                 )) ?? '',
               );
             }
@@ -956,7 +951,7 @@ export async function getFirstSlideByStages(
                     task,
                     record?.type === 'image' ? record.blob : undefined,
                     record?.mimeType || 'image/png',
-                    imageDisabled,
+                    !settings.imageGenerationEnabled,
                   )) ?? '';
               } else if (el.type === 'video') {
                 el.src =
@@ -965,7 +960,7 @@ export async function getFirstSlideByStages(
                     task,
                     record?.type === 'video' ? record.blob : undefined,
                     record?.mimeType || 'video/mp4',
-                    videoDisabled,
+                    !settings.videoGenerationEnabled,
                   )) ?? '';
                 const posterRef = videoBinding?.posterRef;
                 const posterRecord =

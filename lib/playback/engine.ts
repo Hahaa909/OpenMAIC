@@ -48,7 +48,7 @@ import {
 } from '@/lib/playback/action-navigation';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { useSettingsStore } from '@/lib/store/settings';
-import { ttsSelection } from '@/lib/audio/tts-selection';
+import { isTTSProviderEnabled } from '@/lib/audio/provider-enablement';
 import { detectSpeechLang } from '@/lib/audio/browser-tts-preview';
 import { createLogger } from '@/lib/logger';
 
@@ -656,9 +656,15 @@ export class PlaybackEngine {
             if (!audioStarted) {
               // No pre-generated audio — try browser-native TTS only when it is
               // the selected provider AND actually enabled (opt-in, #665).
+              const settings = useSettingsStore.getState();
               if (
                 hasText &&
-                ttsSelection()?.providerId === 'browser-native-tts' &&
+                settings.ttsEnabled &&
+                settings.ttsProviderId === 'browser-native-tts' &&
+                isTTSProviderEnabled(
+                  'browser-native-tts',
+                  settings.ttsProvidersConfig?.['browser-native-tts'],
+                ) &&
                 typeof window !== 'undefined' &&
                 window.speechSynthesis
               ) {
@@ -808,8 +814,6 @@ export class PlaybackEngine {
     }
 
     const settings = useSettingsStore.getState();
-    // The user's voice when it was picked for browser speech.
-    const selectedVoice = ttsSelection()?.voice;
     const chunkText = this.browserTTSChunks[this.browserTTSChunkIndex];
     const utterance = new SpeechSynthesisUtterance(chunkText);
 
@@ -824,8 +828,8 @@ export class PlaybackEngine {
 
     // Set voice: try user's configured voice, fall back to auto-detect language
     let voiceFound = false;
-    if (selectedVoice && selectedVoice !== 'default') {
-      const voice = voices.find((v) => v.voiceURI === selectedVoice);
+    if (settings.ttsVoice && settings.ttsVoice !== 'default') {
+      const voice = voices.find((v) => v.voiceURI === settings.ttsVoice);
       if (voice) {
         utterance.voice = voice;
         utterance.lang = voice.lang;

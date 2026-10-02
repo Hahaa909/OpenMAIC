@@ -13,7 +13,7 @@
  */
 
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
-import { requireModelCapabilities } from '@/lib/model-settings/capabilities';
+import { useSettingsStore } from '@/lib/store/settings';
 import { useStageStore } from '@/lib/store/stage';
 import { mayGenerateForStage } from '@/lib/classroom/generation-permission';
 import { db, mediaFileKey, type MediaFileRecord } from '@/lib/device-storage/database';
@@ -208,17 +208,7 @@ async function collectAndGenerate(
   // on exactly the path where the table has just been cleared — so every
   // element the predecessor committed would be generated again. Not deciding is
   // the only safe answer, and a pass that cannot decide simply ends.
-  //
-  // The workspace's image and video slots decide which media may be generated;
-  // read them before the checks, so nothing can change between those and the
-  // decisions below. Settings that cannot be read (even after another try)
-  // decide nothing: the pass stands down and a later one generates the media.
-  const capabilities = await requireModelCapabilities();
   if (abortSignal?.aborted) return;
-  if (!capabilities) {
-    log.warn(`Media pass for ${stageId} stood down: the model settings could not be read.`);
-    return;
-  }
   let documentIndex: GeneratedMediaDocumentIndex | undefined = documentSkipIndex(stageId);
   if (!documentIndex) {
     log.info(`Media pass for ${stageId} stood down: the course is no longer open here.`);
@@ -233,6 +223,7 @@ async function collectAndGenerate(
   documentIndex = documentSkipIndex(stageId);
   if (!documentIndex) return;
 
+  const settings = useSettingsStore.getState();
   const store = useMediaGenerationStore.getState();
   // The document, not this browser's task table, decides what still needs
   // generating: the table is per-browser, so reading it is exactly how every
@@ -244,8 +235,8 @@ async function collectAndGenerate(
     if (!outline.mediaGenerations) continue;
     for (const mg of outline.mediaGenerations) {
       // Filter by enabled flags
-      if (mg.type === 'image' && !capabilities.image) continue;
-      if (mg.type === 'video' && !capabilities.video) continue;
+      if (mg.type === 'image' && !settings.imageGenerationEnabled) continue;
+      if (mg.type === 'video' && !settings.videoGenerationEnabled) continue;
       const existing = store.getTask(mg.elementId);
       // The document is the authority. A permanently failed task (content
       // policy, generation disabled) is still honoured: it is a refusal to
@@ -344,14 +335,6 @@ export async function retryMediaTask(
   elementId: string,
   _target?: { readonly elementId: string; readonly sceneId?: string; readonly slideId?: string },
 ): Promise<void> {
-  // Whether the workspace can still generate this kind of media (read first,
-  // so the task checked below is the one acted on). Settings that cannot be
-  // read leave the task as it is: that is no refusal.
-  const capabilities = await requireModelCapabilities();
-  if (!capabilities) {
-    log.warn(`Media retry for ${elementId} skipped: the model settings could not be read.`);
-    return;
-  }
   const store = useMediaGenerationStore.getState();
   const task = store.getTask(elementId);
   if (!task || task.status !== 'failed') return;
@@ -367,11 +350,13 @@ export async function retryMediaTask(
   // action precondition the same rule rather than two that can drift.
   if (!mayGenerateForStage(task.stageId)) return;
 
-  if (task.type === 'image' && !capabilities.image) {
+  // Check if the corresponding generation type is still enabled in global settings
+  const settings = useSettingsStore.getState();
+  if (task.type === 'image' && !settings.imageGenerationEnabled) {
     store.markFailed(elementId, 'Generation disabled', 'GENERATION_DISABLED');
     return;
   }
-  if (task.type === 'video' && !capabilities.video) {
+  if (task.type === 'video' && !settings.videoGenerationEnabled) {
     store.markFailed(elementId, 'Generation disabled', 'GENERATION_DISABLED');
     return;
   }
@@ -1036,10 +1021,18 @@ async function callImageApi(
   stageId: string,
   abortSignal?: AbortSignal,
 ): Promise<{ url: string; ossUrl?: string }> {
-  // The image slot names the provider and model on the server.
+  const settings = useSettingsStore.getState();
+  const providerConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
+
   const response = await fetch('/api/generate/image', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-image-provider': settings.imageProviderId || '',
+      'x-image-model': settings.imageModelId || '',
+      'x-api-key': providerConfig?.apiKey || '',
+      'x-base-url': providerConfig?.baseUrl || '',
+    },
     body: JSON.stringify({
       prompt: req.prompt,
       aspectRatio: req.aspectRatio,
@@ -1082,10 +1075,18 @@ async function callVideoApi(
   height?: number;
   duration?: number;
 }> {
-  // The video slot names the provider and model on the server.
+  const settings = useSettingsStore.getState();
+  const providerConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
+
   const response = await fetch('/api/generate/video', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-video-provider': settings.videoProviderId || '',
+      'x-video-model': settings.videoModelId || '',
+      'x-api-key': providerConfig?.apiKey || '',
+      'x-base-url': providerConfig?.baseUrl || '',
+    },
     body: JSON.stringify({
       prompt: req.prompt,
       aspectRatio: req.aspectRatio,

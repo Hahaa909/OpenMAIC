@@ -50,7 +50,6 @@ describe('health access-code configuration', () => {
           videoGeneration: false,
           tts: true,
         },
-        generation: { parallelSceneConcurrency: 0 },
       });
       expect(JSON.stringify(body)).not.toContain('health-route-test-secret');
 

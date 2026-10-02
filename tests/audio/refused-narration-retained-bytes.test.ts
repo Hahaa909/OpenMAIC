@@ -20,10 +20,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
-import { setModelSettingsViewForTests } from '../helpers/model-settings-view';
-
 const mocks = vi.hoisted(() => ({
-  parallelSceneConcurrency: 0,
+  getCurrentModelConfig: vi.fn(),
   settingsState: vi.fn(),
   audioGet: vi.fn(),
   audioPut: vi.fn(),
@@ -42,11 +40,10 @@ const mocks = vi.hoisted(() => ({
   toastWarning: vi.fn(),
 }));
 
-// How many narration clips may be generated at once (GET /api/health).
-vi.mock('@/lib/generation/server-generation-settings', () => ({
-  getParallelSceneConcurrency: async () => mocks.parallelSceneConcurrency,
+vi.mock('@/lib/utils/model-config', () => ({
+  getCurrentModelConfig: mocks.getCurrentModelConfig,
+  getStageRoutesHeaderValue: () => undefined,
 }));
-
 vi.mock('@/lib/store/settings', () => ({
   useSettingsStore: { getState: mocks.settingsState },
 }));
@@ -190,6 +187,7 @@ describe('narration refused for want of room', () => {
     mocks.mediaPut.mockReset().mockResolvedValue(undefined);
     mocks.mediaGet.mockReset().mockResolvedValue(undefined);
     mocks.mediaDelete.mockReset().mockResolvedValue(undefined);
+    mocks.getCurrentModelConfig.mockReturnValue({});
     mocks.settingsState.mockReturnValue({
       imageProviderId: '',
       imageProvidersConfig: {},
@@ -197,13 +195,11 @@ describe('narration refused for want of room', () => {
       videoProviderId: '',
       videoProvidersConfig: {},
       videoGenerationEnabled: false,
-      ttsVoiceProviderId: 'server-tts',
+      ttsProviderId: 'server-tts',
       ttsProvidersConfig: { 'server-tts': { apiKey: 'tts-key', modelId: 'tts-model' } },
       ttsVoice: 'narrator',
       ttsSpeed: 1,
     });
-    // The workspace's tts slot resolves to this provider.
-    setModelSettingsViewForTests({ tts: { registryId: 'server-tts', modelId: 'tts-model' } });
     mocks.isTTSProviderEnabled.mockReturnValue(true);
     mocks.pickNarratorAgent.mockReturnValue(undefined);
     mocks.resolveAgentVoiceOptions.mockResolvedValue({});

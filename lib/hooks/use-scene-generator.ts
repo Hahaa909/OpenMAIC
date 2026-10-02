@@ -3,9 +3,8 @@
 import { useCallback, useRef } from 'react';
 import { useStageStore } from '@/lib/store/stage';
 import { isSceneEditLocked } from '@/lib/edit/regen-lock';
-import { loadModelCapabilities } from '@/lib/model-settings/capabilities';
-import { narrationPlan, ttsSelection } from '@/lib/audio/tts-selection';
-import { getParallelSceneConcurrency } from '@/lib/generation/server-generation-settings';
+import { getCurrentModelConfig, getStageRoutesHeaderValue } from '@/lib/utils/model-config';
+import { useSettingsStore } from '@/lib/store/settings';
 import { db } from '@/lib/device-storage/database';
 import type {
   SceneOutline,
@@ -71,21 +70,39 @@ type ClientRetryOptions<T> = Partial<
   Omit<GenerationRetryOptions<T>, 'label' | 'shouldRetryResult' | 'signal'>
 >;
 
-/**
- * Headers for the generation routes. The server resolves every model and
- * provider, and which media may be planned, from the workspace's model
- * settings.
- */
-async function getApiHeaders(): Promise<HeadersInit> {
-  return { 'Content-Type': 'application/json' };
+function getApiHeaders(): HeadersInit {
+  const config = getCurrentModelConfig();
+  const settings = useSettingsStore.getState();
+  const imageProviderConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
+  const videoProviderConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
+  const stageRoutesHeader = getStageRoutesHeaderValue();
+
+  return {
+    'Content-Type': 'application/json',
+    ...(stageRoutesHeader ? { 'x-model-routes': stageRoutesHeader } : {}),
+    'x-model': config.modelString || '',
+    'x-api-key': config.apiKey || '',
+    'x-base-url': config.baseUrl || '',
+    'x-provider-type': config.providerType || '',
+    // Image generation provider
+    'x-image-provider': settings.imageProviderId || '',
+    'x-image-model': settings.imageModelId || '',
+    'x-image-api-key': imageProviderConfig?.apiKey || '',
+    'x-image-base-url': imageProviderConfig?.baseUrl || '',
+    // Video generation provider
+    'x-video-provider': settings.videoProviderId || '',
+    'x-video-model': settings.videoModelId || '',
+    'x-video-api-key': videoProviderConfig?.apiKey || '',
+    'x-video-base-url': videoProviderConfig?.baseUrl || '',
+    // Media generation toggles
+    'x-image-generation-enabled': String(settings.imageGenerationEnabled ?? false),
+    'x-video-generation-enabled': String(settings.videoGenerationEnabled ?? false),
+  };
 }
 
-/** Why generation stopped when the model settings could not be read. */
-const MODEL_SETTINGS_UNAVAILABLE = 'The model settings could not be read';
-
-/** Tell the user generation stopped because the model settings could not be read. */
-function notifyModelSettingsUnavailable(): void {
-  toast.error(getClientTranslation('generation.modelSettingsUnavailable'));
+function withThinkingConfig<T extends Record<string, unknown>>(body: T): T {
+  const { thinkingConfig } = getCurrentModelConfig();
+  return thinkingConfig ? ({ ...body, thinkingConfig } as T) : body;
 }
 
 async function readJsonResponse(response: Response): Promise<Record<string, unknown>> {
@@ -152,8 +169,8 @@ export async function fetchSceneContent(
       async () => {
         const response = await fetch('/api/generate/scene-content', {
           method: 'POST',
-          headers: await getApiHeaders(),
-          body: JSON.stringify(params),
+          headers: getApiHeaders(),
+          body: JSON.stringify(withThinkingConfig(params)),
           signal,
         });
 
@@ -201,8 +218,8 @@ export async function fetchSceneActions(
       async () => {
         const response = await fetch('/api/generate/scene-actions', {
           method: 'POST',
-          headers: await getApiHeaders(),
-          body: JSON.stringify(params),
+          headers: getApiHeaders(),
+          body: JSON.stringify(withThinkingConfig(params)),
           signal,
         });
 
@@ -263,13 +280,11 @@ export async function generateAndStoreTTS(
   // /api/generate/tts beyond a single fallback hop.
   fallbackHops = 0,
 ): Promise<string | null> {
-  // The `tts` slot's provider, and the user's voice for it.
-  const selection = ttsSelection(await loadModelCapabilities());
-  if (!selection) return null;
-  const providersConfig = selection.providersConfig;
+  const settings = useSettingsStore.getState();
   // A generated roster's explicit voice binding is the course voice source of truth.
   // Global settings remain the fallback for classrooms without a binding.
   const teacher = pickNarratorAgent(useAgentRegistry.getState().listAgents());
+  const globalProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
   const boundVoice = teacher?.voiceConfig;
   const boundKey = boundVoice ? voiceBindingKey(boundVoice) : undefined;
   // The narrator pin makes boundVoice == the global voice. That equality must
@@ -279,7 +294,7 @@ export async function generateAndStoreTTS(
   // instead of throwing (QWEN_VC_VOICE_NOT_FOUND) or silently skipping.
   const globalDiffers =
     !!boundVoice &&
-    (boundVoice.providerId !== selection.providerId || boundVoice.voiceId !== selection.voice);
+    (boundVoice.providerId !== settings.ttsProviderId || boundVoice.voiceId !== settings.ttsVoice);
   const fallbackForUnusablePin = (): ResolvedVoice | null => {
     if (!boundVoice) return null;
     const key = voiceBindingKey(boundVoice);
@@ -287,7 +302,10 @@ export async function generateAndStoreTTS(
     if (markVoiceBindingNoticeShown(key)) {
       toast.warning(getClientTranslation('settings.qwenCloneNarrationUnavailable'));
     }
-    return resolveDeterministicFallbackVoice(getEnabledProvidersWithVoices(providersConfig), 0);
+    return resolveDeterministicFallbackVoice(
+      getEnabledProvidersWithVoices(settings.ttsProvidersConfig),
+      0,
+    );
   };
 
   let resolvedVoice =
@@ -295,11 +313,11 @@ export async function generateAndStoreTTS(
     resolveNarratorVoiceBinding(
       boundVoice && isVoiceBindingUnavailable(boundVoice) ? undefined : boundVoice,
       {
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        voiceId: selection.voice,
+        providerId: settings.ttsProviderId,
+        modelId: globalProviderConfig?.modelId,
+        voiceId: settings.ttsVoice,
       },
-      providersConfig,
+      settings.ttsProvidersConfig,
     );
 
   // Pinned narrator (bound == global) whose provider became disabled:
@@ -309,14 +327,17 @@ export async function generateAndStoreTTS(
   if (
     boundVoice &&
     !globalDiffers &&
-    !isTTSProviderEnabled(resolvedVoice.providerId, providersConfig[resolvedVoice.providerId])
+    !isTTSProviderEnabled(
+      resolvedVoice.providerId,
+      settings.ttsProvidersConfig?.[resolvedVoice.providerId],
+    )
   ) {
     resolvedVoice = fallbackForUnusablePin() ?? resolvedVoice;
   }
 
   const ttsProviderId = resolvedVoice.providerId;
   const ttsVoice = resolvedVoice.voiceId;
-  const ttsProviderConfig = providersConfig[ttsProviderId];
+  const ttsProviderConfig = settings.ttsProvidersConfig?.[ttsProviderId];
   const ttsModelId = resolveTTSModelForVoice(
     ttsProviderId,
     ttsVoice,
@@ -324,7 +345,7 @@ export async function generateAndStoreTTS(
   );
 
   if (ttsProviderId === 'browser-native-tts') return null;
-  // Don't server-generate a voice of a provider the tts slot does not name (#665).
+  // Don't server-generate against a disabled/unconfigured provider (#665).
   if (!isTTSProviderEnabled(ttsProviderId, ttsProviderConfig)) return null;
 
   // Narration is the teacher's voice — resolve it from the teacher agent profile
@@ -342,13 +363,18 @@ export async function generateAndStoreTTS(
         const response = await fetch('/api/generate/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // The tts slot names the provider and model; the voice decides a
-          // voice-clone model on the server.
           body: JSON.stringify({
             text,
             audioId: requestId,
+            ttsProviderId,
+            ttsModelId,
             ttsVoice,
-            ttsSpeed: selection.speed,
+            ttsSpeed: settings.ttsSpeed,
+            ttsApiKey: ttsProviderConfig?.apiKey || undefined,
+            // Managed providers resolve their base URL server-side; only send the
+            // client's own base URL (custom providers).
+            ttsBaseUrl:
+              ttsProviderConfig?.baseUrl || ttsProviderConfig?.customDefaultBaseUrl || undefined,
             ttsProviderOptions: providerOptions,
           }),
           signal,
@@ -568,8 +594,7 @@ export async function generateTTSForScene(
   signal?: AbortSignal,
   retryOptions?: ClientRetryOptions<TTSApiResponse>,
 ): Promise<{ success: boolean; failedCount: number; error?: string }> {
-  const providerId =
-    ttsSelection(await loadModelCapabilities())?.providerId ?? 'browser-native-tts';
+  const providerId = useSettingsStore.getState().ttsProviderId;
   scene.actions = splitLongSpeechActions(scene.actions || [], providerId);
   const speechActions = scene.actions.filter(
     (a): a is SpeechAction => a.type === 'speech' && !!a.text,
@@ -652,7 +677,10 @@ export async function generateTTSForScene(
   // the server opts into parallel generation, render them with bounded
   // concurrency (reusing the PARALLEL_SCENE_CONCURRENCY knob) instead of one at a
   // time. Default (0 / unset) keeps the original strictly-serial behaviour.
-  const ttsConcurrency = await getParallelSceneConcurrency();
+  const ttsConcurrency = Math.max(
+    0,
+    Math.floor(useSettingsStore.getState().parallelSceneConcurrency ?? 0),
+  );
   try {
     if (ttsConcurrency > 1 && speechActions.length > 1) {
       const settled = await Promise.allSettled(
@@ -785,9 +813,13 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
       // #572: opt-in parallel content fetch. Concurrency is server-configured
       // (PARALLEL_SCENE_CONCURRENCY), default 0 = off, so out-of-box behaviour is
       // unchanged.
-      // Clamped server-side and again by the reader, so a garbage value can
-      // never spawn an unbounded fetch fan-out.
-      const parallelConcurrency = await getParallelSceneConcurrency();
+      const parallelConcurrency = Math.max(
+        0,
+        // Belt-and-suspenders: the value is already clamped server-side and again
+        // in the settings store; re-clamp here so a stale/garbage store value can
+        // never spawn an unbounded fetch fan-out.
+        Math.floor(useSettingsStore.getState().parallelSceneConcurrency ?? 0),
+      );
       const useParallelContent = parallelConcurrency > 1 && pending.length > 1;
 
       // Pipelined generation loop (#572). When parallelism is on, scene *content*
@@ -913,19 +945,17 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
           if (actionsResult.success && actionsResult.scene) {
             const scene = actionsResult.scene;
-            // TTS generation — failure means the whole scene fails, and so do
-            // model settings that cannot be read: narration is never dropped
-            // silently.
-            const narration = await narrationPlan();
-            if (narration === 'unknown') {
-              store.getState().addFailedOutline(outline);
-              notifyModelSettingsUnavailable();
-              options.onSceneFailed?.(outline, MODEL_SETTINGS_UNAVAILABLE);
-              store.getState().setGenerationStatus('paused');
-              pausedByFailureOrAbort = true;
-              break;
-            }
-            if (narration === 'server') {
+            const settings = useSettingsStore.getState();
+
+            // TTS generation — failure means the whole scene fails
+            if (
+              settings.ttsEnabled &&
+              settings.ttsProviderId !== 'browser-native-tts' &&
+              isTTSProviderEnabled(
+                settings.ttsProviderId,
+                settings.ttsProvidersConfig?.[settings.ttsProviderId],
+              )
+            ) {
               const ttsResult = await generateTTSForScene(
                 scene,
                 params.languageDirective || params.stageInfo.language,
@@ -1105,14 +1135,16 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
           return;
         }
 
-        // Step 3: TTS (model settings that cannot be read fail the retry)
-        const narration = await narrationPlan();
-        if (narration === 'unknown') {
-          notifyModelSettingsUnavailable();
-          store.getState().addFailedOutline(outline);
-          return;
-        }
-        if (narration === 'server') {
+        // Step 3: TTS
+        const settings = useSettingsStore.getState();
+        if (
+          settings.ttsEnabled &&
+          settings.ttsProviderId !== 'browser-native-tts' &&
+          isTTSProviderEnabled(
+            settings.ttsProviderId,
+            settings.ttsProvidersConfig?.[settings.ttsProviderId],
+          )
+        ) {
           const ttsResult = await generateTTSForScene(
             actionsResult.scene,
             params.languageDirective || params.stageInfo.language,
