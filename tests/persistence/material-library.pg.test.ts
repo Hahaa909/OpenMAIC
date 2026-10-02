@@ -22,9 +22,10 @@ import {
   libraryReachScenario,
   libraryToolFlowScenario,
   linkAcrossClaimScenario,
+  rawConsumersScenario,
   resolverScenario,
   textAcrossClaimScenario,
-  type ExtractionHarness,
+  type LibraryHarness,
 } from './_material-library-scenarios';
 
 const contractUrl = process.env.PG_CONTRACT_URL;
@@ -36,7 +37,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
   const pools: Pool[] = [];
   let schema: string;
 
-  async function boot(): Promise<ExtractionHarness> {
+  async function boot(): Promise<LibraryHarness> {
     serial += 1;
     schema = `openmaic_material_library_test_${serial}`;
     admin = new Pool({ connectionString: contractUrl });
@@ -107,6 +108,10 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
 
     it('reads a source’s text across a claim, with the revision it found', async () => {
       await textAcrossClaimScenario(await boot());
+    });
+
+    it('reads original bytes for every consumer, whatever kind of row, and says when they are unavailable', async () => {
+      await rawConsumersScenario(await boot());
     });
   });
 

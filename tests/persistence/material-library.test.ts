@@ -19,9 +19,10 @@ import {
   libraryReachScenario,
   libraryToolFlowScenario,
   linkAcrossClaimScenario,
+  rawConsumersScenario,
   resolverScenario,
   textAcrossClaimScenario,
-  type ExtractionHarness,
+  type LibraryHarness,
   type ExtractionScenarioPool,
 } from './_material-library-scenarios';
 
@@ -45,7 +46,7 @@ class PGlitePool implements ExtractionScenarioPool {
 describe('material library (PGlite)', () => {
   let db: PGlite | undefined;
 
-  async function boot(): Promise<ExtractionHarness> {
+  async function boot(): Promise<LibraryHarness> {
     vi.stubEnv('ASSET_S3_BUCKET', '');
     const databaseUrl = `postgres://material-library-${randomUUID()}`;
     vi.stubEnv('DATABASE_URL', databaseUrl);
@@ -101,6 +102,10 @@ describe('material library (PGlite)', () => {
 
     it('reads a source’s text across a claim, with the revision it found', async () => {
       await textAcrossClaimScenario(await boot());
+    });
+
+    it('reads original bytes for every consumer, whatever kind of row, and says when they are unavailable', async () => {
+      await rawConsumersScenario(await boot());
     });
   });
 

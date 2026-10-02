@@ -153,3 +153,65 @@ export async function readResolvedMaterialText(
   if (entry.kind !== 'source' || !entry.extractionResult) return null;
   return readOwnerMaterialText(entry);
 }
+
+/**
+ * What a consumer of original bytes needs of a material: the id it is known
+ * by, its kind and name, and a read of its bytes. `import_pptx`, `clip_audio`
+ * and `use_material_media` take one of these, whichever kind of row it is.
+ */
+export interface RawMaterialHandle {
+  id: string;
+  kind: string;
+  title: string | null;
+  /** Whether the material records original bytes at all (a web page does not). */
+  hasBytes: boolean;
+  read(): Promise<{ bytes: Buffer; mime: string } | null>;
+}
+
+export function rawMaterialHandle(
+  sessionId: string,
+  material: ResolvedMaterial,
+): RawMaterialHandle {
+  return {
+    id: resolvedMaterialId(material),
+    kind: material.origin === 'session' ? material.record.kind : material.entry.kind,
+    title:
+      material.origin === 'session'
+        ? material.record.title
+        : (material.entry.displayName ?? material.entry.originalName),
+    hasBytes: material.origin === 'session' ? material.record.rawAssetId !== null : true,
+    read: () => readResolvedMaterialRaw(sessionId, material),
+  };
+}
+
+/** Resolve one id in `scope` to a {@link RawMaterialHandle}, or `null`. */
+export async function resolveRawMaterial(
+  sessionId: string,
+  materialId: string,
+  scope: MaterialScope = 'session',
+): Promise<RawMaterialHandle | null> {
+  const material = await resolveMaterial(sessionId, materialId, scope);
+  return material ? rawMaterialHandle(sessionId, material) : null;
+}
+
+/**
+ * The session-row seams some consumers' tests inject, as a handle lookup: a
+ * row lookup and a read of a row's raw bytes.
+ */
+export function sessionRowRawLookup(
+  getMaterial: (sessionId: string, materialId: string) => Promise<AgentSessionMaterial | null>,
+  readBytes: (record: AgentSessionMaterial) => Promise<{ bytes: Buffer; mime: string } | null>,
+): (sessionId: string, materialId: string) => Promise<RawMaterialHandle | null> {
+  return async (sessionId, materialId) => {
+    const record = await getMaterial(sessionId, materialId);
+    return record
+      ? {
+          id: record.id,
+          kind: record.kind,
+          title: record.title,
+          hasBytes: record.rawAssetId !== null,
+          read: () => readBytes(record),
+        }
+      : null;
+  };
+}
