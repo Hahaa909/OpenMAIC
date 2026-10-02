@@ -492,6 +492,9 @@ describe('TTS panel → Gemini TTS', () => {
     expect(speed.disabled).toBe(true);
     expect(speed.value).toBe('1');
     expect(document.body.textContent).toContain('settings.ttsSpeedUnsupported');
+    expect(document.body.textContent).toContain(
+      'https://generativelanguage.googleapis.com/v1beta/interactions',
+    );
 
     const key = byLabel('tts-api-key-google-tts');
     type(key, 'gemini-key-1234');
