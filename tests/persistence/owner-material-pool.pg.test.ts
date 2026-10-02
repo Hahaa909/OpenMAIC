@@ -239,13 +239,19 @@ describe.skipIf(!contractUrl)('owner material pool uploads on PostgreSQL', () =>
       },
     );
     // The record a reader took before the backfill.
-    const stale = { id: 'mat-reread', ownerId: ANON, assetId: null, ossKey: 'objects/mat-reread' };
+    const stale = {
+      id: 'mat-reread',
+      ownerId: ANON,
+      assetId: null,
+      ossKey: 'objects/mat-reread',
+      sha256: digest(bytes),
+    };
 
     // Right after the re-read, a claim of the owner starts. It must queue
     // behind the reader's fence until the pool read is done.
     let claiming: Promise<unknown> | undefined;
     hooked.hook = {
-      match: /SELECT owner_id, asset_id FROM owner_material WHERE id = \$1/,
+      match: /SELECT owner_id, asset_id, oss_key, sha256 FROM owner_material WHERE id = \$1/,
       async run(client) {
         const reader = await backendPid(client);
         claiming = claimOwner(ANON, ACCOUNT, { provider: h.provider });
@@ -343,11 +349,9 @@ describe.skipIf(!contractUrl)('owner material pool uploads on PostgreSQL', () =>
     );
     expect(row.rows[0]!.oss_key).toBe('');
     expect(await rootsOf('mat-twice')).toEqual([row.rows[0]!.asset_id]);
-    // Two allocations, one published; the loser's is still pending, to expire.
-    const entries = await entriesOf();
-    expect(entries).toHaveLength(2);
-    expect(entries.filter((entry) => entry.committed_at === null)).toEqual([
-      expect.objectContaining({ id: expect.not.stringMatching(row.rows[0]!.asset_id) }),
+    // Two allocations, one published; the loser removed its own.
+    expect(await entriesOf()).toEqual([
+      expect.objectContaining({ id: row.rows[0]!.asset_id, committed_at: expect.anything() }),
     ]);
     expect(objects.has('objects/mat-twice')).toBe(false);
   });
@@ -393,7 +397,74 @@ describe.skipIf(!contractUrl)('owner material pool uploads on PostgreSQL', () =>
         ownerId: ACCOUNT,
         assetId: row.rows[0]!.asset_id,
         ossKey: '',
+        sha256: digest(bytes),
       }),
     ).toEqual(bytes);
+  });
+
+  it('reads a retained old object after a SQL error in the fenced pool read, and leaves no aborted transaction', async () => {
+    const { h } = await boot();
+    const objects = memoryObjects();
+    const bytes = await legacyRow(h, 'mat-retained', objects);
+    // Migrated, but the old object's delete failed: pointer, root and oss_key.
+    const assetId = await allocateOwnerMaterialBytes(h.provider, ANON, bytes, 'application/pdf');
+    await withMaterialRoots(
+      h.provider,
+      { ownerId: ANON, fence: 'background', materialIds: ['mat-retained'] },
+      async ({ tx, changeRoots }) => {
+        await changeRoots({ add: [{ materialId: 'mat-retained', assetIds: [assetId] }] });
+        await tx.query('UPDATE owner_material SET asset_id = $2 WHERE id = $1', [
+          'mat-retained',
+          assetId,
+        ]);
+      },
+    );
+    // Every pool read now fails in the database itself.
+    await pool!.query('ALTER TABLE asset_entries RENAME TO asset_entries_away');
+    try {
+      expect(
+        await readOwnerMaterialBytes({
+          id: 'mat-retained',
+          ownerId: ANON,
+          assetId,
+          ossKey: 'objects/mat-retained',
+          sha256: digest(bytes),
+        }),
+      ).toEqual(bytes);
+      const aborted = await admin!.query(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND state = 'idle in transaction (aborted)'`,
+      );
+      expect(aborted.rows).toEqual([]);
+    } finally {
+      await pool!.query('ALTER TABLE asset_entries_away RENAME TO asset_entries');
+    }
+    // The connections are fine afterwards.
+    const after = await h.provider.withTransaction((tx) =>
+      tx.query<{ n: string }>('SELECT count(*)::text AS n FROM asset_entries'),
+    );
+    expect(after.rows).toEqual([{ n: '1' }]);
+  });
+
+  it('leaves no pending allocation behind when two backfills race over 30 rows', async () => {
+    const { h } = await boot();
+    const objects = memoryObjects();
+    const ids = Array.from({ length: 30 }, (_, i) => `mat-race-${String(i).padStart(2, '0')}`);
+    for (const id of ids) await legacyRow(h, id, objects);
+
+    const [a, b] = await Promise.all([
+      migrateOwnerMaterialsToPool({ batchSize: 5, pauseMs: 0 }),
+      migrateOwnerMaterialsToPool({ batchSize: 5, pauseMs: 0 }),
+    ]);
+
+    // Each row was published once, by one of the two.
+    expect(a.migrated + b.migrated).toBe(30);
+    expect(a.failed + b.failed).toBe(0);
+    // They did collide: some allocations lost (the deterministic case is above).
+    expect(a.skippedLost + b.skippedLost).toBeGreaterThan(0);
+    const entries = await entriesOf();
+    expect(entries).toHaveLength(30);
+    expect(entries.filter((entry) => entry.committed_at === null)).toEqual([]);
+    for (const id of ids) expect(await rootsOf(id)).toHaveLength(1);
   });
 });

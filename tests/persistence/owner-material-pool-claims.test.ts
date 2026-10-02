@@ -140,6 +140,29 @@ describe('owner material pool uploads with extraction and claims', () => {
     expect((await stateOf(h, 'src-legacy')).status).toBe('done');
   }, 20_000);
 
+  it('never hands an extractor a source from before the pool whose object no longer matches its digest', async () => {
+    const h = await boot();
+    const bytes = Buffer.from('%PDF-legacy');
+    const objects = new Map([['objects/src-damaged', Buffer.from('%PDF-legacX')]]);
+    setMaterialByteStoreForTests({
+      put: async () => undefined,
+      get: async (key) => {
+        const value = objects.get(key);
+        if (!value) throw new Error(`no object ${key}`);
+        return value;
+      },
+      delete: async () => undefined,
+    });
+    await reserve(h, 'src-damaged', bytes, 'objects/src-damaged');
+    await finalizeOwnerMaterial(h.pool as never, 'src-damaged', bytes.byteLength, digest(bytes));
+
+    await ensure(h, 'src-damaged');
+    await drain(h, h.deps({ readSource: undefined }));
+
+    expect((await stateOf(h, 'src-damaged')).status).not.toBe('done');
+    expect(h.documentExtract).not.toHaveBeenCalled();
+  }, 20_000);
+
   it('refuses a publication after a claim moved the reservation, and the cleanup follows it', async () => {
     const h = await boot();
     const bytes = Buffer.from('%PDF-claimed-mid-upload');
@@ -221,7 +244,13 @@ describe('owner material pool uploads with extraction and claims', () => {
     // A reader holding the owner from before the claim (an extraction claimed
     // earlier keeps it) still reads the source.
     expect(
-      await readOwnerMaterialBytes({ id: 'src-claimed', ownerId: ANON, assetId, ossKey: '' }),
+      await readOwnerMaterialBytes({
+        id: 'src-claimed',
+        ownerId: ANON,
+        assetId,
+        ossKey: '',
+        sha256: digest(bytes),
+      }),
     ).toEqual(bytes);
   });
 });

@@ -7,6 +7,8 @@
  * now each session gets its own row id while the shared owner upload id is
  * recorded for idempotency, so both sessions bind and read their own row.
  */
+import { createHash } from 'node:crypto';
+
 import { PGlite } from '@electric-sql/pglite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -106,12 +108,15 @@ async function makeHost() {
   return { db: instance, bytes, puts, sessionStore };
 }
 
-async function seedOwnerMaterial(instance: PGlite, id: string) {
+/** A ready upload from before the pool, with the digest its upload recorded for `content`. */
+async function seedOwnerMaterial(instance: PGlite, id: string, content = 'PDF') {
   await instance.query(
     `INSERT INTO owner_material
-       (id, owner_id, kind, mime, bytes, original_name, oss_key, status, extraction, created_at)
-     VALUES ($1, 'owner-1', 'source', 'application/pdf', 3, 'textbook.pdf', $2, 'ready', NULL, $3)`,
-    [id, `owner/${id}/raw`, Date.now()],
+       (id, owner_id, kind, mime, bytes, original_name, oss_key, sha256, status, extraction,
+        created_at)
+     VALUES ($1, 'owner-1', 'source', 'application/pdf', 3, 'textbook.pdf', $2, $3, 'ready', NULL,
+             $4)`,
+    [id, `owner/${id}/raw`, createHash('sha256').update(content).digest('hex'), Date.now()],
   );
 }
 
@@ -319,7 +324,7 @@ describe('owner-material binding across sessions', () => {
     await sessionStore.createSession({ id: 'session-mixed', ownerId: 'owner-1', prompt: 'p' });
 
     // A pre-pool upload, read by its object key.
-    await seedOwnerMaterial(instance, 'mat_old');
+    await seedOwnerMaterial(instance, 'mat_old', 'OLD');
     bytes.set('owner/mat_old/raw', Buffer.from('OLD'));
     // A pool-only upload: a pointer, no object key, nothing in the byte store.
     const assetId = await assetStore.put(
@@ -347,5 +352,20 @@ describe('owner-material binding across sessions', () => {
     };
     expect(await read(bound[0]!.materialId)).toBe('OLD');
     expect(await read(bound[1]!.materialId)).toBe('NEW');
+  });
+
+  it('refuses to bind an upload from before the pool whose object no longer matches its digest', async () => {
+    const { db: instance, bytes, puts, sessionStore } = await makeHost();
+    await sessionStore.createSession({ id: 'session-damaged', ownerId: 'owner-1', prompt: 'p' });
+    await seedOwnerMaterial(instance, 'mat_damaged', 'PDF');
+    bytes.set('owner/mat_damaged/raw', Buffer.from('PDX'));
+    const putsBefore = puts.length;
+
+    await expect(
+      bindOwnerMaterialsToSession('session-damaged', 'owner-1', ['mat_damaged']),
+    ).rejects.toThrow('bytes are unavailable');
+    // No session copy of the damaged bytes was written or recorded.
+    expect(puts).toHaveLength(putsBefore);
+    expect(await listSessionMaterials('session-damaged')).toEqual([]);
   });
 });
