@@ -154,6 +154,7 @@ function fakeServices(overrides: Partial<RunStepServices> = {}) {
     releasedClips: [] as string[],
   };
   const services: RunStepServices = {
+    materialKinds: async (_owner, materialIds) => materialIds.map(() => 'document' as const),
     analyzeMaterials: async () => ({ text: 'material text', images: [] }),
     research: async (_owner, input) => {
       calls.research.push(input);
@@ -553,6 +554,16 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
     expect(document!.stage.agentIds).toEqual(['default-2']);
     expect(document!.stage).not.toHaveProperty('generatedAgentConfigs');
 
+    // No preset selected: the default presets teach the course.
+    const defaults = await start(
+      runInput({ agents: { mode: 'preset', agentIds: [] }, outlineReview: 'auto' }),
+    );
+    const before = calls.sceneContent.length;
+    expect(await drive(defaults.id, services)).toBe('completed');
+    expect(
+      (calls.sceneContent[before]!.agents as Array<{ id: string }>).map((agent) => agent.id),
+    ).toEqual(['default-1', 'default-2', 'default-3']);
+
     // An edited outline is a new revision, and the run generates exactly it.
     const edited = await start();
     expect(await drive(edited.id, services)).toBe('waiting');
@@ -565,6 +576,109 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
     const after = (await readGenerationRun(edited.id, OWNER))!;
     expect(after.outline).toMatchObject({ revision: 2, outlines: [OUTLINES[2]] });
     expect(after.progress).toEqual({ scenesTotal: 1, scenesCompleted: 1 });
+  });
+
+  it('names the material kinds while analyzing, and what the outline will not see in full', async () => {
+    const { services } = fakeServices({
+      research: async () => null,
+      materialKinds: async () => ['media'],
+      analyzeMaterials: async () => ({
+        text: 'material text',
+        images: [],
+        truncated: { textChars: 50000, images: { total: 30, max: 20 } },
+      }),
+    });
+    const run = await start(runInput({ outlineReview: 'auto', materialIds: ['mat-1'] }));
+    expect(await drive(run.id, services)).toBe('completed');
+    const events = await readGenerationRunEvents(run.id, 0);
+    const kinds = events.find((event) => event.type === 'material_kinds')!;
+    const analyzed = events.find(
+      (event) => event.type === 'step_completed' && event.data.step === 'material-analysis',
+    )!;
+    expect(kinds.data).toEqual({ kinds: ['media'] });
+    expect(kinds.seq).toBeLessThan(analyzed.seq);
+    expect(events.find((event) => event.type === 'material_truncated')?.data).toEqual({
+      textChars: 50000,
+      images: { total: 30, max: 20 },
+    });
+    // A reloaded page reads both from the run's snapshot.
+    const route = await import('@/app/api/generation-runs/[id]/route');
+    const read = await route.GET(
+      new NextRequest(`http://localhost/api/generation-runs/${run.id}`, {
+        headers: cookie(OWNER_COOKIE),
+      }),
+      { params: Promise.resolve({ id: run.id }) },
+    );
+    expect((await read.json()).run).toMatchObject({
+      materialKinds: ['media'],
+      materialTruncated: { textChars: 50000, images: { total: 30, max: 20 } },
+    });
+  });
+
+  it('releases the materials uploaded for a run when it completes or ends, not while it waits', async () => {
+    const { ensureOwnerMaterialSchema, registerOwnerMaterial, finalizeOwnerMaterial } =
+      await import('@/lib/persistence/owner-materials');
+    await ensureOwnerMaterialSchema(pool);
+    const material = async (owner: string) => {
+      const id = `mat_${crypto.randomUUID().replace(/-/g, '').slice(0, 26)}`;
+      await registerOwnerMaterial(
+        pool,
+        { id, ownerId: owner, kind: 'source', mime: 'application/pdf', bytes: 10, ossKey: '' },
+        { maxCount: 100, maxTotalBytes: 1_000_000 },
+      );
+      await finalizeOwnerMaterial(pool, id, 10, 'sha');
+      return id;
+    };
+    const deletedAt = async (id: string) =>
+      (
+        await pool.query<{ deleted_at: string | null }>(
+          'SELECT deleted_at FROM owner_material WHERE id = $1',
+          [id],
+        )
+      ).rows[0]?.deleted_at ?? null;
+    const { services } = fakeServices({ research: async () => null });
+
+    // Completed: its own uploads go; another owner's material it named stays.
+    const mine = [await material(OWNER), await material(OWNER)];
+    const theirs = await material(OTHER);
+    const unrelated = await material(OWNER);
+    const completed = await start(
+      runInput({
+        outlineReview: 'auto',
+        materialIds: [...mine, theirs],
+        releaseMaterials: true,
+      }),
+    );
+    expect(await drive(completed.id, services)).toBe('completed');
+    for (const id of mine) expect(await deletedAt(id)).not.toBeNull();
+    expect(await deletedAt(theirs)).toBeNull();
+    expect(await deletedAt(unrelated)).toBeNull();
+
+    // Waiting for its outline (Retry and confirmation need them): kept; discarded: released.
+    const waitingMaterial = await material(OWNER);
+    const waiting = await start(
+      runInput({ materialIds: [waitingMaterial], releaseMaterials: true }),
+    );
+    expect(await drive(waiting.id, services)).toBe('waiting');
+    expect(await deletedAt(waitingMaterial)).toBeNull();
+    await discardGenerationRun(waiting.id, OWNER);
+    expect(await deletedAt(waitingMaterial)).not.toBeNull();
+
+    // A material another run still works from is kept until that run is over.
+    const shared = await material(OWNER);
+    const other = await start(runInput({ materialIds: [shared] }));
+    expect(await drive(other.id, services)).toBe('waiting');
+    const sharing = await start(
+      runInput({ outlineReview: 'auto', materialIds: [shared], releaseMaterials: true }),
+    );
+    expect(await drive(sharing.id, services)).toBe('completed');
+    expect(await deletedAt(shared)).toBeNull();
+
+    // A caller that reuses its material ids does not ask for it: kept.
+    const reused = await material(OWNER);
+    const headless = await start(runInput({ outlineReview: 'auto', materialIds: [reused] }));
+    expect(await drive(headless.id, services)).toBe('completed');
+    expect(await deletedAt(reused)).toBeNull();
   });
 
   it('commands are idempotent by commandId and refused in the wrong state', async () => {
@@ -626,7 +740,8 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
     expect(stored).toMatchObject({
       state: 'paused',
       step: 'scene:1:actions',
-      error: { step: 'scene:1:actions', message: 'provider exploded' },
+      // No provider status: the routes answered INTERNAL_ERROR.
+      error: { step: 'scene:1:actions', message: 'provider exploded', errorCode: 'INTERNAL_ERROR' },
       leaseWorkerId: null,
       progress: { scenesCompleted: 1 },
     });
@@ -636,6 +751,19 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
         (event) => event.type === 'step_retry' && event.data.step === 'scene:1:actions',
       ),
     ).toHaveLength(5);
+    // The run's own snapshot names the failure by the seq of its event.
+    const failed = events.filter((event) => event.type === 'step_failed').at(-1)!;
+    const snapshotRoute = await import('@/app/api/generation-runs/[id]/route');
+    const read = await snapshotRoute.GET(
+      new NextRequest(`http://localhost/api/generation-runs/${run.id}`, {
+        headers: cookie(OWNER_COOKIE),
+      }),
+      { params: Promise.resolve({ id: run.id }) },
+    );
+    expect((await read.json()).run.error).toMatchObject({
+      step: 'scene:1:actions',
+      failureSeq: failed.seq,
+    });
     expect(events.at(-1)).toMatchObject({
       type: 'state',
       data: { state: 'paused', step: 'scene:1:actions' },
@@ -924,7 +1052,7 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
         headers: cookie(OTHER_COOKIE),
       }),
     );
-    expect(await listed.json()).toEqual({ success: true, runs: [] });
+    expect(await listed.json()).toMatchObject({ success: true, runs: [] });
   });
 
   it('refuses a start beyond the per-owner limit on active runs', async () => {
@@ -963,7 +1091,11 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
         headers: cookie(limitedCookie),
       }),
     );
-    const body = (await listed.json()) as { runs: Array<{ input: { requirement: string } }> };
+    const body = (await listed.json()) as {
+      runs: Array<{ input: { requirement: string } }>;
+      limits: { maxActive: number; maxWaiting: number };
+    };
+    expect(body.limits).toEqual({ maxActive: 2, maxWaiting: 10 });
     // Listed by creation time, which a test cannot rely on to the microsecond.
     expect(body.runs.map((run) => run.input.requirement).sort()).toEqual(['Three', 'Two']);
 
@@ -1098,7 +1230,13 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
     expect(stored).toMatchObject({
       state: 'paused',
       step: 'scene:1:content',
-      error: { step: 'scene:1:content', message: 'content refused' },
+      // The provider's refusal, as the content route answered it.
+      error: {
+        step: 'scene:1:content',
+        message: 'content refused',
+        errorCode: 'UPSTREAM_ERROR',
+        statusCode: 400,
+      },
       progress: { scenesCompleted: 2 },
     });
     let document = await documentStore(OWNER).loadDocument(stored.stageId!);
@@ -1887,6 +2025,25 @@ describe.skipIf(!contractUrl)('generation runs on PostgreSQL', () => {
       expect(await drive(run.id, services)).toBe('completed');
       expect(media.video).toEqual([]);
       expect((await mediaOf(run.id)).gen_vid_1).toEqual({ mediaType: 'video', status: 'skipped' });
+      // The snapshot names the skip by the seq of the event that reported it.
+      const skipEvent = (await readGenerationRunEvents(run.id, 0)).find(
+        (event) =>
+          event.type === 'media' &&
+          event.data.elementId === 'gen_vid_1' &&
+          event.data.status === 'disabled',
+      )!;
+      const route = await import('@/app/api/generation-runs/[id]/route');
+      const snapshot = await route.GET(
+        new NextRequest(`http://localhost/api/generation-runs/${run.id}`, {
+          headers: cookie(OWNER_COOKIE),
+        }),
+        { params: Promise.resolve({ id: run.id }) },
+      );
+      expect((await snapshot.json()).run.media.gen_vid_1).toEqual({
+        mediaType: 'video',
+        status: 'disabled',
+        failureSeq: skipEvent.seq,
+      });
       const stored = (await readGenerationRun(run.id, OWNER))!;
       let document = (await documentStore(OWNER).loadDocument(stored.stageId!))!;
       // The video keeps its placeholder, which renders as generation disabled.

@@ -20,6 +20,7 @@ import { applyGeneratedAgentsToRegistry } from '@/lib/orchestration/registry/sto
 import { migrateScene } from '@/lib/edit/slide-schema';
 import { preparePBLScenesForDocumentPersistence } from '@/lib/pbl/v2/runtime/document-persistence';
 import { hydratePBLScenesFromRuntime } from '@/lib/pbl/v2/runtime/hydration';
+import { runIdOfCourse } from '@/lib/generation-run-client/run-id';
 import type { ChatStorageSnapshot } from '@/lib/utils/chat-storage';
 import type { DocumentProducer } from '@/lib/document-store/persistence-types';
 import type { PendingChange, StaleDroppedSave } from '@/lib/utils/stage-storage';
@@ -101,8 +102,88 @@ function schedulePendingSave(): void {
   }, nextSaveDelayMs());
 }
 
+/**
+ * The course whose server-side generation run is still producing it. Its
+ * document is read-only to other writers until the run completes (the server
+ * refuses the write with `COURSE_GENERATING`), so its content changes are not
+ * queued for saving; the reading position and chats are written as usual.
+ *
+ * The one learner write to scene content during playback is PBL progress
+ * (`PBLRenderer` → `updateScene`). Its durable home is the PBL runtime store,
+ * not the course document (a document save strips the learner state off the
+ * project after syncing it there), so while the course is fenced that sync
+ * runs on its own, without a document write.
+ */
+let serverGeneratingStageId: string | null = null;
+/** Scenes of the fenced course the learner changed (a server copy must not replace them). */
+const learnerChangedScenes = new Set<string>();
+const learnerRuntimeSyncs = new Map<string, ReturnType<typeof setTimeout>>();
+const LEARNER_RUNTIME_SYNC_DELAY_MS = 500;
+
+/** Fence (or, with null, unfence) the course a generation run is producing. */
+export function setServerGeneratingStage(stageId: string | null): void {
+  if (serverGeneratingStageId === stageId) return;
+  learnerChangedScenes.clear();
+  serverGeneratingStageId = stageId;
+  if (!stageId || pendingStageId !== stageId) return;
+  // Content changes queued before the fence would only be refused: the
+  // learner's scene changes go to their runtime store instead.
+  for (const [key, entry] of [...pendingChanges]) {
+    if (!DOCUMENT_CHANGE_KINDS.has(entry.change.kind)) continue;
+    pendingChanges.delete(key);
+    if (entry.change.kind === 'scene') {
+      learnerChangedScenes.add(entry.change.sceneId);
+      syncLearnerRuntime(stageId, entry.change.sceneId);
+    }
+  }
+}
+
+export function isServerGeneratingStage(stageId: string | undefined | null): boolean {
+  return !!stageId && stageId === serverGeneratingStageId;
+}
+
+/** Whether the learner changed this scene of the fenced course (a server copy must not replace it). */
+export function hasLearnerSceneChange(stageId: string, sceneId: string): boolean {
+  return isServerGeneratingStage(stageId) && learnerChangedScenes.has(sceneId);
+}
+
+/** Write a fenced course's PBL learner progress to its runtime store (no document write). */
+function syncLearnerRuntime(stageId: string, sceneId: string): void {
+  const pending = learnerRuntimeSyncs.get(sceneId);
+  if (pending) clearTimeout(pending);
+  learnerRuntimeSyncs.set(
+    sceneId,
+    setTimeout(() => {
+      learnerRuntimeSyncs.delete(sceneId);
+      const state = useStageStore.getState();
+      if (state.stage?.id !== stageId) return;
+      const scene = state.scenes.find((candidate) => candidate.id === sceneId);
+      if (!scene || scene.content.type !== 'pbl') return;
+      void preparePBLScenesForDocumentPersistence(stageId, [scene]).catch((error) => {
+        log.warn(`Saving the PBL progress of ${sceneId} failed:`, error);
+      });
+    }, LEARNER_RUNTIME_SYNC_DELAY_MS),
+  );
+}
+
+const DOCUMENT_CHANGE_KINDS = new Set<PendingChange['kind']>([
+  'scene',
+  'structure',
+  'stage',
+  'outline',
+]);
+
 function markPendingChanges(stageId: string | undefined, ...changes: PendingChange[]): void {
   if (!stageId || isStageDeleted(stageId)) return;
+  if (isServerGeneratingStage(stageId)) {
+    for (const change of changes) {
+      if (change.kind !== 'scene') continue;
+      learnerChangedScenes.add(change.sceneId);
+      syncLearnerRuntime(stageId, change.sceneId);
+    }
+    changes = changes.filter((change) => !DOCUMENT_CHANGE_KINDS.has(change.kind));
+    if (changes.length === 0) return;
+  }
   if (pendingStageId !== stageId) resetPendingChanges(stageId);
   for (const change of changes) {
     pendingRevision += 1;
@@ -324,6 +405,13 @@ interface StageState {
    * course can be told apart from a client-authored one.
    */
   outlineProducer: DocumentProducer | null;
+  /** The producing job's handle (a generation run's id for a course a run generates). */
+  outlineProducerRef: string | null;
+  /**
+   * The course's generation run has not completed: the course is read-only
+   * (no editing, no Pro mode) until it does.
+   */
+  courseGenerating: boolean;
 
   // Transient generation tracking (not persisted)
   generationEpoch: number;
@@ -479,6 +567,8 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
   outlines: [],
   generationComplete: false,
   outlineProducer: null,
+  outlineProducerRef: null,
+  courseGenerating: false,
   isOwner: true,
   readOnly: false,
   generationEpoch: 0,
@@ -835,6 +925,8 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
       log.warn('Cannot save: stage.id is required');
       return false;
     }
+    // The run producing this course writes it; the server refuses anyone else.
+    if (isServerGeneratingStage(stage.id)) return false;
 
     // Epoch captured with the state read above: a deletion during the PBL
     // preparation await below permanently invalidates this write.
@@ -1048,13 +1140,16 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         const inMemoryState = get();
         const failedOutlines =
           inMemoryState.stage?.id === stageId ? inMemoryState.failedOutlines : [];
+        // A course a server job produces records its own completion.
+        const serverProduced = outlinesRecord?.producer === 'server-job';
         const generationComplete =
           persistedComplete ||
-          isDeckComplete({
-            outlines,
-            scenes: migrated,
-            failedOutlines,
-          });
+          (!serverProduced &&
+            isDeckComplete({
+              outlines,
+              scenes: migrated,
+              failedOutlines,
+            }));
         set({
           stage: data.stage,
           scenes: migrated,
@@ -1070,6 +1165,8 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
           generatingOutlines: generationComplete
             ? []
             : outlines.filter((o) => !migrated.some((s) => s.order === o.order)),
+          outlineProducer: outlinesRecord?.producer ?? null,
+          outlineProducerRef: outlinesRecord?.producerRef ?? null,
           // `mode` is transient UI state, not persisted with the stage.
           // Reset to 'playback' on every load so SPA navigation between
           // classrooms doesn't carry Pro-mode state across — e.g. user
@@ -1079,6 +1176,17 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
           mode: 'playback',
         });
         resetPendingChanges(stageId);
+        // A course its generation run is still producing is read-only from
+        // the moment it is shown (the classroom's run follower lifts it).
+        if (
+          !persistedComplete &&
+          runIdOfCourse(outlinesRecord?.producer, outlinesRecord?.producerRef)
+        ) {
+          setServerGeneratingStage(stageId);
+        } else if (isServerGeneratingStage(stageId)) {
+          // No run to follow: nothing would ever lift the fence.
+          setServerGeneratingStage(null);
+        }
         if (generationComplete && !persistedComplete) void get().saveToStorage();
         log.info('Loaded from storage:', stageId);
       } else {

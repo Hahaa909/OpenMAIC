@@ -116,6 +116,7 @@ import {
   type RouteRetryOptions,
 } from './retry';
 import { STEP_DEADLINES_MS, withDeadline } from './deadline';
+import { runFailureCode, type RunFailureCode } from './failure-code';
 import type { RunMaterialImage, RunStepServices } from './services';
 import {
   commitGenerationRun,
@@ -284,6 +285,13 @@ class StepFailedError extends Error {
     super(cause instanceof Error ? cause.message || 'The step failed' : String(cause));
     this.name = 'StepFailedError';
   }
+}
+
+/** The code a failed step is reported with (see `runFailureCode`). */
+function failureCodeOf(error: unknown): RunFailureCode {
+  return error instanceof InvalidSceneError
+    ? { errorCode: 'GENERATION_FAILED' }
+    : runFailureCode(error);
 }
 
 /** A generated scene the course cannot hold (it fails the document's own scene validation). */
@@ -510,7 +518,7 @@ export async function executeGenerationRun(
   };
   // In parallel mode the browser marks a scene whose content failed and goes
   // on with the others, pausing once they are done; these are those scenes.
-  const skippedScenes = new Map<number, string>();
+  const skippedScenes = new Map<number, { message: string } & RunFailureCode>();
   const skippedStepIds = () =>
     [...skippedScenes.keys()].flatMap((index) =>
       SCENE_STEP_KINDS.map((kind) => sceneStepId(index, kind)),
@@ -531,6 +539,9 @@ export async function executeGenerationRun(
 
     switch (step.kind) {
       case 'material-analysis': {
+        // The preview names the kind of material it waits on.
+        const kinds = await services.materialKinds(owner, input.materialIds);
+        await commit({ events: [{ type: 'material_kinds', data: { kinds } }] });
         const analyzed = await withDeadline(
           stepId,
           STEP_DEADLINES_MS.materialAnalysis,
@@ -538,16 +549,23 @@ export async function executeGenerationRun(
           (callSignal) =>
             services.analyzeMaterials(owner, input.materialIds, { log, signal: callSignal }),
         );
+        // What the outline will not see in full, as the preview warns about it.
+        const warnings = analyzed.truncated
+          ? { events: [{ type: 'material_truncated' as const, data: { ...analyzed.truncated } }] }
+          : {};
         if (analyzed.images.length === 0) {
-          return done({ pdfText: analyzed.text } satisfies MaterialOutput);
+          return done({ pdfText: analyzed.text } satisfies MaterialOutput, warnings);
         }
         // The images become assets of the course, whose id is minted now.
         const stageId = generateClassroomId();
-        return done({
-          pdfText: analyzed.text,
-          ...(await storeMaterialImages(stageId, analyzed.images)),
-          stageId,
-        } satisfies MaterialOutput);
+        return done(
+          {
+            pdfText: analyzed.text,
+            ...(await storeMaterialImages(stageId, analyzed.images)),
+            stageId,
+          } satisfies MaterialOutput,
+          warnings,
+        );
       }
 
       case 'research': {
@@ -607,9 +625,15 @@ export async function executeGenerationRun(
                 ? result.failed.message || 'The step failed'
                 : String(result.failed);
             log.warn(`run ${run.id}: ${stepId} failed; continuing with the other scenes`);
-            skippedScenes.set(step.sceneIndex, message);
+            const code = failureCodeOf(result.failed);
+            skippedScenes.set(step.sceneIndex, { message, ...code });
             await commit({
-              events: [{ type: 'step_failed', data: { step: stepId, message, continuing: true } }],
+              events: [
+                {
+                  type: 'step_failed',
+                  data: { step: stepId, message, ...code, continuing: true },
+                },
+              ],
             });
             return null;
           }
@@ -856,7 +880,10 @@ export async function executeGenerationRun(
         result = await presets(selected.length > 0 ? selected : DEFAULT_PRESET_AGENT_IDS);
       }
     } else {
-      result = await presets(input.agents.agentIds);
+      // No agents selected: the default presets, as the learner's selection
+      // starts out.
+      const selected = input.agents.agentIds;
+      result = await presets(selected.length > 0 ? selected : DEFAULT_PRESET_AGENT_IDS);
     }
     const now = Date.now();
     const stage: Stage = {
@@ -1555,7 +1582,7 @@ export async function executeGenerationRun(
     };
   };
 
-  const pause = async (stepId: string, message: string) => {
+  const pause = async (stepId: string, message: string, code: RunFailureCode) => {
     // Content generated ahead stops before the run pauses, and so does the
     // media pass (a paused run is claimed again for the media it has left).
     prewarmAbort.abort();
@@ -1564,11 +1591,11 @@ export async function executeGenerationRun(
       patch: {
         state: 'paused',
         step: stepId,
-        error: { step: stepId, message },
+        error: { step: stepId, message, ...code },
         releaseLease: true,
       },
       events: [
-        { type: 'step_failed', data: { step: stepId, message } },
+        { type: 'step_failed', data: { step: stepId, message, ...code } },
         { type: 'state', data: { state: 'paused', step: stepId } },
       ],
     });
@@ -1686,11 +1713,12 @@ export async function executeGenerationRun(
       // The media pass runs alongside the scenes once the course exists.
       if (run.state === 'generating' && courseExists()) await ensureMediaLane();
       if (advance.kind === 'complete') {
-        const [failedIndex, message] =
+        const [failedIndex, failure] =
           [...skippedScenes.entries()].sort(([a], [b]) => a - b)[0] ?? [];
         if (failedIndex !== undefined) {
           // Every other scene is in: pause at the first one that failed.
-          await pause(sceneStepId(failedIndex, 'content'), message!);
+          const { message, ...code } = failure!;
+          await pause(sceneStepId(failedIndex, 'content'), message, code);
           return 'paused';
         }
         // Every media item has an answer before the course is complete.
@@ -1759,7 +1787,7 @@ export async function executeGenerationRun(
     if (error instanceof StepFailedError) {
       log.warn(`run ${run.id}: step ${error.stepId} failed; pausing`, error.cause);
       try {
-        await pause(error.stepId, error.message);
+        await pause(error.stepId, error.message, failureCodeOf(error.cause));
       } catch (pauseError) {
         if (isGenerationRunLeaseLostError(pauseError)) return 'interrupted';
         throw pauseError;

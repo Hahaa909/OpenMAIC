@@ -136,7 +136,7 @@ export function parseRunInput(raw: unknown): Parsed<GenerationRunInput> {
         agents = { mode: 'auto', presetAgentIds: ids.value };
       }
     } else if (value?.mode === 'preset') {
-      const ids = agentIdList(value.agentIds, 'agents.agentIds', 1);
+      const ids = agentIdList(value.agentIds, 'agents.agentIds', 0);
       if (!ids.ok) return ids;
       agents = { mode: 'preset', agentIds: ids.value };
     } else {
@@ -167,6 +167,9 @@ export function parseRunInput(raw: unknown): Parsed<GenerationRunInput> {
       };
     }
   }
+
+  const releaseMaterials = optionalBoolean(body.releaseMaterials, 'releaseMaterials');
+  if (!releaseMaterials.ok) return releaseMaterials;
 
   const outlineReview = body.outlineReview ?? 'wait';
   if (outlineReview !== 'wait' && outlineReview !== 'auto') {
@@ -209,6 +212,7 @@ export function parseRunInput(raw: unknown): Parsed<GenerationRunInput> {
       ...(learnerProfile ? { learnerProfile } : {}),
       outlineReview,
       ...(voice ? { voice } : {}),
+      ...(releaseMaterials.value && materialIds.length > 0 ? { releaseMaterials: true } : {}),
     },
   };
 }

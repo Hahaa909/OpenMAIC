@@ -60,7 +60,10 @@ export type GenerationRunAgents =
    * preset agents (as the browser falls back to its selection).
    */
   | { mode: 'auto'; presetAgentIds?: string[] }
-  /** These agents, by id: built-in ones or the owner's custom ones. */
+  /**
+   * These agents, by id: built-in ones or the owner's custom ones; none is the
+   * default presets (what the learner's selection starts out as).
+   */
   | { mode: 'preset'; agentIds: string[] };
 
 /**
@@ -82,6 +85,12 @@ export interface GenerationRunInput {
    * preference, not a model); the provider's default voice otherwise.
    */
   voice?: { providerId: string; voiceId: string; speed?: number };
+  /**
+   * The materials were uploaded for this run only (the composer's): they are
+   * released when the run completes or ends. Callers that reuse material ids
+   * across runs leave it out.
+   */
+  releaseMaterials?: boolean;
 }
 
 /** The outline a run generated, as last confirmed or edited. */
@@ -127,6 +136,16 @@ export interface GenerationRunFailure {
   /** The step that failed; null when the run stopped before it chose one. */
   step: string | null;
   message: string;
+  /**
+   * The error code the classic route answered the same failure with
+   * (`RATE_LIMITED`, `UPSTREAM_ERROR`, `GENERATION_FAILED`, `MISSING_API_KEY`,
+   * `INTERNAL_ERROR`, ...), so a client can say it the way it always did.
+   */
+  errorCode?: string;
+  /** The provider's HTTP status, for a provider's refusal. */
+  statusCode?: number;
+  /** In a run's own snapshot: the seq of the `step_failed` event that reported it. */
+  failureSeq?: number;
   /** Where `retry` resumes a run that stopped without a step. */
   resumeState?: ExecutableRunState;
 }
@@ -196,6 +215,8 @@ export interface GenerationRunMediaEventData {
   errorCode?: string;
   /** Whether Retry may be offered for a failure. */
   retryable?: boolean;
+  /** In a snapshot, for a failed or skipped item: the seq of the event that reported it. */
+  failureSeq?: number;
 }
 
 /** A media element's state in a run snapshot. */
@@ -240,6 +261,14 @@ export const GENERATION_RUN_EVENT_TYPES = [
   'step_completed',
   /** `{ step, message }`: a step failed after its retries; the run pauses. */
   'step_failed',
+  /** `{ kinds }`: whether each material (in order) is a `document` or audio/video `media`. */
+  'material_kinds',
+  /**
+   * `{ textChars?, images?: { total, max } }`: the material text or images the
+   * outline does not see in full (text cut at `textChars` characters, the
+   * first `max` of `total` images).
+   */
+  'material_truncated',
   /** `{ sources }`: what the research step found. */
   'research_sources',
   /** The outline stream restarted (a retry, a takeover): discard the items so far. */

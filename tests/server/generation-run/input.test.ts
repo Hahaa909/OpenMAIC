@@ -60,11 +60,35 @@ describe('run input', () => {
     });
   });
 
+  it('keeps releaseMaterials only for a run with materials', () => {
+    expect(
+      parseRunInput({
+        requirement: 'x',
+        materialIds: ['mat_00000000000000000000000000'],
+        releaseMaterials: true,
+      }),
+    ).toMatchObject({ ok: true, value: { releaseMaterials: true } });
+    const none = parseRunInput({ requirement: 'x', releaseMaterials: true });
+    expect(none.ok && 'releaseMaterials' in none.value).toBe(false);
+    expect(parseRunInput({ requirement: 'x', releaseMaterials: 'yes' }).ok).toBe(false);
+  });
+
+  it('reads an empty preset selection as the default presets (resolved by the run)', () => {
+    expect(
+      parseRunInput({ requirement: 'x', agents: { mode: 'preset', agentIds: [] } }),
+    ).toMatchObject({ ok: true, value: { agents: { mode: 'preset', agentIds: [] } } });
+    expect(parseRunInput({ requirement: 'x', agents: { mode: 'auto' } })).toMatchObject({
+      ok: true,
+      value: { agents: { mode: 'auto' } },
+    });
+  });
+
   it.each([
     [{}, /requirement/],
     [{ requirement: '  ' }, /requirement/],
     [{ requirement: 'x', materialIds: ['nope'] }, /materialIds/],
-    [{ requirement: 'x', agents: { mode: 'preset', agentIds: [] } }, /agentIds/],
+    [{ requirement: 'x', agents: { mode: 'preset', agentIds: [''] } }, /agentIds/],
+    [{ requirement: 'x', agents: { mode: 'preset' } }, /agentIds/],
     [{ requirement: 'x', agents: { mode: 'random' } }, /agents must be/],
     [{ requirement: 'x', outlineReview: 'skip' }, /outlineReview/],
     [{ requirement: 'x', interactive: 'yes' }, /interactive/],
