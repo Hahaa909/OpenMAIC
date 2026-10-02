@@ -94,6 +94,7 @@ jobs:
             tests/agent-runtime/event-notify.pg.test.ts \
             tests/agent-runtime/park-attempt-budget.pg.test.ts \
             tests/agent-runtime/session-events-live.pg.test.ts \
+            tests/agent-runtime/prior-run-record.pg.test.ts \
             tests/legacy-browser-import/import-routes.pg.test.ts \
             tests/server/classroom-persistence.pg.test.ts \
             tests/server/generate-classroom-api.pg.test.ts \
