@@ -25,10 +25,12 @@ import {
 import { runModelSettingsImport } from '@/lib/legacy-browser-import/model-settings-import';
 import {
   discardUnimported,
+  forgetUnimported,
   keepUnimported,
   MODEL_SETTINGS_UNIMPORTED_KEY,
   readUnimported,
   takeUnimportedNotice,
+  unimportedKey,
   type UnimportedModelSetting,
 } from '@/lib/legacy-browser-import/model-settings-unimported';
 import { BINDING_ENDPOINT } from '@/lib/legacy-browser-import/protocol';
@@ -75,16 +77,20 @@ function server(importBody: unknown, init: { status?: number; raw?: string } = {
   });
 }
 
-const view = (providers: Array<{ id: string; preset: string }>, slots: string[] = []) =>
+type ViewKey = { set: boolean; mask?: string; unreadable?: boolean };
+const view = (
+  providers: Array<{ id: string; preset: string; key?: ViewKey }>,
+  slots: string[] = [],
+) =>
   ({
     revision: 2,
     policy: { allowWorkspaceProviders: true },
     presets: [],
     providers: providers.map((provider) => ({
-      ...provider,
       source: 'workspace',
       capabilities: {},
       key: { set: true },
+      ...provider,
     })),
     slots: slots.map((slot) => ({ slot, assignment: 'x' })),
   }) as unknown as ModelSettingsView;
@@ -93,14 +99,23 @@ describe('an import with skipped items', () => {
   it('keeps only the skipped items, with their keys, and drops the imported ones', async () => {
     const storage = waiting();
     const fetch = server({
-      imported: ['openai', 'llm'],
+      imported: [
+        { kind: 'provider', id: 'openai' },
+        { kind: 'slot', id: 'llm' },
+      ],
       skipped: [
         {
-          item: 'azure-tts',
+          kind: 'provider',
+          id: 'azure-tts',
           code: 'INVALID_PROVIDER',
           reason: 'A custom endpoint for Azure TTS can only be configured by the deployment',
         },
-        { item: 'tts', code: 'INVALID_ASSIGNMENT', reason: 'tts: the provider is not declared' },
+        {
+          kind: 'slot',
+          id: 'tts',
+          code: 'INVALID_ASSIGNMENT',
+          reason: 'tts: the provider is not declared',
+        },
       ],
       view: view([{ id: 'openai', preset: 'openai' }]),
     });
@@ -133,10 +148,10 @@ describe('an import with skipped items', () => {
     const fetch = server({
       imported: [],
       skipped: [
-        { item: 'openai', code: 'EXISTS', reason: 'A provider with this id already exists' },
-        { item: 'azure-tts', code: 'EXISTS', reason: 'A provider with this id already exists' },
-        { item: 'llm', code: 'EXISTS', reason: 'The workspace already sets this slot' },
-        { item: 'tts', code: 'SLOT_LOCKED', reason: 'tts is set by the deployment' },
+        { kind: 'provider', id: 'openai', code: 'EXISTS_SAME', reason: 'held' },
+        { kind: 'provider', id: 'azure-tts', code: 'EXISTS_SAME', reason: 'held' },
+        { kind: 'slot', id: 'llm', code: 'EXISTS', reason: 'The workspace already sets this slot' },
+        { kind: 'slot', id: 'tts', code: 'SLOT_LOCKED', reason: 'tts is set by the deployment' },
       ],
     });
     expect(await runModelSettingsImport({ fetch, storage })).toBe('imported');
@@ -148,7 +163,7 @@ describe('an import with skipped items', () => {
     const storage = waiting({ providers: { openai: { preset: 'openai', apiKey: OPENAI_KEY } } });
     const fetch = server({
       imported: [],
-      skipped: [{ item: 'openai', code: 'PROVIDER_RESERVED', reason: 'reserved' }],
+      skipped: [{ kind: 'provider', id: 'openai', code: 'PROVIDER_RESERVED', reason: 'reserved' }],
     });
     await runModelSettingsImport({ fetch, storage });
     expect(readUnimported(storage).items).toEqual([
@@ -182,8 +197,8 @@ describe('an import with skipped items', () => {
       setItem(key, value);
     });
     const fetch = server({
-      imported: ['openai'],
-      skipped: [{ item: 'azure-tts', code: 'INVALID_PROVIDER', reason: 'no' }],
+      imported: [{ kind: 'provider', id: 'openai' }],
+      skipped: [{ kind: 'provider', id: 'azure-tts', code: 'INVALID_PROVIDER', reason: 'no' }],
     });
     expect(await runModelSettingsImport({ fetch, storage })).toBe('kept');
     expect(storage.getItem(MODEL_SETTINGS_IMPORT_KEY)).not.toBeNull();
@@ -192,8 +207,11 @@ describe('an import with skipped items', () => {
   it('does not import again, and never sends what it kept', async () => {
     const storage = waiting();
     const fetch = server({
-      imported: ['openai', 'llm'],
-      skipped: [{ item: 'azure-tts', code: 'INVALID_PROVIDER', reason: 'no' }],
+      imported: [
+        { kind: 'provider', id: 'openai' },
+        { kind: 'slot', id: 'llm' },
+      ],
+      skipped: [{ kind: 'provider', id: 'azure-tts', code: 'INVALID_PROVIDER', reason: 'no' }],
     });
     await runModelSettingsImport({ fetch, storage });
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -205,6 +223,117 @@ describe('an import with skipped items', () => {
     const bodies = fetch.mock.calls.map(([, init]) => String(init?.body ?? ''));
     expect(bodies.filter((body) => body.includes(AZURE_KEY))).toHaveLength(1);
     expect(readUnimported(storage).items).toHaveLength(2);
+  });
+});
+
+describe('an import that meets settings already in the workspace', () => {
+  it('keeps a provider whose id the workspace holds with another key', async () => {
+    // The workspace's `openai` holds another key: the server keeps it and says so.
+    const storage = waiting({ providers: { openai: { preset: 'openai', apiKey: OPENAI_KEY } } });
+    const fetch = server({
+      imported: [],
+      skipped: [
+        {
+          kind: 'provider',
+          id: 'openai',
+          code: 'EXISTS_DIFFERENT',
+          reason: 'A provider with this id already exists with other settings',
+        },
+      ],
+    });
+    expect(await runModelSettingsImport({ fetch, storage })).toBe('imported');
+    expect(storage.getItem(MODEL_SETTINGS_IMPORT_KEY)).toBeNull();
+    expect(readUnimported(storage).items).toEqual([
+      expect.objectContaining({
+        id: 'openai',
+        kind: 'provider',
+        reason: 'refused',
+        detail: expect.stringContaining('other settings'),
+        settings: expect.objectContaining({ apiKey: OPENAI_KEY }),
+      }),
+    ]);
+  });
+
+  it('keeps a provider the answer reports with the plain EXISTS of a slot', async () => {
+    // Only EXISTS_SAME confirms a provider; anything else keeps it.
+    const storage = waiting({ providers: { openai: { preset: 'openai', apiKey: OPENAI_KEY } } });
+    const fetch = server({
+      imported: [],
+      skipped: [{ kind: 'provider', id: 'openai', code: 'EXISTS', reason: 'exists' }],
+    });
+    await runModelSettingsImport({ fetch, storage });
+    expect(JSON.stringify(readUnimported(storage))).toContain(OPENAI_KEY);
+  });
+});
+
+describe('a provider and a slot of the same id', () => {
+  const proposal = {
+    providers: { tts: { preset: 'azure-tts', apiKey: AZURE_KEY, baseUrl: 'https://evil.com' } },
+    slots: { tts: null },
+  };
+
+  it('keeps the refused provider when the slot of its id is imported', async () => {
+    const storage = waiting(proposal);
+    const fetch = server({
+      imported: [{ kind: 'slot', id: 'tts' }],
+      skipped: [
+        { kind: 'provider', id: 'tts', code: 'INVALID_PROVIDER', reason: 'custom endpoint' },
+      ],
+    });
+    expect(await runModelSettingsImport({ fetch, storage })).toBe('imported');
+    expect(readUnimported(storage).items).toEqual([
+      expect.objectContaining({
+        id: 'tts',
+        kind: 'provider',
+        reason: 'refused',
+        settings: expect.objectContaining({ apiKey: AZURE_KEY }),
+      }),
+    ]);
+  });
+
+  it('keeps the refused slot when the provider of its id is imported', async () => {
+    const storage = waiting(proposal);
+    const fetch = server({
+      imported: [{ kind: 'provider', id: 'tts' }],
+      skipped: [{ kind: 'slot', id: 'tts', code: 'INVALID_ASSIGNMENT', reason: 'no' }],
+    });
+    await runModelSettingsImport({ fetch, storage });
+    expect(readUnimported(storage).items).toEqual([
+      expect.objectContaining({
+        id: 'tts',
+        kind: 'slot',
+        settings: { preset: '', assignment: null },
+      }),
+    ]);
+    expect(JSON.stringify(readUnimported(storage))).not.toContain(AZURE_KEY);
+  });
+
+  it('confirms nothing by an id without its kind', async () => {
+    const storage = waiting(proposal);
+    const fetch = server({ imported: ['tts', { id: 'tts' }], skipped: [] });
+    await runModelSettingsImport({ fetch, storage });
+    expect(readUnimported(storage).items.map((item) => [item.kind, item.reason])).toEqual([
+      ['provider', 'unconfirmed'],
+      ['slot', 'unconfirmed'],
+    ]);
+  });
+
+  it('keeps and forgets each on its own', () => {
+    const storage = new MemoryStorage();
+    keepUnimported([item('tts'), item('tts', { kind: 'slot', preset: undefined })], storage);
+    keepUnimported(
+      [item('tts', { kind: 'slot', preset: undefined, reason: 'unconfirmed' })],
+      storage,
+    );
+    expect(readUnimported(storage).items.map(unimportedKey)).toEqual(['provider:tts', 'slot:tts']);
+    forgetUnimported(['slot:tts'], storage);
+    expect(readUnimported(storage).items).toEqual([
+      expect.objectContaining({
+        id: 'tts',
+        kind: 'provider',
+        settings: expect.objectContaining({ apiKey: AZURE_KEY }),
+      }),
+    ]);
   });
 });
 
@@ -330,11 +459,13 @@ describe('the notice', () => {
   });
 
   it('drops what was set up again, and nothing else', () => {
+    const keyless = (id: string, extra: Partial<UnimportedModelSetting> = {}) =>
+      item(id, { settings: { preset: extra.preset ?? 'azure-tts' }, ...extra });
     const items = [
-      item('azure-tts', { knownProviders: ['openai'] }),
-      item('kept', { preset: 'qwen-tts', knownProviders: [] }),
-      item('tts', { kind: 'slot', preset: undefined }),
-      item('tts:custom-tts-1', { preset: undefined, reason: 'custom-service' }),
+      keyless('azure-tts', { knownProviders: ['openai'] }),
+      keyless('kept', { preset: 'qwen-tts', knownProviders: [] }),
+      item('tts', { kind: 'slot', preset: undefined, settings: { preset: '', assignment: 'x' } }),
+      keyless('tts:custom-tts-1', { preset: undefined, reason: 'custom-service' }),
     ];
     // Nothing new yet: the workspace's providers were known when they were kept.
     expect(settledUnimported(items, view([{ id: 'openai', preset: 'openai' }]))).toEqual([]);
@@ -345,12 +476,35 @@ describe('the notice', () => {
         view(
           [
             { id: 'openai', preset: 'openai' },
-            { id: 'azure-tts-2', preset: 'azure-tts' },
+            { id: 'azure-tts-2', preset: 'azure-tts', key: { set: false } },
           ],
           ['tts'],
         ),
       ),
-    ).toEqual(['azure-tts', 'tts']);
+    ).toEqual(['provider:azure-tts', 'slot:tts']);
+  });
+
+  it('never drops a kept key by itself: only the user discards it', () => {
+    // Kept because its endpoint was refused; the user then adds an Azure
+    // provider with the regional endpoint, with no key, another key, or one
+    // that looks like the kept key. None of these confirms the key.
+    const kept = [item('azure-tts', { knownProviders: [] })];
+    for (const key of [
+      { set: false },
+      { set: true, mask: '…0000' },
+      { set: true, unreadable: true },
+      { set: true, mask: '…6789' },
+    ] satisfies ViewKey[]) {
+      expect(
+        settledUnimported(kept, view([{ id: 'azure-tts-2', preset: 'azure-tts', key }])),
+      ).toEqual([]);
+    }
+    const pair = item('document:alidocmind', {
+      preset: 'alidocmind',
+      reason: 'key-pair',
+      settings: { preset: 'alidocmind', accessKeyId: 'id', accessKeySecret: 'secret' },
+    });
+    expect(settledUnimported([pair], view([{ id: 'docmind', preset: 'alidocmind' }]))).toEqual([]);
   });
 
   it('is discarded by the user, and survives clearing the cache until then', () => {
