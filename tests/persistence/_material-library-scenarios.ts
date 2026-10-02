@@ -13,6 +13,11 @@ import { ensureAgentSessionMaterialSchema } from '@openmaic/storage/material/pg'
 import { expect } from 'vitest';
 
 import { claimOwner } from '@/lib/persistence/owner-claims';
+import {
+  allocateOwnerMaterialBytes,
+  publishOwnerMaterialUpload,
+  registerOwnerMaterial,
+} from '@/lib/persistence/owner-materials';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
 import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 import {
@@ -24,6 +29,9 @@ import {
 } from '@/lib/server/agent-runtime/material-resolver';
 import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
 import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
+import { buildMaterialMediaTool } from '@/lib/server/agent-runtime/material-media';
+import { resolveRawMaterial } from '@/lib/server/agent-runtime/material-resolver';
+import { buildVoiceCloneTools } from '@/lib/server/agent-runtime/voice-clone-tools';
 import {
   attachOwnerMaterialsToSession,
   ensureSessionMaterialLinkSchema,
@@ -48,15 +56,22 @@ import {
 
 export { ACCOUNT, ANON, OTHER, type ExtractionHarness, type ExtractionScenarioPool };
 
+export type LibraryHarness = ExtractionHarness & {
+  /** Material byte-store objects written or seeded by key, besides `objects/<id>`. */
+  objects: Map<string, Buffer>;
+};
+
 export async function bootLibraryHarness(
   pool: ExtractionScenarioPool,
   databaseUrl: string,
-): Promise<ExtractionHarness> {
-  const h = await bootExtractionHarness(pool, databaseUrl);
+): Promise<LibraryHarness> {
+  const h = Object.assign(await bootExtractionHarness(pool, databaseUrl), {
+    objects: new Map<string, Buffer>(),
+  });
   await ensureAgentSessionMaterialSchema(pool as never);
   await ensureSessionMaterialLinkSchema(pool as never);
   // Seeded sources name `objects/<id>` (see seedSource); session copies their own keys.
-  const objects = new Map<string, Buffer>();
+  const objects = h.objects;
   setMaterialByteStoreForTests({
     put: async (key, body) => void objects.set(key, Buffer.from(body as Uint8Array)),
     get: async (key) => {
@@ -525,4 +540,81 @@ export async function listingDerivedFieldsScenario(h: ExtractionHarness): Promis
     limit: 2,
   });
   expect(withText.map((m) => m.id)).toEqual(['src-a']);
+}
+
+/** A ready source whose original lives only in the pool, uploaded the way the route does. */
+export async function seedPoolSource(
+  h: ExtractionHarness,
+  id: string,
+  bytes: Buffer,
+  mime: string,
+) {
+  await registerOwnerMaterial(
+    h.pool as never,
+    {
+      id,
+      ownerId: ACCOUNT,
+      kind: 'source',
+      mime,
+      bytes: bytes.byteLength,
+      originalName: `${id}.bin`,
+      ossKey: '',
+      extraction: { status: 'idle' },
+    },
+    { maxCount: 100, maxTotalBytes: 1_000_000 },
+  );
+  const assetId = await allocateOwnerMaterialBytes(h.provider, ACCOUNT, bytes, mime);
+  await publishOwnerMaterialUpload(h.provider, ACCOUNT, id, {
+    assetId,
+    bytes: bytes.byteLength,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  });
+}
+
+/**
+ * Every consumer of original bytes reads the same three kinds of material:
+ * a linked source in the pool, a linked source from before the pool, and a
+ * session copy. A pre-pool object that no longer matches its digest reads as
+ * unavailable, and the consumers say so instead of using other bytes.
+ */
+export async function rawConsumersScenario(h: LibraryHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  const video = Buffer.from('fake-mp4');
+  await seedPoolSource(h, 'src-pool', video, 'video/mp4');
+  await seedSource(h, 'src-old', { mime: 'audio/mpeg', bytes: Buffer.from('fake-mp3') });
+  await seedSource(h, 'src-bad', { mime: 'audio/mpeg', bytes: Buffer.from('fake-mp3-bad') });
+  await seedCopy(h, 'ses-1', 'mat_copy', null);
+  h.objects.set('materials/ses-1/mat_copy/raw', Buffer.from('copied'));
+  await attachOwnerMaterialsToSession(h.provider, {
+    sessionId: 'ses-1',
+    ownerId: ACCOUNT,
+    materialIds: ['src-pool', 'src-old', 'src-bad'],
+  });
+  // The stored object changes after its digest was recorded.
+  h.sources.set('src-bad', Buffer.from('tampered'));
+
+  const read = async (id: string) => (await resolveRawMaterial('ses-1', id))!.read();
+  expect(await read('src-pool')).toEqual({ bytes: video, mime: 'video/mp4' });
+  expect(await read('src-old')).toEqual({ bytes: Buffer.from('fake-mp3'), mime: 'audio/mpeg' });
+  expect((await read('mat_copy'))?.bytes).toEqual(Buffer.from('copied'));
+  expect(await read('src-bad')).toBeNull();
+  // Unattached: no consumer reaches it in the session.
+  await seedSource(h, 'src-loose');
+  expect(await resolveRawMaterial('ses-1', 'src-loose')).toBeNull();
+
+  const clip = buildVoiceCloneTools({
+    sessionId: 'ses-1',
+    clipAudio: async () => Buffer.alloc(0),
+  }).find((tool) => tool.name === 'clip_audio')!;
+  await expect(
+    clip.execute('call', { materialId: 'src-bad', startSec: 0, endSec: 10 } as never),
+  ).rejects.toThrow('material bytes are unavailable');
+
+  const media = buildMaterialMediaTool({ sessionId: 'ses-1' });
+  const result = (await media.execute('call', {
+    materialId: 'src-bad',
+    stageId: 'stage-1',
+  } as never)) as { content: Array<{ text: string }>; isError?: boolean };
+  expect(result.content[0]!.text).toBe('Media bytes are unavailable.');
+  expect(result.isError).toBe(true);
 }
