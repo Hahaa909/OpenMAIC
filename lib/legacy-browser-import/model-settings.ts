@@ -15,9 +15,11 @@
  * server has taken it, so keys do not stay in the browser.
  *
  * Deliberately not imported: per-stage routes (`llmStageRoutes`), which do not
- * map one to one onto slots; custom TTS/ASR providers and vendors that
- * authenticate with a key pair (AliDocMind), which a workspace provider cannot
- * express; thinking settings.
+ * map one to one onto slots; thinking settings. Custom TTS/ASR providers,
+ * vendors that authenticate with a key pair (AliDocMind) and custom chat
+ * providers the server cannot express are not proposed either; with their
+ * keys they are kept in the browser instead
+ * (`./model-settings-unimported.ts`), like anything the server skips.
  */
 import { findModelById } from '@/lib/ai/model-aliases';
 import { PROVIDERS } from '@/lib/ai/providers';
@@ -29,6 +31,8 @@ import { IMAGE_PROVIDERS } from '@/lib/media/image-providers';
 import { VIDEO_PROVIDERS } from '@/lib/media/video-providers';
 import { PDF_PROVIDERS } from '@/lib/pdf/constants';
 import { WEB_SEARCH_PROVIDERS } from '@/lib/web-search/constants';
+
+import type { UnimportedModelSetting } from './model-settings-unimported';
 
 /** The localStorage key of a proposal waiting to be imported. */
 export const MODEL_SETTINGS_IMPORT_KEY = 'maic:legacy-import:model-settings';
@@ -54,6 +58,7 @@ export interface ModelSettingsProposal {
 }
 
 interface LegacyChatProvider {
+  name?: string;
   apiKey?: string;
   baseUrl?: string;
   defaultBaseUrl?: string;
@@ -65,10 +70,14 @@ interface LegacyChatProvider {
 }
 
 interface LegacyServiceProvider {
+  customName?: string;
+  customDefaultBaseUrl?: string;
   apiKey?: string;
   baseUrl?: string;
   enabled?: boolean;
   isServerConfigured?: boolean;
+  /** The operator switched it off (server-providers.yml / env). */
+  serverDisabled?: boolean;
   modelId?: string;
   accessKeyId?: string;
   accessKeySecret?: string;
@@ -269,7 +278,26 @@ function withAddedModels(
 export function buildModelSettingsProposal(
   state: LegacyModelSettingsState | null | undefined,
 ): ModelSettingsProposal | undefined {
-  if (!state || typeof state !== 'object') return undefined;
+  return planModelSettingsImport(state).proposal;
+}
+
+export interface ModelSettingsImportPlan {
+  /** What is sent to the server. */
+  proposal?: ModelSettingsProposal;
+  /** Settings with a key or an endpoint that no workspace provider can express: kept in the browser. */
+  unimportable: UnimportedModelSetting[];
+}
+
+/**
+ * The proposal for a version 4 settings state, with the settings it cannot
+ * propose (a custom speech service, a key pair, a custom chat provider the
+ * server cannot express) as they were, keys included.
+ */
+export function planModelSettingsImport(
+  state: LegacyModelSettingsState | null | undefined,
+): ModelSettingsImportPlan {
+  const unimportable: UnimportedModelSetting[] = [];
+  if (!state || typeof state !== 'object') return { unimportable };
   const providers: Record<string, ProposedProvider> = {};
   const slots: Record<string, string | null> = {};
 
@@ -326,15 +354,32 @@ export function buildModelSettingsProposal(
       .map((model) => text(model?.id))
       .filter((modelId) => modelId.length > 0);
     if (custom) {
-      // A custom provider is its endpoint: without one there is nothing to call.
-      if (!baseUrl) continue;
       const preset =
         config.type === 'openai' || !config.type
           ? 'openai-compatible'
           : config.type === 'anthropic' || config.type === 'google'
             ? config.type
             : undefined;
-      if (!preset) continue;
+      // A custom provider is its endpoint: without one there is nothing to
+      // call. One the server cannot express keeps its key in the browser.
+      if (!baseUrl || !preset) {
+        if (apiKey || baseUrl) {
+          unimportable.push({
+            id: `chat:${legacyId}`,
+            kind: 'provider',
+            capability: 'chat',
+            name: text(config.name) || legacyId,
+            reason: 'unsupported',
+            settings: {
+              preset: preset ?? text(config.type),
+              ...(apiKey ? { apiKey } : {}),
+              ...(baseUrl ? { baseUrl } : {}),
+              ...(models.length ? { models: [...new Set(models)] } : {}),
+            },
+          });
+        }
+        continue;
+      }
       chatIds.set(
         legacyId,
         claim(legacyId, {
@@ -374,17 +419,30 @@ export function buildModelSettingsProposal(
     if (id) slots.llm = `${id}:${modelId}`;
   }
 
-  // Only speech input carries an explicit off over: with its slot unassigned
-  // the browser's own recognition would take over, which the user turned off.
-  // The other switches were per-browser toggles that availability following
-  // the slots replaces on purpose; a lasting workspace `null` made of them
-  // would override the deployment's defaults from then on.
+  // A capability the user switched off stays off (its slot is proposed as
+  // `null`): with the slot unassigned the deployment's defaults (or, for
+  // speech input, the browser's own recognition) would turn it back on.
+  //
+  // Speech input defaulted to on, so off was always the user's choice.
+  // Narration, images and video defaulted to off, and earlier builds turned
+  // them on by themselves whenever a provider for them became usable (a server
+  // provider on the first load, a key the user entered) and off when none
+  // was. So `false` is the user's choice exactly when a usable provider was
+  // there: without one it is only the default. The one case this cannot tell
+  // apart is a server that gained the provider after this browser's first load
+  // (earlier builds did not turn the capability on then); it is read as off,
+  // which shows in the settings and costs nothing, rather than as on, which
+  // would start paid generation the user may have refused.
+  //
+  // Web search is not carried over as off: switching it off only stopped
+  // course research, while chat and the agent kept searching through the same
+  // provider, which the slot now serves.
 
   const services: Array<{
     capability: ServiceCapability;
     selected?: string;
     on: boolean;
-    /** The user turned the capability off: the slot is proposed as off (null). Speech input only. */
+    /** The user turned the capability off: the slot is proposed as off (null). */
     explicitlyOff: boolean;
     model?: string;
   }> = [
@@ -392,7 +450,7 @@ export function buildModelSettingsProposal(
       capability: 'tts',
       selected: state.ttsProviderId,
       on: state.ttsEnabled === true,
-      explicitlyOff: false,
+      explicitlyOff: state.ttsEnabled === false && hadUsableService(state, 'tts'),
       model: state.ttsProvidersConfig?.[text(state.ttsProviderId)]?.modelId,
     },
     {
@@ -407,14 +465,14 @@ export function buildModelSettingsProposal(
       capability: 'image',
       selected: state.imageProviderId,
       on: state.imageGenerationEnabled === true,
-      explicitlyOff: false,
+      explicitlyOff: state.imageGenerationEnabled === false && hadUsableService(state, 'image'),
       model: state.imageModelId,
     },
     {
       capability: 'video',
       selected: state.videoProviderId,
       on: state.videoGenerationEnabled === true,
-      explicitlyOff: false,
+      explicitlyOff: state.videoGenerationEnabled === false && hadUsableService(state, 'video'),
       model: state.videoModelId,
     },
     {
@@ -441,8 +499,30 @@ export function buildModelSettingsProposal(
         ids.set(registryId, plan);
         continue;
       }
-      // Custom TTS/ASR providers and unknown ids have no preset.
-      if (!config || !Object.hasOwn(registry, registryId)) continue;
+      if (!config) continue;
+      // Custom TTS/ASR providers and unknown ids have no preset: what they
+      // hold is kept in the browser.
+      if (!Object.hasOwn(registry, registryId)) {
+        if (config.isServerConfigured) continue;
+        const apiKey = text(config.apiKey);
+        const baseUrl = text(config.baseUrl) || text(config.customDefaultBaseUrl);
+        if (apiKey || baseUrl) {
+          unimportable.push({
+            id: `${capability}:${registryId}`,
+            kind: 'provider',
+            capability,
+            name: text(config.customName) || registryId,
+            reason: 'custom-service',
+            settings: {
+              preset: registryId,
+              ...(apiKey ? { apiKey } : {}),
+              ...(baseUrl ? { baseUrl } : {}),
+              ...(text(config.modelId) ? { modelId: text(config.modelId) } : {}),
+            },
+          });
+        }
+        continue;
+      }
       // A server-configured provider is the server's: named by its preset id
       // (as the server names translated legacy providers), never imported.
       if (config.isServerConfigured) {
@@ -452,8 +532,29 @@ export function buildModelSettingsProposal(
       const apiKey = text(config.apiKey);
       const baseUrl = text(config.baseUrl);
       const customEndpoint = baseUrl && !sameUrl(baseUrl, registry[registryId]?.defaultBaseUrl);
-      // A key pair (AliDocMind) cannot be expressed as one key.
-      if (!apiKey && !customEndpoint) continue;
+      // A key pair (AliDocMind) cannot be expressed as one key: it is kept
+      // in the browser.
+      if (!apiKey && !customEndpoint) {
+        const accessKeyId = text(config.accessKeyId);
+        const accessKeySecret = text(config.accessKeySecret);
+        if (accessKeyId || accessKeySecret) {
+          unimportable.push({
+            id: `${capability}:${registryId}`,
+            kind: 'provider',
+            capability,
+            name: registryName(registry, registryId),
+            preset: presetIdFor(capability, registryId),
+            reason: 'key-pair',
+            settings: {
+              preset: presetIdFor(capability, registryId),
+              ...(accessKeyId ? { accessKeyId } : {}),
+              ...(accessKeySecret ? { accessKeySecret } : {}),
+              ...(baseUrl ? { baseUrl } : {}),
+            },
+          });
+        }
+        continue;
+      }
       const preset = presetIdFor(capability, registryId);
       ids.set(
         registryId,
@@ -487,11 +588,41 @@ export function buildModelSettingsProposal(
 
   const hasProviders = Object.keys(providers).length > 0;
   const hasSlots = Object.keys(slots).length > 0;
-  if (!hasProviders && !hasSlots) return undefined;
+  if (!hasProviders && !hasSlots) return { unimportable };
   return {
-    ...(hasProviders ? { providers } : {}),
-    ...(hasSlots ? { slots } : {}),
+    proposal: {
+      ...(hasProviders ? { providers } : {}),
+      ...(hasSlots ? { slots } : {}),
+    },
+    unimportable,
   };
+}
+
+function registryName(registry: Record<string, unknown>, registryId: string): string {
+  const entry = registry[registryId] as { name?: unknown } | undefined;
+  return typeof entry?.name === 'string' && entry.name ? entry.name : registryId;
+}
+
+/**
+ * Whether the browser state had a usable provider for a capability, as
+ * earlier builds judged it when they switched the capability on by
+ * themselves: server-configured (and not switched off by the operator), or
+ * with the user's key (an endpoint, for a keyless one). The browser's own
+ * speech synthesis does not count: it never switched narration on.
+ */
+function hadUsableService(state: LegacyModelSettingsState, capability: ServiceCapability): boolean {
+  const registry = SERVICE_REGISTRIES[capability];
+  return Object.entries(serviceMap(state, capability) ?? {}).some(([registryId, config]) => {
+    if (!config || config.enabled === false || config.serverDisabled) return false;
+    if (BROWSER_SERVICES[capability] === registryId) return false;
+    if (config.isServerConfigured) return true;
+    const entry = Object.hasOwn(registry, registryId) ? registry[registryId] : undefined;
+    if (entry?.requiresApiKey !== false && text(config.apiKey)) return true;
+    return (
+      entry?.requiresApiKey === false &&
+      !!(text(config.baseUrl) || text(config.customDefaultBaseUrl))
+    );
+  });
 }
 
 function serviceMap(
