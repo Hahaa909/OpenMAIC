@@ -1,0 +1,155 @@
+/**
+ * One material id, whichever kind of row it names (RFC #1716 §4, §9).
+ *
+ * A conversation knows its materials by two kinds of id:
+ *
+ * - **Session rows** (`agent_session_materials`): copies the binder made
+ *   before links, their extraction and transcript rows, fetched web pages and
+ *   audio clips. They keep being read exactly as before, from the session's
+ *   byte prefix.
+ * - **Owner materials** (`owner_material`): library sources the session
+ *   links, their media derivatives, and -- in library scope -- any live
+ *   material of the session's owner.
+ *
+ * Every consumer of a material id resolves it here, then reads through the
+ * readers below. A session row wins over an owner material of the same id:
+ * the pre-upgrade binder keyed copies on the owner id, and such a copy keeps
+ * meaning what it meant.
+ *
+ * Resolving decides who may read; the readers only read. Owner bytes are read
+ * from the row as it was just resolved (its id, owner, pool pointer, old
+ * object and digest), never from anything stored on a link.
+ */
+import type { AgentSessionMaterial } from '@openmaic/storage';
+
+import {
+  getLinkedOwnerMaterial,
+  getSessionOwnerMaterial,
+  listLinkedOwnerMaterials,
+  type OwnerMaterialEntry,
+} from '@/lib/persistence/session-material-links';
+import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import {
+  OwnerMaterialBytesUnavailableError,
+  readOwnerMaterialBytes,
+} from '@/lib/server/materials/owner-material-bytes';
+import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
+
+import {
+  getSessionMaterial,
+  listSessionMaterials,
+  resolveSessionMaterialRawAsset,
+  resolveSessionMaterialText,
+} from './session-materials';
+
+/** `session`: what the conversation attached or made. `library`: the owner's whole library. */
+export type MaterialScope = 'session' | 'library';
+
+export type ResolvedMaterial =
+  | { origin: 'session'; record: AgentSessionMaterial }
+  | { origin: 'owner'; entry: OwnerMaterialEntry };
+
+async function pool() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error('Agent runtime requires DATABASE_URL');
+  return (await getServerPersistenceProvider(connectionString)).pool;
+}
+
+/** The id a resolved material is known by. */
+export function resolvedMaterialId(material: ResolvedMaterial): string {
+  return material.origin === 'session' ? material.record.id : material.entry.id;
+}
+
+/**
+ * Resolve one id in `scope`, or `null` when it names nothing the session may
+ * read there. Session scope: the session's own rows, then the materials its
+ * links reach. Library scope: the owner's live materials, attached or not,
+ * then the session's own rows. Foreign, missing and deleted ids are all
+ * `null`, so the answer says nothing about whether another owner has the id.
+ */
+export async function resolveMaterial(
+  sessionId: string,
+  materialId: string,
+  scope: MaterialScope = 'session',
+): Promise<ResolvedMaterial | null> {
+  if (scope === 'library') {
+    const entry = await getSessionOwnerMaterial(await pool(), sessionId, materialId);
+    if (entry) return { origin: 'owner', entry };
+    const record = await getSessionMaterial(sessionId, materialId);
+    return record ? { origin: 'session', record } : null;
+  }
+  const record = await getSessionMaterial(sessionId, materialId);
+  if (record) return { origin: 'session', record };
+  const entry = await getLinkedOwnerMaterial(await pool(), sessionId, materialId);
+  return entry ? { origin: 'owner', entry } : null;
+}
+
+/**
+ * Everything the session reaches in session scope: its own rows, newest
+ * first, then the materials its links reach, each source before its
+ * derivatives.
+ */
+export async function listSessionScopeMaterials(sessionId: string): Promise<ResolvedMaterial[]> {
+  const [records, entries] = await Promise.all([
+    listSessionMaterials(sessionId),
+    listLinkedOwnerMaterials(await pool(), sessionId),
+  ]);
+  return [
+    ...records.map((record) => ({ origin: 'session' as const, record })),
+    ...entries.map((entry) => ({ origin: 'owner' as const, entry })),
+  ];
+}
+
+/** A material's original bytes and their media type, or `null` when unreadable. */
+export async function readResolvedMaterialRaw(
+  sessionId: string,
+  material: ResolvedMaterial,
+): Promise<{ bytes: Buffer; mime: string } | null> {
+  if (material.origin === 'session') {
+    const { rawAssetId } = material.record;
+    return rawAssetId ? resolveSessionMaterialRawAsset(sessionId, rawAssetId) : null;
+  }
+  const { entry } = material;
+  try {
+    const bytes = await readOwnerMaterialBytes({
+      id: entry.id,
+      ownerId: entry.ownerId,
+      assetId: entry.assetId,
+      ossKey: entry.ossKey,
+      sha256: entry.sha256,
+    });
+    return { bytes, mime: entry.mime ?? 'application/octet-stream' };
+  } catch (error) {
+    if (error instanceof OwnerMaterialBytesUnavailableError) return null;
+    throw error;
+  }
+}
+
+/**
+ * The revision of a session row's text. Session text is written once and
+ * never replaced, so its revision is fixed by the row.
+ */
+export function sessionTextRevision(record: AgentSessionMaterial): string {
+  return `session:${record.id}`;
+}
+
+/**
+ * A material's readable text and its revision, or `null` when it has none
+ * that can be read: a session extraction, transcript or web row's text, or an
+ * owner source's latest successful extraction.
+ */
+export async function readResolvedMaterialText(
+  sessionId: string,
+  material: ResolvedMaterial,
+): Promise<{ text: string; revision: string } | null> {
+  if (material.origin === 'session') {
+    const { record } = material;
+    if (record.textAssetId === null) return null;
+    const raw = await resolveSessionMaterialText(sessionId, record.textAssetId);
+    return raw ? { text: raw.toString('utf8'), revision: sessionTextRevision(record) } : null;
+  }
+  const { entry } = material;
+  // Read just now: a source without a result has no text to look for.
+  if (entry.kind !== 'source' || !entry.extractionResult) return null;
+  return readOwnerMaterialText(entry);
+}
