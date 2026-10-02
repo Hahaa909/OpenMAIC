@@ -403,8 +403,13 @@ export async function publishOwnerMaterialExtraction(
       ) {
         return 'donor-changed' as const;
       }
-      // The donor's row lock is the one a withdrawal of its roots takes first,
-      // so these rows cannot change before this transaction ends.
+      // A snapshot, not a guarantee. The donor's row lock holds only its text
+      // root; each derivative is rooted under its own id, which this does
+      // not lock. What keeps reuse safe is `changeAssetRoots` below, which
+      // refuses an entry that is gone or no longer this owner's under that
+      // entry's own lock. Deleting a derivative (Phase 2) must therefore go
+      // through `changeAssetRoots` as well, and must not count on the donor
+      // row being locked.
       const held = await tx.query<{ count: string }>(
         `SELECT COUNT(*)::text AS count
            FROM asset_root_refs AS roots

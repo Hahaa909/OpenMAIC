@@ -105,7 +105,7 @@ function mediaProvider(extract: ReturnType<typeof vi.fn>): MediaExtractorProvide
     id: 'test-media' as never,
     displayName: 'Test media',
     version: '1',
-    supportedMimeTypes: ['video/mp4'],
+    supportedMimeTypes: ['video/mp4', 'video/webm', 'audio/webm'],
     capabilities: { transcript: true, keyframes: true, synopsis: false, ocr: false, async: false },
     availability: async () => ({ available: true }),
     extract: extract as never,
@@ -702,13 +702,23 @@ export async function ownerCacheScenario(h: ExtractionHarness): Promise<void> {
   const [reusedFrame] = reused.extraction_result!.derivatives;
   expect(reusedFrame.id).not.toBe(donorFrame.id);
   expect(reusedFrame.assetId).toBe(donorFrame.assetId);
+  // Named after the source that reuses it, not the donor.
+  expect(donorFrame.title).toBe('vid-1 at 1.500 seconds');
+  expect(reusedFrame.title).toBe('vid-2 at 1.500 seconds');
   expect(await rootsOf(h, 'vid-2')).toEqual([donor.text.assetId]);
   expect(await rootsOf(h, reusedFrame.id)).toEqual([donorFrame.assetId]);
-  const frameRow = await h.pool.query<{ derived_from: string; folder_id: string }>(
-    'SELECT derived_from, folder_id FROM owner_material WHERE id = $1',
-    [reusedFrame.id],
-  );
-  expect(frameRow.rows[0]).toEqual({ derived_from: 'vid-2', folder_id: 'f-vid-2' });
+  const frameRow = await h.pool.query<{
+    derived_from: string;
+    folder_id: string;
+    original_name: string;
+  }>('SELECT derived_from, folder_id, original_name FROM owner_material WHERE id = $1', [
+    reusedFrame.id,
+  ]);
+  expect(frameRow.rows[0]).toEqual({
+    derived_from: 'vid-2',
+    folder_id: 'f-vid-2',
+    original_name: 'vid-2 at 1.500 seconds',
+  });
 
   // Another owner with the same bytes never hits.
   await seedSource(h, 'vid-other', { owner: OTHER, mime: 'video/mp4', bytes: video });
@@ -800,7 +810,7 @@ export async function mediaDerivativeScenario(h: ExtractionHarness): Promise<voi
   expect(result.derivatives).toEqual([
     expect.objectContaining({
       kind: 'image',
-      title: 'lecture at 1.500 seconds',
+      title: 'vid-filed at 1.500 seconds',
       mime: 'image/png',
       bytes: KEYFRAME.byteLength,
       timeMs: 1_500,
@@ -1181,4 +1191,128 @@ export async function withdrawnDonorScenario(h: ExtractionHarness): Promise<void
     [donor.text.assetId],
   );
   expect(stamped.rows[0]).toEqual({ unreferenced: true });
+}
+
+/**
+ * The same bytes uploaded as video and as audio are extracted apart, in both
+ * orders: the type decides whether keyframes are taken, so neither may reuse
+ * the other's result. A second upload under the same type still reuses.
+ */
+export async function sameBytesOtherMimeScenario(h: ExtractionHarness): Promise<void> {
+  const modeAware = vi.fn(async (input: { mimeType: string }) => ({
+    metadata: { durationMs: 4_000 },
+    transcript: [{ id: 's1', startMs: 0, endMs: 4_000, text: 'Hello class' }],
+    assets: input.mimeType.startsWith('video/')
+      ? [
+          {
+            id: 'keyframe-001',
+            type: 'image',
+            mimeType: 'image/png',
+            data: `data:image/png;base64,${KEYFRAME.toString('base64')}`,
+            metadata: { timeMs: 1_500 },
+          },
+        ]
+      : [],
+  }));
+  const deps = h.deps({ mediaProviders: () => [mediaProvider(modeAware)] });
+  const run = async (id: string, mime: string, bytes: Buffer) => {
+    await seedSource(h, id, { mime, bytes });
+    await ensure(h, id);
+    await drain(h, deps);
+    return (await stateOf(h, id)).extraction_result!;
+  };
+
+  const first = Buffer.from('webm-first');
+  const video = await run('webm-video', 'video/webm', first);
+  const audio = await run('webm-audio', 'audio/webm', first);
+  expect(modeAware).toHaveBeenCalledTimes(2);
+  expect(video.derivatives).toHaveLength(1);
+  expect(audio.reusedFrom).toBeUndefined();
+  expect(audio.derivatives).toEqual([]);
+
+  const second = Buffer.from('webm-second');
+  const audioFirst = await run('webm-audio-2', 'audio/webm', second);
+  const videoAfter = await run('webm-video-2', 'video/webm', second);
+  expect(modeAware).toHaveBeenCalledTimes(4);
+  expect(audioFirst.derivatives).toEqual([]);
+  expect(videoAfter.reusedFrom).toBeUndefined();
+  expect(videoAfter.derivatives).toHaveLength(1);
+
+  const again = await run('webm-video-3', 'video/webm', first);
+  expect(modeAware).toHaveBeenCalledTimes(4);
+  expect(again.reusedFrom).toBe('webm-video');
+}
+
+/**
+ * A run whose claim is found lost calls no further provider: not the next
+ * document fallback, and not a media extractor. Nothing is published.
+ */
+export async function lostClaimStopsProvidersScenario(h: ExtractionHarness): Promise<void> {
+  const state = { lost: false };
+  const flaky = vi.fn(async () => {
+    state.lost = true;
+    throw Object.assign(new Error('upstream unavailable'), { status: 503 });
+  });
+  const fallback = h.documentExtract;
+  const provider = (id: string, extract: ReturnType<typeof vi.fn>): DocumentExtractorProvider => ({
+    ...documentProvider(extract),
+    id: id as never,
+  });
+  const deps = h.deps({
+    providers: () => [provider('test-flaky', flaky), provider('test-doc', fallback)],
+  });
+  await seedSource(h, 'doc-lost');
+  await ensure(h, 'doc-lost');
+  const documentClaim = (await claim(h))!;
+  expect(await runClaimedOwnerExtraction(documentClaim, deps, state)).toBe('not-authorized');
+  expect(flaky).toHaveBeenCalledTimes(1);
+  expect(fallback).not.toHaveBeenCalled();
+
+  await seedSource(h, 'vid-lost', { mime: 'video/mp4', bytes: Buffer.from('mp4-lost') });
+  await ensure(h, 'vid-lost');
+  const mediaClaim = (await claim(h))!;
+  expect(await runClaimedOwnerExtraction(mediaClaim, h.deps(), { lost: true })).toBe(
+    'not-authorized',
+  );
+  expect(h.mediaExtract).not.toHaveBeenCalled();
+  for (const id of ['doc-lost', 'vid-lost']) {
+    expect(await stateOf(h, id)).toMatchObject({ status: 'running', extraction_result: null });
+  }
+}
+
+/**
+ * A claim found lost while the cache lookup waits on the database, the
+ * lookup then a miss: the run stops there and calls no provider, on the
+ * document and on the media path.
+ */
+export async function lostDuringLookupScenario(h: ExtractionHarness): Promise<void> {
+  const runLosingInLookup = async (current: OwnerExtractionClaim) => {
+    const state = { lost: false };
+    const pool = h.provider.pool;
+    const persistence = {
+      ...h.provider,
+      pool: {
+        query: async (text: string, params?: unknown[]) => {
+          const result = await pool.query(text, params as never);
+          // The heartbeat lands while the lookup is in flight.
+          if (text.includes('donor.extraction_cache_key = $2')) state.lost = true;
+          return result;
+        },
+      },
+    };
+    return runClaimedOwnerExtraction(current, h.deps({ persistence: persistence as never }), state);
+  };
+
+  await seedSource(h, 'doc-lookup');
+  await ensure(h, 'doc-lookup');
+  expect(await runLosingInLookup((await claim(h))!)).toBe('not-authorized');
+  expect(h.documentExtract).not.toHaveBeenCalled();
+
+  await seedSource(h, 'vid-lookup', { mime: 'video/mp4', bytes: Buffer.from('mp4-lookup') });
+  await ensure(h, 'vid-lookup');
+  expect(await runLosingInLookup((await claim(h))!)).toBe('not-authorized');
+  expect(h.mediaExtract).not.toHaveBeenCalled();
+  for (const id of ['doc-lookup', 'vid-lookup']) {
+    expect(await stateOf(h, id)).toMatchObject({ status: 'running', extraction_result: null });
+  }
 }

@@ -17,11 +17,14 @@ import {
   ensureStartedScenario,
   fallbackReuseScenario,
   heartbeatLossScenario,
+  lostClaimStopsProvidersScenario,
+  lostDuringLookupScenario,
   mediaDerivativeScenario,
   ownerCacheScenario,
   ownerClaimMidRunScenario,
   publishRollbackScenario,
   quotaFailureScenario,
+  sameBytesOtherMimeScenario,
   schemaCompatibilityScenario,
   supersededClaimScenario,
   twoConversationsOneExtractionScenario,
@@ -132,5 +135,17 @@ describe('owner-level material extraction (PGlite)', () => {
 
   it('does not reuse a done donor that no longer roots its result', async () => {
     await withdrawnDonorScenario(await boot());
+  });
+
+  it('extracts the same bytes uploaded as video and as audio apart, in both orders', async () => {
+    await sameBytesOtherMimeScenario(await boot());
+  });
+
+  it('calls no further provider once the claim is found lost', async () => {
+    await lostClaimStopsProvidersScenario(await boot());
+  });
+
+  it('calls no provider when the claim is lost while the cache lookup waits', async () => {
+    await lostDuringLookupScenario(await boot());
   });
 });

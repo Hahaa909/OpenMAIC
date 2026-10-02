@@ -35,6 +35,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AssetQuotaExceededError } from '@openmaic/storage';
 import { AssetRootTargetError } from '@openmaic/storage/asset/pg';
 
+import { asrRequestUrl } from '@/lib/audio/asr-providers';
+import { derivedStem, keyframeTitle } from '@/lib/document/extractors/local-media';
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import {
   OwnerExtractionClaimLostError,
@@ -105,18 +107,48 @@ export interface OwnerExtractionRunState {
 
 export type OwnerExtractionRunOutcome = PublishOutcome | 'reused';
 
+/** Query parameters that carry credentials: a key changes who pays, not what comes back. */
+const CREDENTIAL_QUERY_PARAMS = new Set([
+  'access_token',
+  'api-key',
+  'api_key',
+  'apikey',
+  'auth',
+  'authorization',
+  'client_secret',
+  'code',
+  'key',
+  'password',
+  'secret',
+  'sig',
+  'signature',
+  'subscription-key',
+  'token',
+]);
+
+function sha256Hex(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 /**
- * A configured endpoint as part of a cache key: scheme, host and path only.
- * Credentials and query strings are dropped, so nothing secret is stored;
- * a value that does not parse as a URL is kept only as a digest.
+ * A configured endpoint as part of a cache key. Scheme, host and path are
+ * kept as they are. The query string can change the result (an
+ * `api-version`, a `?model=`), so its other parameters are kept, sorted and
+ * only as a digest; credentials, in the user info or in a credential
+ * parameter, are dropped. A value that does not parse as a URL is kept only
+ * as a digest.
  */
 export function endpointIdentity(baseUrl: string | undefined): string {
   if (!baseUrl) return '';
   try {
     const url = new URL(baseUrl);
-    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+    const base = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+    const params = [...url.searchParams]
+      .filter(([name]) => !CREDENTIAL_QUERY_PARAMS.has(name.toLowerCase()))
+      .sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0));
+    return params.length ? `${base}?sha256:${sha256Hex(JSON.stringify(params))}` : base;
   } catch {
-    return `sha256:${createHash('sha256').update(baseUrl).digest('hex')}`;
+    return `sha256:${sha256Hex(baseUrl)}`;
   }
 }
 
@@ -133,7 +165,9 @@ export function defaultResultOptions(extractorId: string): Record<string, string
     return {
       asrProvider,
       asrModel: (asrProvider && resolveASRModel(asrProvider)) || '',
-      asrEndpoint: asrProvider ? endpointIdentity(resolveASRBaseUrl(asrProvider)) : '',
+      asrEndpoint: asrProvider
+        ? endpointIdentity(asrRequestUrl(asrProvider, resolveASRBaseUrl(asrProvider)))
+        : '',
     };
   }
   const endpoint = endpointIdentity(resolvePDFBaseUrl(extractorId));
@@ -144,21 +178,41 @@ export function defaultResultOptions(extractorId: string): Record<string, string
 }
 
 /**
- * The owner-scoped cache key (RFC #1716 §3): content identity, the extractor
- * that runs and the settings that change its result. The owner is not in the
- * key; a lookup only ever searches the source's own owner. A source without a
- * recorded digest has no reliable content identity and gets no key.
+ * The owner-scoped cache key (RFC #1716 §3): content identity, the MIME the
+ * extraction runs with, the extractor that runs and the settings that change
+ * its result. The MIME is part of it because the same bytes can be uploaded
+ * under different types and the type decides what is extracted (the plan, and
+ * for media whether keyframes are taken). It is used exactly as recorded, as
+ * the plan and the extractors read it. The owner is not in the key; a lookup
+ * only ever searches the source's own owner. A source without a recorded
+ * digest has no reliable content identity and gets no key.
  */
 export function ownerExtractionCacheKey(
-  sha256: string | null,
+  source: { sha256: string | null; mime: string },
   extractor: { id: string; version: string },
   options: Record<string, string>,
 ): string | null {
-  if (!sha256) return null;
+  if (!source.sha256) return null;
   const settings = Object.entries(options).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return createHash('sha256')
-    .update(JSON.stringify([sha256, `${extractor.id}@${extractor.version}`, settings]))
-    .digest('hex');
+  return sha256Hex(
+    JSON.stringify([source.sha256, source.mime, `${extractor.id}@${extractor.version}`, settings]),
+  );
+}
+
+/**
+ * The title of a derivative of the source named `originalName`, from where
+ * it sits in the source. Built for the source that publishes it, so a reused
+ * derivative is named after its new source, not after the donor.
+ */
+function derivativeTitle(
+  originalName: string | null,
+  derivative: { pageNumber?: number; timeMs?: number },
+  index: number,
+): string {
+  const stem = derivedStem(originalName, 'media');
+  if (derivative.timeMs !== undefined) return keyframeTitle(stem, derivative.timeMs);
+  if (derivative.pageNumber !== undefined) return `${stem} page ${derivative.pageNumber}`;
+  return `${stem} image ${index + 1}`;
 }
 
 function isQuotaRefusal(error: unknown): boolean {
@@ -212,10 +266,6 @@ async function allocate(
   }
 }
 
-function sha256Hex(bytes: Buffer): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
 async function defaultReadSource(claim: OwnerExtractionClaim): Promise<Buffer> {
   if (!claim.ossKey) throw new Error(`source material ${claim.materialId} has no stored bytes`);
   return getMaterialByteStore().get(claim.ossKey);
@@ -233,19 +283,28 @@ export async function runClaimedOwnerExtraction(
   const resultOptions = dependencies.resultOptions ?? defaultResultOptions;
   const bytes = await (dependencies.readSource ?? defaultReadSource)(claim);
   const mime = claim.mime ?? 'application/octet-stream';
+  const source = { sha256: claim.sha256, mime };
   const plan = await planSourceExtraction({ bytes, mime }, claim.originalName, dependencies);
 
-  /** Publish the owner's earlier result of `extractor`, if one still holds. */
+  /**
+   * Publish the owner's earlier result of `extractor`, if one still holds.
+   * Called before every extractor runs, so a claim known to be lost stops
+   * here instead of calling the next provider -- checked again after the
+   * lookup, since the heartbeat can find the claim lost while it waits.
+   */
   const reuse = async (extractor: {
     id: string;
     version: string;
   }): Promise<OwnerExtractionRunOutcome | undefined> => {
-    const key = ownerExtractionCacheKey(claim.sha256, extractor, resultOptions(extractor.id));
-    if (!key || state.lost) return undefined;
-    const hit = await findOwnerExtractionCacheHit(persistence.pool, claim.materialId, key);
-    if (!hit) return undefined;
-    const reused = await publishReused(persistence, claim, key, hit, createId, now());
-    return reused === 'miss' ? undefined : reused;
+    if (state.lost) return 'not-authorized';
+    const key = ownerExtractionCacheKey(source, extractor, resultOptions(extractor.id));
+    const hit = key
+      ? await findOwnerExtractionCacheHit(persistence.pool, claim.materialId, key)
+      : null;
+    const reused =
+      key && hit ? await publishReused(persistence, claim, key, hit, createId, now()) : 'miss';
+    if (reused !== 'miss') return reused;
+    return state.lost ? 'not-authorized' : undefined;
   };
 
   const extracted = await extractOrReuse(plan, claim.originalName, reuse);
@@ -257,14 +316,14 @@ export async function runClaimedOwnerExtraction(
   const textBytes = Buffer.from(outcome.text, 'utf8');
   const textAssetId = await allocate(persistence, claim, state, textBytes, 'text/markdown');
   const derivatives: OwnerExtractionDerivative[] = [];
-  for (const image of outcome.images) {
+  for (const [index, image] of outcome.images.entries()) {
     const imageBytes = decodeMediaAssetData(image.data);
     const assetId = await allocate(persistence, claim, state, imageBytes, image.mimeType);
     derivatives.push({
       id: createId(),
       kind: 'image',
       assetId,
-      title: image.title,
+      title: derivativeTitle(claim.originalName, image, index),
       mime: image.mimeType,
       bytes: imageBytes.byteLength,
       sha256: sha256Hex(imageBytes),
@@ -278,7 +337,7 @@ export async function runClaimedOwnerExtraction(
       persistence.withTransaction,
       claim,
       {
-        cacheKey: ownerExtractionCacheKey(claim.sha256, outcome.extractor, options),
+        cacheKey: ownerExtractionCacheKey(source, outcome.extractor, options),
         text: { assetId: textAssetId, chars: outcome.text.length },
         extractor: { ...outcome.extractor, options },
         stats: { ...outcome.stats },
@@ -339,7 +398,8 @@ async function extractOrReuse(
 
 /**
  * Publish an earlier result of the same owner for this source: the same
- * pool entries, rooted again under this source and derivatives of its own.
+ * pool entries, rooted again under this source and derivatives of its own,
+ * named after this source.
  * `miss` when the earlier result no longer holds -- its source changed or was
  * deleted, a root it held is withdrawn, or an entry it named is gone -- so
  * the caller extracts instead.
@@ -368,7 +428,11 @@ async function publishReused(
     text: hit.result.text,
     extractor: hit.result.extractor,
     stats: hit.result.stats,
-    derivatives: hit.result.derivatives.map((derivative) => ({ ...derivative, id: createId() })),
+    derivatives: hit.result.derivatives.map((derivative, index) => ({
+      ...derivative,
+      id: createId(),
+      title: derivativeTitle(claim.originalName, derivative, index),
+    })),
   };
   try {
     const outcome = await publishOwnerMaterialExtraction(

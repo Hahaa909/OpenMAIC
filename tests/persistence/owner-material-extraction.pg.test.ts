@@ -36,12 +36,15 @@ import {
   ensureStartedScenario,
   fallbackReuseScenario,
   heartbeatLossScenario,
+  lostClaimStopsProvidersScenario,
+  lostDuringLookupScenario,
   expire,
   mediaDerivativeScenario,
   ownerCacheScenario,
   ownerClaimMidRunScenario,
   publishRollbackScenario,
   quotaFailureScenario,
+  sameBytesOtherMimeScenario,
   rootsOf,
   schemaCompatibilityScenario,
   seedSource,
@@ -203,6 +206,18 @@ describe.skipIf(!contractUrl)('owner-level material extraction on PostgreSQL', (
 
   it('does not reuse a done donor that no longer roots its result', async () => {
     await withdrawnDonorScenario(await boot());
+  });
+
+  it('extracts the same bytes uploaded as video and as audio apart, in both orders', async () => {
+    await sameBytesOtherMimeScenario(await boot());
+  });
+
+  it('calls no further provider once the claim is found lost', async () => {
+    await lostClaimStopsProvidersScenario(await boot());
+  });
+
+  it('calls no provider when the claim is lost while the cache lookup waits', async () => {
+    await lostDuringLookupScenario(await boot());
   });
 
   describe('races', () => {
