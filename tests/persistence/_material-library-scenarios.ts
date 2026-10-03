@@ -1312,11 +1312,11 @@ export async function moveScenario(h: ExtractionHarness): Promise<void> {
   const move = (ids: string[], folderId: string | null) =>
     moveMaterials(h.provider, { ownerId: ACCOUNT, materialIds: ids, folderId, fence: 'request' });
 
-  expect(await move(['src-a', 'src-b'], target)).toMatchObject({ status: 'moved' });
+  expect(await move(['src-a', 'src-b'], target)).toMatchObject({ status: 'moved', movedCount: 2 });
   expect(await folderOfMaterial(h, 'src-a')).toBe(target);
   expect(await folderOfMaterial(h, 'img-a1')).toBe(target);
   expect(await folderOfMaterial(h, 'src-b')).toBe(target);
-  expect(await move(['src-a'], target)).toMatchObject({ status: 'unchanged' });
+  expect(await move(['src-a'], target)).toMatchObject({ status: 'unchanged', movedCount: 0 });
 
   for (const bad of ['img-a1', 'src-gone', 'src-foreign', 'missing']) {
     expect(await move(['src-a', bad], null)).toEqual({ status: 'not_movable', materialIds: [bad] });
@@ -1326,6 +1326,10 @@ export async function moveScenario(h: ExtractionHarness): Promise<void> {
   expect(await move(['src-a'], 'no-such-folder')).toEqual({ status: 'folder_not_found' });
 
   expect(await move(['src-a'], null)).toMatchObject({ status: 'moved', folderId: null });
+  // One already there, one not: one moved, and its derivative with it.
+  expect(await move(['src-a', 'src-b'], target)).toMatchObject({ status: 'moved', movedCount: 1 });
+  expect(await folderOfMaterial(h, 'img-a1')).toBe(target);
+  await move(['src-a'], null);
   expect(await folderOfMaterial(h, 'src-a')).toBeNull();
   expect(await folderOfMaterial(h, 'img-a1')).toBeNull();
   expect(await folderOfMaterial(h, 'src-b')).toBe(target);

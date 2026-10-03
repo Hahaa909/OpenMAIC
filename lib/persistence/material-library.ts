@@ -271,7 +271,13 @@ export async function deleteEmptyMaterialFolder(
 }
 
 export type MoveMaterialsOutcome =
-  | { status: 'moved' | 'unchanged'; materialIds: string[]; folderId: string | null }
+  | {
+      status: 'moved' | 'unchanged';
+      materialIds: string[];
+      folderId: string | null;
+      /** How many of the sources named actually changed folder (derivatives not counted). */
+      movedCount: number;
+    }
   | { status: 'folder_not_found' }
   /** Ids that are missing, another owner's, deleted, not ready, or derivatives. */
   | { status: 'not_movable'; materialIds: string[] }
@@ -293,7 +299,9 @@ export async function moveMaterials(
 ): Promise<MoveMaterialsOutcome> {
   const ids = [...new Set(input.materialIds)];
   if (ids.length > MAX_MOVE_MATERIALS) return { status: 'too_many', limit: MAX_MOVE_MATERIALS };
-  if (ids.length === 0) return { status: 'unchanged', materialIds: [], folderId: input.folderId };
+  if (ids.length === 0) {
+    return { status: 'unchanged', materialIds: [], folderId: input.folderId, movedCount: 0 };
+  }
   return persistence.withTransaction(async (tx) => {
     const ownerId = await fence(tx, input.ownerId, input.fence);
     if (input.folderId !== null) {
@@ -337,10 +345,12 @@ export async function moveMaterials(
         RETURNING id`,
       [ownerId, ids, input.folderId],
     );
+    const named = new Set(ids);
     return {
       status: moved.rows.length > 0 ? ('moved' as const) : ('unchanged' as const),
       materialIds: ids,
       folderId: input.folderId,
+      movedCount: moved.rows.filter((row) => named.has(row.id)).length,
     };
   });
 }

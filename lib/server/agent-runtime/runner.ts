@@ -67,7 +67,8 @@ import {
   preloadUserMessage,
   type SkillPreload,
 } from './skill-preload';
-import { listSessionMaterials, sessionMaterialsPromptBlock } from './session-materials';
+import { listSessionScopeMaterials } from './material-resolver';
+import { materialsPromptBlock } from './material-prompt';
 import {
   availableSkillsPromptBlock,
   createNativeSkillReadTool,
@@ -1404,7 +1405,7 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
     // semantics: the material tools are always registered alongside the
     // capability-gated web_search). The listing only feeds the prompt block;
     // the tools read through the same session-scoped store on each call.
-    const materials = await listSessionMaterials(id);
+    const materials = await listSessionScopeMaterials(id);
     // Material-library changes reach the client as the durable
     // `library_changed` with `library: 'materials'`; its material lists
     // refetch, and the course tree does not.
@@ -1506,7 +1507,9 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
         ...(search ? { search: searchPromptBlock() } : {}),
         fetch: fetchPromptBlock(),
         untrustedContent: untrustedContentPolicyPromptBlock(),
-        ...(materials.length ? { materials: sessionMaterialsPromptBlock(materials) } : {}),
+        // Always: a conversation with nothing attached can still use the
+        // knowledge base.
+        materials: materialsPromptBlock(materials),
         roster: ROSTER_TOOLS_PROMPT,
         voice: voiceCloneToolsPrompt(voiceRegistrationEnabled),
       }),
