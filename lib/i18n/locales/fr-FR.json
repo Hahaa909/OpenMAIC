@@ -46,7 +46,6 @@
     "interactiveModeHint": "Activez le mode interactif pour obtenir un contenu plus pratique",
     "interactiveModeLabel": "Mode interactif",
     "modelChangeFailed": "Impossible de changer de modèle : {{message}}",
-    "modelLockedHint": "Le modèle utilisé pour les cours, défini par ce serveur",
     "pickModel": "Choisir un modèle",
     "defaultModel": "Par défaut",
     "defaultModelNote": "Modifie le modèle par défaut ; les étapes configurées séparément gardent le leur.",
@@ -1725,7 +1724,7 @@
       "capabilities": "Capacités proposées",
       "offeredNote": "Modèles proposés par ce forfait. Choisissez ceux que vous voulez voir dans la barre de génération : leur disponibilité dépend de votre niveau de forfait, et les modèles non pris en charge produiront une erreur au moment de la génération.",
       "statusConnected": "Connecté",
-      "keyStorage": "La clé est conservée chiffrée sur le serveur et n'est plus jamais affichée. La connexion applique aux étapes du cours les modèles recommandés par cette offre ; si cela remplace des modèles que vous avez choisis, une confirmation vous est demandée.",
+      "keyStorage": "La clé est conservée chiffrée sur le serveur et n'est plus jamais affichée. La connexion applique aux étapes du cours les modèles recommandés par cette offre ; si cela remplace ce qu’une étape utilise actuellement (un modèle que vous avez choisi ou le défaut du serveur), une confirmation vous est demandée.",
       "saveKey": "Enregistrer et activer",
       "cancelKeyUpdate": "Annuler la mise à jour",
       "manageAccount": "Gérer le compte",
@@ -1747,7 +1746,7 @@
       "stageInteractive": "Interactif",
       "stageSlide": "Diapositives",
       "applyTitle": "Utiliser la configuration recommandée de cette offre ?",
-      "applyBody": "{{name}} recommande ses propres modèles pour ces étapes, qui utilisent actuellement des modèles que vous avez choisis :",
+      "applyBody": "{{name}} recommande ses propres modèles pour ces étapes. Les utiliser remplace ce que chacune utilise actuellement, défauts du serveur compris :",
       "applyKeep": "Garder ma configuration",
       "applyRecommended": "Utiliser la configuration recommandée"
     },
@@ -1896,7 +1895,7 @@
     "saveModel": "Enregistrer",
     "searxngServerOnlyNotice": "SearXNG doit être configuré côté serveur. Définissez la variable d’environnement SEARXNG_BASE_URL (ou la section web-search de server-providers.yml). Les URL d’instance fournies par le client ne sont pas acceptées.",
     "serverConfigured": "Serveur",
-    "serverConfiguredNotice": "Ce fournisseur est géré par le serveur et ne peut pas être modifié ici. Pour utiliser vos propres identifiants, ajoutez un fournisseur distinct.",
+    "serverConfiguredNotice": "Ce fournisseur est géré par le serveur et ne peut pas être modifié ici.",
     "startRecording": "Démarrer l’enregistrement",
     "stopRecording": "Arrêter l’enregistrement",
     "supportedFormats": "Formats pris en charge",
@@ -1921,7 +1920,7 @@
       "unavailableTitle": "Les modèles sont gérés par le serveur",
       "unavailableBody": "Ce serveur ne conserve pas de paramètres de modèles par espace de travail ; il utilise les modèles configurés par son administrateur.",
       "conflict": "Les paramètres ont été modifiés ailleurs et rechargés. Vérifiez-les puis réessayez.",
-      "lockedNow": "Ce réglage est désormais défini par le serveur ; il n'a pas été modifié.",
+      "lockedNow": "L’administrateur l’a fixé, il n’a donc pas été modifié.",
       "unconfirmed": "La réponse du serveur a été perdue ; les paramètres ont été rechargés. Vérifiez si la modification a été prise en compte.",
       "serverOnly": "Seule la configuration du serveur (openmaic.yml) peut configurer ce service. Contactez l'administrateur du serveur.",
       "serverOnlyPolicy": "Ce serveur ne permet pas aux espaces de travail d'ajouter leurs propres services. Contactez l'administrateur du serveur.",
@@ -1952,8 +1951,7 @@
         "off": "Désactivé",
         "unassigned": "Non défini",
         "invalid": "Réglage invalide",
-        "locked": "Défini par le serveur",
-        "lockedHint": "Défini par la configuration du serveur. Impossible de le modifier ici.",
+        "lockedHint": "L’administrateur l’a fixé pour tous sur ce serveur ; il ne peut pas être modifié ici.",
         "followers": "Étapes qui le suivent : {{count}}",
         "childrenFollow": "Types de page · tous suivent",
         "childrenOwn": "Types de page · {{count}} propres"
@@ -1962,7 +1960,7 @@
         "label": "Légende",
         "follows": "Suit le parent",
         "own": "Réglage propre",
-        "locked": "Défini par le serveur"
+        "locked": "Fixé par l’administrateur"
       },
       "map": {
         "label": "Carte des modèles du cours. Faites glisser ou utilisez les flèches pour vous déplacer, et les boutons de zoom pour zoomer.",
@@ -1989,11 +1987,13 @@
         "noFallback": "Aucun",
         "manageProviders": "Gérer dans les services de modèles",
         "conflict": "Les réglages ont été modifiés ailleurs et rechargés. Vérifiez-les puis réessayez.",
-        "lockedNow": "Le serveur définit désormais ce réglage ; rien n’a été modifié.",
+        "lockedNow": "L’administrateur l’a fixé, il n’a donc pas été modifié.",
         "clear": "Retirer le réglage propre",
-        "clearHint": "Utiliser le réglage du serveur, s’il en a un",
+        "clearHint": "Le laisse non défini",
         "unconfirmed": "La réponse du serveur a été perdue ; les réglages ont été rechargés. Vérifiez si la modification a été prise en compte.",
-        "thinking": "Réflexion"
+        "thinking": "Réflexion",
+        "serverDefault": "Défaut du serveur",
+        "resetDefault": "Rétablir le défaut du serveur"
       },
       "slots": {
         "llm": {
@@ -2071,8 +2071,8 @@
       },
       "source": {
         "inherited": "Suit {{name}}",
-        "deployment": "Serveur",
-        "default": "Défaut du serveur"
+        "default": "Défaut du serveur",
+        "locked": "Fixé par l’administrateur"
       },
       "stations": {
         "research": "Recherche web",
@@ -2088,7 +2088,8 @@
         "prompt": "Aucun modèle de langage pour l'instant. Configurez un service dans Services de modèles ou connectez une offre dans Token Plan ; ses modèles remplissent les parties non définies.",
         "open": "Ouvrir les services de modèles",
         "askAdmin": "Aucun modèle de langage n'est configuré. Demandez à l'administrateur du serveur d'en configurer un."
-      }
+      },
+      "adminNotice": "L’administrateur a choisi les modèles utilisés par ce serveur."
     },
     "unimported": {
       "toast": "Certains réglages de modèles de ce navigateur n'ont pas pu être transférés sur le serveur. Ils sont listés dans Paramètres → Services de modèles.",
@@ -2110,7 +2111,8 @@
         "unsupported": "Ce type de fournisseur personnalisé ne peut pas être transféré : ajoutez-le à nouveau comme point de terminaison compatible OpenAI.",
         "unconfirmed": "Le serveur n'a pas confirmé l'importation."
       }
-    }
+    },
+    "serverConfiguredAddOwn": "Pour utiliser vos propres identifiants, ajoutez un fournisseur distinct."
   },
   "workspace": {
     "untitledCourse": "未命名课堂",

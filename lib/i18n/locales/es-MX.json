@@ -46,7 +46,6 @@
     "interactiveModeHint": "Activa el modo interactivo para obtener contenido más práctico",
     "interactiveModeLabel": "Modo interactivo",
     "modelChangeFailed": "No se pudo cambiar el modelo: {{message}}",
-    "modelLockedHint": "El modelo que usan los cursos, definido por este servidor",
     "pickModel": "Elige un modelo",
     "defaultModel": "Predeterminado",
     "defaultModelNote": "Cambia el modelo predeterminado; los pasos configurados por separado conservan el suyo.",
@@ -1725,7 +1724,7 @@
       "capabilities": "Capacidades ofrecidas",
       "offeredNote": "Modelos que ofrece este plan. Elige los que quieras en la barra de generación — la disponibilidad depende del nivel de tu plan, y los modelos no compatibles darán error al momento de generar.",
       "statusConnected": "Conectado",
-      "keyStorage": "La clave se guarda cifrada en el servidor y no se vuelve a mostrar. Al conectar, se aplican a las etapas del curso los modelos recomendados de este plan; si eso reemplaza modelos que elegiste, se te pregunta antes.",
+      "keyStorage": "La clave se guarda cifrada en el servidor y no se vuelve a mostrar. Al conectar, se aplican a las etapas del curso los modelos recomendados de este plan; si eso reemplaza lo que una etapa usa ahora (un modelo que elegiste o el predeterminado del servidor), se te pregunta antes.",
       "saveKey": "Guardar y activar",
       "cancelKeyUpdate": "Cancelar actualización",
       "manageAccount": "Gestionar cuenta",
@@ -1747,7 +1746,7 @@
       "stageInteractive": "Interactivo",
       "stageSlide": "Diapositivas",
       "applyTitle": "¿Usar la configuración recomendada de este plan?",
-      "applyBody": "{{name}} recomienda sus propios modelos para estas etapas, que ahora usan modelos que elegiste:",
+      "applyBody": "{{name}} recomienda sus propios modelos para estas etapas. Usarlos reemplaza lo que cada una usa ahora, incluidos los predeterminados del servidor:",
       "applyKeep": "Mantener mi configuración",
       "applyRecommended": "Usar la configuración recomendada"
     },
@@ -1896,7 +1895,7 @@
     "saveModel": "Guardar",
     "searxngServerOnlyNotice": "SearXNG debe configurarse en el servidor. Define la variable de entorno SEARXNG_BASE_URL (o la sección web-search en server-providers.yml). No se aceptan URLs de instancia proporcionadas por el cliente.",
     "serverConfigured": "Servidor",
-    "serverConfiguredNotice": "Este proveedor lo administra el servidor y no puede editarse aquí. Para usar tus propias credenciales, agrega un proveedor aparte.",
+    "serverConfiguredNotice": "Este proveedor lo administra el servidor y no puede editarse aquí.",
     "startRecording": "Iniciar grabación",
     "stopRecording": "Detener grabación",
     "supportedFormats": "Formatos compatibles",
@@ -1921,7 +1920,7 @@
       "unavailableTitle": "El servidor administra los modelos",
       "unavailableBody": "Este servidor no guarda configuración de modelos por espacio de trabajo, así que usa los modelos que configuró su administrador.",
       "conflict": "La configuración cambió en otro lugar y se volvió a cargar. Revísala e inténtalo de nuevo.",
-      "lockedNow": "Ahora el servidor define esto, así que no se cambió.",
+      "lockedNow": "El administrador fijó esto, así que no se cambió.",
       "unconfirmed": "Se perdió la respuesta del servidor, así que la configuración se volvió a cargar. Comprueba si el cambio se aplicó.",
       "serverOnly": "Solo la configuración del servidor (openmaic.yml) puede configurar este servicio. Consulta al administrador del servidor.",
       "serverOnlyPolicy": "Este servidor no permite que los espacios de trabajo agreguen sus propios servicios. Consulta al administrador del servidor.",
@@ -1952,8 +1951,7 @@
         "off": "Desactivado",
         "unassigned": "Sin definir",
         "invalid": "Ajuste no válido",
-        "locked": "Definido por el servidor",
-        "lockedHint": "Lo define la configuración del servidor. No se puede cambiar aquí.",
+        "lockedHint": "El administrador fijó esto para todos en este servidor; no se puede cambiar aquí.",
         "followers": "Pasos que lo siguen: {{count}}",
         "childrenFollow": "Tipos de página · todos siguen",
         "childrenOwn": "Tipos de página · {{count}} propios"
@@ -1962,7 +1960,7 @@
         "label": "Leyenda",
         "follows": "Sigue al superior",
         "own": "Ajuste propio",
-        "locked": "Definido por el servidor"
+        "locked": "Fijado por el administrador"
       },
       "map": {
         "label": "Mapa de modelos del curso. Arrastra o usa las flechas para desplazarte; usa los botones de zoom para acercar o alejar.",
@@ -1989,11 +1987,13 @@
         "noFallback": "Ninguno",
         "manageProviders": "Administrar en Servicios de modelos",
         "conflict": "La configuración cambió en otro lugar y se volvió a cargar. Revísala e inténtalo de nuevo.",
-        "lockedNow": "Ahora el servidor define esto, así que no se cambió.",
+        "lockedNow": "El administrador fijó esto, así que no se cambió.",
         "clear": "Quitar ajuste propio",
-        "clearHint": "Usar el ajuste del servidor, si tiene uno",
+        "clearHint": "Lo deja sin definir",
         "unconfirmed": "Se perdió la respuesta del servidor, así que la configuración se volvió a cargar. Comprueba si el cambio se aplicó.",
-        "thinking": "Razonamiento"
+        "thinking": "Razonamiento",
+        "serverDefault": "Predeterminado del servidor",
+        "resetDefault": "Restablecer al predeterminado del servidor"
       },
       "slots": {
         "llm": {
@@ -2071,8 +2071,8 @@
       },
       "source": {
         "inherited": "Sigue a {{name}}",
-        "deployment": "Servidor",
-        "default": "Predeterminado del servidor"
+        "default": "Predeterminado del servidor",
+        "locked": "Fijado por el administrador"
       },
       "stations": {
         "research": "Investigación web",
@@ -2088,7 +2088,8 @@
         "prompt": "Aún no hay modelo de lenguaje. Configura un servicio en Servicios de modelos o conecta un plan en Token Plan; sus modelos ocupan las partes sin configurar.",
         "open": "Abrir Servicios de modelos",
         "askAdmin": "No hay un modelo de lenguaje configurado. Pide al administrador del servidor que configure uno."
-      }
+      },
+      "adminNotice": "El administrador definió qué modelos usa este servidor."
     },
     "unimported": {
       "toast": "Algunos ajustes de modelos de este navegador no se pudieron mover al servidor. Aparecen en Configuración → Servicios de modelos.",
@@ -2110,7 +2111,8 @@
         "unsupported": "Este tipo de proveedor personalizado no se puede mover: agrégalo de nuevo como endpoint compatible con OpenAI.",
         "unconfirmed": "El servidor no confirmó que se importara."
       }
-    }
+    },
+    "serverConfiguredAddOwn": "Para usar tus propias credenciales, agrega un proveedor aparte."
   },
   "workspace": {
     "untitledCourse": "未命名课堂",

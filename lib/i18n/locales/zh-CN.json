@@ -46,7 +46,6 @@
     "interactiveModeHint": "开启深度交互模式，生成更多互动内容",
     "interactiveModeLabel": "深度交互",
     "modelChangeFailed": "无法切换模型：{{message}}",
-    "modelLockedHint": "课程使用的模型，由此服务器设定",
     "pickModel": "选择模型",
     "defaultModel": "默认",
     "defaultModelNote": "这里修改默认模型，单独配置的环节不受影响",
@@ -1725,7 +1724,7 @@
       "capabilities": "套餐提供的能力",
       "offeredNote": "套餐提供的模型清单。请在生成界面选择需要使用的模型——是否可用取决于你的套餐档位，不支持的模型会在生成时报错。",
       "statusConnected": "已连接",
-      "keyStorage": "密钥加密保存在服务器上，之后不再显示。连接后会将该套餐推荐的模型应用到课程环节；如果会替换你已选的模型，会先征求你的确认。",
+      "keyStorage": "密钥加密保存在服务器上，之后不再显示。连接后会将该套餐推荐的模型应用到课程环节；如果会替换环节当前所用的模型（你选的模型或服务端默认值），会先征求你的确认。",
       "saveKey": "保存并启用",
       "cancelKeyUpdate": "取消更新",
       "manageAccount": "管理账号",
@@ -1747,7 +1746,7 @@
       "stageInteractive": "互动页面",
       "stageSlide": "课件页面",
       "applyTitle": "使用该套餐的推荐配置？",
-      "applyBody": "{{name}} 为以下环节推荐了自己的模型，这些环节目前使用的是你选的模型：",
+      "applyBody": "{{name}} 为以下环节推荐了自己的模型。使用它们会替换这些环节当前所用的模型，包括服务端默认值：",
       "applyKeep": "保留当前配置",
       "applyRecommended": "使用套餐推荐配置"
     },
@@ -1896,7 +1895,7 @@
     "saveModel": "保存",
     "searxngServerOnlyNotice": "SearXNG 须由服务端配置。请设置 SEARXNG_BASE_URL 环境变量（或在 server-providers.yml 的 web-search 段中配置）。不接受客户端自行填写实例地址。",
     "serverConfigured": "服务端",
-    "serverConfiguredNotice": "此提供方由服务端托管，无法在此修改。如需使用自己的凭据，请新增一个提供方。",
+    "serverConfiguredNotice": "此提供方由服务端托管，无法在此修改。",
     "startRecording": "开始录音",
     "stopRecording": "停止录音",
     "supportedFormats": "支持的格式",
@@ -1921,7 +1920,7 @@
       "unavailableTitle": "模型由服务器统一管理",
       "unavailableBody": "此服务器不保存工作区的模型设置，使用的是管理员配置的模型。",
       "conflict": "设置已在别处被修改并已重新加载，请检查后重试。",
-      "lockedNow": "该项现由服务器设定，未做修改。",
+      "lockedNow": "管理员已固定此项，因此未更改。",
       "unconfirmed": "服务器的响应丢失，已重新加载设置，请确认修改是否生效。",
       "serverOnly": "此服务只能通过服务器配置（openmaic.yml）设置，请联系服务器管理员。",
       "serverOnlyPolicy": "此服务器不允许工作区添加自己的服务，请联系服务器管理员。",
@@ -1952,8 +1951,7 @@
         "off": "已关闭",
         "unassigned": "未配置",
         "invalid": "配置无效",
-        "locked": "由服务端设置",
-        "lockedHint": "由服务端配置设置，无法在此更改。",
+        "lockedHint": "管理员已为此服务器上的所有人固定此项，无法在此更改。",
         "followers": "跟随它的环节：{{count}}",
         "childrenFollow": "页型 · 全部跟随",
         "childrenOwn": "页型 · {{count}} 个单独设置"
@@ -1962,7 +1960,7 @@
         "label": "图例",
         "follows": "跟随上级",
         "own": "单独设置",
-        "locked": "由服务端设置"
+        "locked": "由管理员固定"
       },
       "map": {
         "label": "课程模型图。拖动或使用方向键平移，使用缩放按钮缩放。",
@@ -1989,11 +1987,13 @@
         "noFallback": "无",
         "manageProviders": "在模型服务中管理",
         "conflict": "设置已在别处更改并已重新加载，请检查后重试。",
-        "lockedNow": "服务端现在设置了此项，因此未作更改。",
+        "lockedNow": "管理员已固定此项，因此未更改。",
         "clear": "清除单独设置",
-        "clearHint": "改用服务端的设置（如有）",
+        "clearHint": "改为不设置",
         "unconfirmed": "服务端的响应丢失，设置已重新加载。请检查更改是否已生效。",
-        "thinking": "思考"
+        "thinking": "思考",
+        "serverDefault": "服务端默认",
+        "resetDefault": "恢复服务端默认"
       },
       "slots": {
         "llm": {
@@ -2071,8 +2071,8 @@
       },
       "source": {
         "inherited": "跟随{{name}}",
-        "deployment": "服务端",
-        "default": "服务端默认"
+        "default": "服务端默认",
+        "locked": "由管理员固定"
       },
       "stations": {
         "research": "联网调研",
@@ -2088,7 +2088,8 @@
         "prompt": "还没有可用的语言模型。在「模型服务」中配置服务，或在「Token Plan」中接入套餐，其模型会填入尚未设置的环节。",
         "open": "打开模型服务",
         "askAdmin": "尚未配置语言模型，请联系服务器管理员。"
-      }
+      },
+      "adminNotice": "管理员已设定此服务器使用的模型。"
     },
     "unimported": {
       "toast": "此浏览器中的部分模型设置未能迁移到服务器，已列在「设置 → 模型服务」中。",
@@ -2110,7 +2111,8 @@
         "unsupported": "此类自定义服务商无法迁移：请作为 OpenAI 兼容端点重新添加。",
         "unconfirmed": "服务器未确认已导入。"
       }
-    }
+    },
+    "serverConfiguredAddOwn": "如需使用自己的凭据，请新增一个提供方。"
   },
   "workspace": {
     "untitledCourse": "未命名课堂",

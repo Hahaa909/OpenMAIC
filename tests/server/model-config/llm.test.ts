@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SlotLookup } from '@/lib/server/model-config/runtime';
-import type { ModelConfigLayer } from '@/lib/server/model-config/resolve-slot';
+import type { ModelConfigLayer, SlotResolution } from '@/lib/server/model-config/resolve-slot';
 import type { ResolvedModel } from '@/lib/server/resolve-model';
 
-const state = vi.hoisted(() => ({ lookup: undefined as SlotLookup | undefined }));
+const state = vi.hoisted(() => ({ lookup: undefined as SlotResolution | undefined }));
 
 vi.mock('@/lib/server/model-config/runtime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/server/model-config/runtime')>()),
@@ -40,7 +39,6 @@ describe('resolveStageModel', () => {
           },
         },
       }),
-      defaults: null,
     });
     const legacyRequest = vi.fn(async () => legacyModel);
     const resolved = await resolveStageModel({
@@ -65,7 +63,6 @@ describe('resolveStageModel', () => {
     state.lookup = lookupFromLayers('course.actions', {
       deployment: layer('deployment', { slots: { llm: null } }),
       workspace: null,
-      defaults: null,
     });
     const legacyRequest = vi.fn(async () => legacyModel);
     await expect(
@@ -74,30 +71,49 @@ describe('resolveStageModel', () => {
     expect(legacyRequest).not.toHaveBeenCalled();
   });
 
-  it('falls back to what the request names, then to the defaults', async () => {
-    const defaults = layer('default', { slots: { llm: 'openai:gpt-5.6' } });
+  it("keeps openmaic.yml's default over what the request names, and a legacy default under it", async () => {
+    const { setDeploymentConfigForTests } = await import('@/lib/server/model-config/runtime');
     const deployment = layer('deployment', {
       providers: { openai: { preset: 'openai', apiKey: 'sk-operator' } },
+      slots: { llm: 'openai:gpt-5.6' },
     });
-    state.lookup = lookupFromLayers('course.outline', { deployment, workspace: null, defaults });
-    expect(
-      await resolveStageModel({
-        stage: 'scene-outlines-stream',
-        workspaceId: null,
-        legacyRequest: async () => legacyModel,
-      }),
-    ).toBe(legacyModel);
-    expect(
-      await resolveStageModel({
-        stage: 'scene-outlines-stream',
-        workspaceId: null,
-        legacyRequest: async () => undefined,
-      }),
-    ).toMatchObject({ modelId: 'gpt-5.6', apiKey: 'sk-operator' });
+    state.lookup = lookupFromLayers('course.outline', { deployment, workspace: null });
+    const run = (legacyRequest: () => Promise<ResolvedModel | undefined>) =>
+      resolveStageModel({ stage: 'scene-outlines-stream', workspaceId: null, legacyRequest });
+    try {
+      // openmaic.yml: its default stands.
+      setDeploymentConfigForTests({ layer: deployment, legacy: false, notices: [] });
+      expect(await run(async () => legacyModel)).toMatchObject({ modelId: 'gpt-5.6' });
+      // The same default translated from DEFAULT_MODEL: the request's model first, as before.
+      setDeploymentConfigForTests({ layer: deployment, legacy: true, notices: [] });
+      expect(await run(async () => legacyModel)).toBe(legacyModel);
+      expect(await run(async () => undefined)).toMatchObject({
+        modelId: 'gpt-5.6',
+        apiKey: 'sk-operator',
+      });
+      // A workspace choice or a lock is never replaced.
+      const legacyRequest = vi.fn(async () => legacyModel);
+      for (const lookup of [
+        lookupFromLayers('course.outline', {
+          deployment,
+          workspace: layer('workspace', { slots: { 'course.outline': 'openai:gpt-5.6-mini' } }),
+        }),
+        lookupFromLayers('course.outline', {
+          deployment: layer('deployment', { ...deployment.config, lock: ['llm'] }),
+          workspace: null,
+        }),
+      ]) {
+        state.lookup = lookup;
+        await expect(run(legacyRequest)).resolves.toMatchObject({ providerId: 'openai' });
+      }
+      expect(legacyRequest).not.toHaveBeenCalled();
+    } finally {
+      setDeploymentConfigForTests();
+    }
   });
 
   it('says so when nothing resolves', async () => {
-    state.lookup = lookupFromLayers('llm', { deployment: null, workspace: null, defaults: null });
+    state.lookup = lookupFromLayers('llm', { deployment: null, workspace: null });
     await expect(
       resolveStageModel({ stage: 'chat-adapter', workspaceId: null }),
     ).rejects.toBeInstanceOf(SlotUnassignedError);
@@ -111,7 +127,6 @@ describe('resolveStageModel', () => {
           providers: { p: provider },
           slots: { llm: 'p:m' },
         } as never),
-        defaults: null,
       });
     state.lookup = ws({ preset: 'bedrock' });
     await expect(
@@ -130,7 +145,6 @@ describe('resolveStageModel', () => {
         slots: { llm: 'p:m' },
       }),
       workspace: null,
-      defaults: null,
     });
     await expect(
       resolveStageModel({ stage: 'chat-adapter', workspaceId: null }),
@@ -148,7 +162,6 @@ describe('resolveStageModel', () => {
         },
         slots: { agent: { model: 'td:deepseek-v4-pro', fallback: 'ac:qwen/qwen3.5-flash' } },
       }),
-      defaults: null,
     });
     const resolved = await resolveStageModel({ stage: 'maic-agent-driver', workspaceId: 'u' });
     expect(await attachedModelFallback(resolved.model)!()).toBeNull();
@@ -161,7 +174,6 @@ describe('resolveStageModel', () => {
         providers: { ac: { preset: 'atlascloud', apiKey: 'k' } },
         slots: { agent: 'ac:qwen/qwen3.5-flash' },
       }),
-      defaults: null,
     });
     const legacyRequest = vi.fn(async () => legacyModel);
     await expect(
@@ -180,7 +192,6 @@ describe('resolveStageModel', () => {
         providers: { mine: { preset: 'deepseek' } },
         slots: { llm: 'mine:deepseek-v4-pro' },
       }),
-      defaults: null,
     });
     await expect(
       resolveStageModel({ stage: 'chat-adapter', workspaceId: 'u' }),
@@ -200,7 +211,6 @@ describe('resolveStageModel', () => {
     state.lookup = lookupFromLayers('llm', {
       deployment: null,
       workspace: layer('workspace', { providers: { local: provider }, slots: { llm: 'local:m' } }),
-      defaults: null,
     });
     await expect(
       resolveStageModel({ stage: 'chat-adapter', workspaceId: 'u' }),
@@ -214,7 +224,6 @@ describe('resolveStageModel', () => {
         slots: { llm: 'local:m' },
       }),
       workspace: null,
-      defaults: null,
     });
     await expect(
       resolveStageModel({ stage: 'chat-adapter', workspaceId: null }),

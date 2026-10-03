@@ -41,28 +41,26 @@ function slotsById(view: ModelSettingsView): Map<string, SlotView> {
   return new Map(view.slots.map((slot) => [slot.slot, slot]));
 }
 
-/** Whether a slot has a setting of its own (the workspace's or the deployment's). */
-function hasOwnSetting(slot: SlotView): boolean {
-  const effective = slot.effective;
-  return (
-    slot.assignment !== undefined ||
-    slot.locked ||
-    ((effective.status === 'assigned' || effective.status === 'disabled') &&
-      effective.resolvedAt === slot.slot)
-  );
+/**
+ * Whether a slot keeps its own model when the default changes: the
+ * workspace's own choice on it, or a lock. A server default on the slot is
+ * no barrier: the workspace's choice on `llm` overrides it (the user's choice
+ * anywhere up the tree beats a server default).
+ */
+function keepsOwnModel(slot: SlotView): boolean {
+  return slot.assignment !== undefined || slot.locked;
 }
 
 /**
- * Whether a slot follows the default model: it resolves at `llm`, or nothing
- * between it and `llm` has a setting of its own (so it would take whatever
- * the default becomes).
+ * Whether a slot follows the default model: nothing between it and `llm`
+ * keeps a model of its own, so it takes whatever the default becomes.
  */
 export function followsDefault(view: ModelSettingsView, slotId: string): boolean {
   const slots = slotsById(view);
   let current = slots.get(slotId);
   while (current) {
     if (current.slot === 'llm') return true;
-    if (hasOwnSetting(current)) return false;
+    if (keepsOwnModel(current)) return false;
     current = current.parent ? slots.get(current.parent) : undefined;
   }
   return false;
@@ -89,11 +87,12 @@ function resolvedKey(slot: SlotView | undefined): string {
 }
 
 /**
- * The stages under `llm` set separately: each has its own setting (the
- * workspace's, or the deployment's) and resolves to something other than the
- * default. A stage that inherits, or is set to the same model as the default,
- * is not one; nor is a slot shown only in configuration files. Listed in the
- * view's slot order.
+ * The stages under `llm` set separately: each keeps a model of its own when
+ * the default changes (the workspace's choice on it, or a lock on it) and
+ * resolves to something other than the default. A stage that inherits, one
+ * on a server default (choosing a default replaces it), one set to the same
+ * model as the default, and a slot shown only in configuration files are
+ * not. Listed in the view's slot order.
  */
 export function defaultModelOverrides(view: ModelSettingsView | null): OverriddenStage[] {
   if (!view) return [];
@@ -102,7 +101,10 @@ export function defaultModelOverrides(view: ModelSettingsView | null): Overridde
   const overridden: OverriddenStage[] = [];
   for (const slot of view.slots) {
     if (slot.configOnly || slot.slot === 'llm' || !underDefault(slots, slot)) continue;
-    if (!hasOwnSetting(slot) || resolvedKey(slot) === defaultKey) continue;
+    const own =
+      (slot.assignment !== undefined && slot.source.kind === 'workspace') ||
+      slot.source.kind === 'locked';
+    if (!own || resolvedKey(slot) === defaultKey) continue;
     const effective = slot.effective;
     if (effective.status === 'assigned') {
       overridden.push({
@@ -152,6 +154,5 @@ export function courseStagesPlanName(view: ModelSettingsView | null): string | u
   }
   if (providers.size !== 1) return undefined;
   const provider = view.providers.find((entry) => entry.id === [...providers][0]);
-  const preset = provider && view.presets.find((entry) => entry.id === provider.preset);
-  return preset?.kind === 'token-plan' ? preset.name : undefined;
+  return provider?.presetKind === 'token-plan' ? provider.presetName : undefined;
 }

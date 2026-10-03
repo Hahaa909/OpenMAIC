@@ -18,7 +18,7 @@ import { validateClientBaseUrl } from '@/lib/server/ssrf-guard';
 import type { ProviderId, ThinkingConfig } from '@/lib/types/provider';
 
 import type { ResolvedModelTarget, SlotResolution } from './resolve-slot';
-import { lookupStage, SlotDisabledError, SlotUnassignedError } from './runtime';
+import { lookupStage, requestMayChoose, SlotDisabledError, SlotUnassignedError } from './runtime';
 
 export type AssignedSlot = Extract<SlotResolution, { status: 'assigned' }>;
 
@@ -157,30 +157,28 @@ export interface StageModelOptions {
   workspaceId: string | null;
   /**
    * What the request still names the old way (x-model and friends), or
-   * undefined when it names nothing. Consulted only when the configuration
-   * leaves the slot unassigned.
+   * undefined when it names nothing. Consulted only where requestMayChoose
+   * says so.
    */
   legacyRequest?: () => Promise<ResolvedModel | undefined>;
 }
 
 /**
- * The model for a stage: the configured slot, else the model the request
- * names (deprecated), else the legacy defaults. Fails loudly when the slot is
- * turned off or nothing resolves.
+ * The model for a stage: the configured slot, except where the model the
+ * request names (deprecated) may answer instead (see requestMayChoose).
+ * Fails loudly when the slot is turned off or nothing resolves.
  */
 export async function resolveStageModel({
   stage,
   workspaceId,
   legacyRequest,
 }: StageModelOptions): Promise<ResolvedModel> {
-  const lookup = await lookupStage(stage, workspaceId);
-  const { configured } = lookup;
-  if (configured.status === 'assigned') return slotLanguageModel(configured);
-  if (configured.status === 'disabled') throw new SlotDisabledError(configured.slot);
-  const requested = await legacyRequest?.();
-  if (requested) return requested;
-  const fallback = lookup.defaults();
-  if (fallback.status === 'assigned') return slotLanguageModel(fallback);
-  if (fallback.status === 'disabled') throw new SlotDisabledError(fallback.slot);
-  throw new SlotUnassignedError(configured.slot);
+  const resolution = await lookupStage(stage, workspaceId);
+  if (requestMayChoose(resolution)) {
+    const requested = await legacyRequest?.();
+    if (requested) return requested;
+  }
+  if (resolution.status === 'assigned') return slotLanguageModel(resolution);
+  if (resolution.status === 'disabled') throw new SlotDisabledError(resolution.slot);
+  throw new SlotUnassignedError(resolution.slot);
 }
