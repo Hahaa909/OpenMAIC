@@ -394,3 +394,44 @@ export async function renameMaterial(
     return { status: 'renamed' as const, materialId: input.materialId, name };
   });
 }
+
+/** What the owner uses of the two quotas the library is held to (RFC #1716 §8). */
+export interface OwnerLibraryUsage {
+  /** Active sources, uploads in progress included: what upload admission counts. */
+  usedCount: number;
+  usedBytes: number;
+  /** The owner's pool usage, as the pool's quota check counts it. */
+  assetUsedBytes: number;
+}
+
+/**
+ * The owner's usage, each figure computed the way its quota is enforced: the
+ * source quota counts sources (derivatives never), the pool quota counts every
+ * entry of the owner's partition not yet released -- uploads, extraction
+ * outputs, pending allocations and course copies alike, each in full even
+ * when the bytes are stored once.
+ */
+export async function ownerLibraryUsage(
+  queryable: Queryable,
+  ownerId: string,
+  principalKey: string,
+): Promise<OwnerLibraryUsage> {
+  const sources = await queryable.query<{ count: string; total: string }>(
+    `SELECT COUNT(*)::text AS count, COALESCE(SUM(bytes), 0)::text AS total
+       FROM owner_material
+      WHERE owner_id = $1 AND kind = 'source' AND deleted_at IS NULL`,
+    [ownerId],
+  );
+  const pool = await queryable.query<{ used: string }>(
+    `SELECT COALESCE(SUM(blobs.byte_size), 0)::text AS used
+       FROM asset_entries AS entries
+       JOIN asset_blobs AS blobs ON blobs.content_hash = entries.content_hash
+      WHERE entries.principal = $1 AND entries.unreferenced_at IS NULL`,
+    [principalKey],
+  );
+  return {
+    usedCount: Number(sources.rows[0]?.count ?? 0),
+    usedBytes: Number(sources.rows[0]?.total ?? 0),
+    assetUsedBytes: Number(pool.rows[0]?.used ?? 0),
+  };
+}

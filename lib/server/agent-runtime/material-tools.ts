@@ -59,6 +59,8 @@ import {
   type MaterialScope,
   type ResolvedMaterial,
 } from './material-resolver';
+import type { ExtractionWatcher } from './extraction-watcher';
+import type { MaterialLibraryChange } from './material-library-tools';
 import { getAgentSessionMaterialStore } from './session-materials';
 
 const TEXT_WINDOW_CHARS = 8000;
@@ -191,6 +193,14 @@ export interface MaterialToolDependencies {
   waitPollIntervalMs?: number;
   waitForDelay?: (milliseconds: number) => Promise<void>;
   now?: () => number;
+  /** This call started a library source's extraction: a material list shows it. */
+  onLibraryChanged?: (change: MaterialLibraryChange) => void;
+  /**
+   * The run's watcher of library sources whose extraction has not settled
+   * (`./extraction-watcher.ts`): it reports each one's settlement once, as
+   * the run's `library_changed`, whether or not the agent waits for it.
+   */
+  extractionWatcher?: Pick<ExtractionWatcher, 'watch' | 'settled'>;
 }
 
 /** The fail-closed answer: a referenced id does not exist or is not visible here. */
@@ -840,6 +850,16 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         throwIfAborted(signal);
         if (!ensured) return notFoundResult();
         started = ensured.queued;
+        if (started) {
+          deps.onLibraryChanged?.({
+            library: 'materials',
+            change: 'extraction_started',
+            materialIds: [material.entry.id],
+          });
+        }
+        if (ensured.status === 'pending' || ensured.status === 'running') {
+          deps.extractionWatcher?.watch([material.entry.id]);
+        }
         state =
           ensured.queued || ensured.status !== material.entry.extraction?.status
             ? { status: ensured.status }
@@ -919,6 +939,25 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         const remainingMs = deadline - now();
         const timedOut = !complete && remainingMs <= 0;
         if (requiresExtraction || complete || timedOut) {
+          // Settled sources are reported once, through the watcher; ones still
+          // going are watched, so their settlement is reported even if the
+          // agent does not wait again.
+          const owned = resolved.flatMap((material) =>
+            material.origin === 'owner' ? [material.entry] : [],
+          );
+          const isSettled = (status: string | undefined) =>
+            status === 'done' || status === 'failed';
+          deps.extractionWatcher?.settled(
+            owned.filter((entry) => isSettled(entry.extraction?.status)).map((entry) => entry.id),
+          );
+          deps.extractionWatcher?.watch(
+            owned
+              .filter(
+                (entry) =>
+                  entry.extraction?.status === 'pending' || entry.extraction?.status === 'running',
+              )
+              .map((entry) => entry.id),
+          );
           const summary = {
             complete,
             timedOut,
