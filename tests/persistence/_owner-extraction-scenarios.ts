@@ -852,11 +852,10 @@ export async function quotaFailureScenario(h: ExtractionHarness): Promise<void> 
   expect(state).toMatchObject({ status: 'failed', extraction_result: null });
   expect(state.extraction_error).toMatch(/no room/);
   expect(await rootCount(h)).toBe(0);
-  const pending = await h.pool.query<{ committed: boolean; expires: boolean }>(
-    `SELECT committed_at IS NOT NULL AS committed, expires_at IS NOT NULL AS expires
-       FROM asset_entries`,
-  );
-  expect(pending.rows).toEqual([{ committed: false, expires: true }]);
+  // The transcript's entry fitted, then the keyframe's was refused: the run
+  // can never publish, so it removed the transcript's entry instead of
+  // leaving it to hold quota until it expires. The refused one stored nothing.
+  expect(await entryCount(h)).toBe(0);
   expect(await ensure(h, 'vid-big')).toEqual({ status: 'pending', queued: true });
 }
 

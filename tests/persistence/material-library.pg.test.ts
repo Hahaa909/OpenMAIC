@@ -24,7 +24,10 @@ import {
   libraryToolFlowScenario,
   linkAcrossClaimScenario,
   mediaLibraryScopeScenario,
+  ownerRunnerScenario,
   rawConsumersScenario,
+  releaseEdgesScenario,
+  releaseRefusedOutputsScenario,
   resolverScenario,
   textAcrossClaimScenario,
   type LibraryHarness,
@@ -114,6 +117,20 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
 
     it('reads original bytes for every consumer, whatever kind of row, and says when they are unavailable', async () => {
       await rawConsumersScenario(await boot());
+    });
+  });
+
+  describe('extraction', () => {
+    it('removes the outputs of a run refused for certain, and keeps them when unsure', async () => {
+      await releaseRefusedOutputsScenario(await boot());
+    });
+
+    it('keeps a committed publication, releases after a root refusal, and only warns when a release fails', async () => {
+      await releaseEdgesScenario(await boot());
+    });
+
+    it('runs queued extractions and waits for a run under way when stopped', async () => {
+      await ownerRunnerScenario(await boot());
     });
   });
 
