@@ -59,7 +59,8 @@ const RACE_BUDGET_MS = 15_000;
 
 let serial = 0;
 
-describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
+// Real databases, real extraction and real pools: generous under a loaded machine.
+describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_000 }, () => {
   let admin: Pool | undefined;
   const pools: Pool[] = [];
   let schema: string;
@@ -343,10 +344,9 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
       await releaseEdgesScenario(await boot());
     });
 
-    // A real runner polling a real database: generous under a loaded machine.
     it('runs queued extractions and waits for a run under way when stopped', async () => {
       await ownerRunnerScenario(await boot());
-    }, 20_000);
+    });
   });
 
   describe('organizing', () => {

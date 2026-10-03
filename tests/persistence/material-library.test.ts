@@ -55,7 +55,8 @@ class PGlitePool implements ExtractionScenarioPool {
   async end() {}
 }
 
-describe('material library (PGlite)', () => {
+// Real databases, real extraction and real pools: generous under a loaded machine.
+describe('material library (PGlite)', { timeout: 20_000 }, () => {
   let db: PGlite | undefined;
 
   async function boot(env: Record<string, string> = {}): Promise<LibraryHarness> {
@@ -139,10 +140,9 @@ describe('material library (PGlite)', () => {
       await releaseEdgesScenario(await boot());
     });
 
-    // A real runner polling a real database: generous under a loaded machine.
     it('runs queued extractions and waits for a run under way when stopped', async () => {
       await ownerRunnerScenario(await boot());
-    }, 20_000);
+    });
   });
 
   describe('organizing', () => {
