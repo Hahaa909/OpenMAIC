@@ -96,6 +96,13 @@ export interface OwnerExtractionDerivative {
   sha256: string;
   pageNumber?: number;
   timeMs?: number;
+  /**
+   * What the result's text calls this derivative: a reference
+   * `openmaic-derivative:<key>` in the text names it. Keys belong to the
+   * result, not to a source, so a reused text names each source's own
+   * derivatives (`lib/server/material-extraction/document-images.ts`).
+   */
+  key?: string;
 }
 
 /** The latest successful extraction of a source, as `extraction_result` stores it. */

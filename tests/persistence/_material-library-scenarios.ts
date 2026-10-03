@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto';
 
 import { ensureAgentSessionMaterialSchema } from '@openmaic/storage/material/pg';
+import sharp from 'sharp';
 import { expect, vi } from 'vitest';
 
 import { claimOwner } from '@/lib/persistence/owner-claims';
@@ -60,6 +61,7 @@ import {
   OTHER,
   bootExtractionHarness,
   collectEntries,
+  rootsOf,
   ensure,
   entryExists,
   seedSource,
@@ -1072,4 +1074,145 @@ export async function ownerRunnerScenario(h: ExtractionHarness): Promise<void> {
   // Let the stuck run finish so the test leaves nothing behind.
   releaseStuck();
   await until(async () => (await stateOf(h, 'src-stuck')).status === 'done');
+}
+
+/**
+ * A real PNG, so the derivative pipeline can prepare it: a small solid one,
+ * or a large noisy one that stays tens of kilobytes as WebP.
+ */
+async function png(color: string, noisy = false): Promise<string> {
+  const bytes = await sharp({
+    create: {
+      width: noisy ? 256 : 8,
+      height: noisy ? 256 : 8,
+      channels: 3,
+      background: color,
+      ...(noisy ? { noise: { type: 'gaussian' as const, mean: 128, sigma: 60 } } : {}),
+    },
+  })
+    .png()
+    .toBuffer();
+  return `data:image/png;base64,${bytes.toString('base64')}`;
+}
+
+/** A provider artifact whose markdown names its images by file, as MinerU's does. */
+async function mineruLikeArtifact(noisy = false) {
+  return {
+    metadata: { pageCount: 3 },
+    blocks: [
+      {
+        id: 'document-text',
+        type: 'markdown',
+        text: [
+          '# Lesson',
+          '![Cell diagram](images/fig-1.jpg)',
+          '<table><tr><td><img src="images/fig-2.jpg"></td></tr></table>',
+          '![gone](images/missing.jpg)',
+          '![remote](https://example.com/x.png)',
+        ].join('\n\n'),
+      },
+    ],
+    assets: [
+      {
+        id: 'img_1',
+        type: 'image',
+        data: await png('#ff0000', noisy),
+        pageNumber: 2,
+        metadata: { path: 'fig-1.jpg' },
+      },
+      {
+        id: 'img_2',
+        type: 'image',
+        data: await png('#00ff00', noisy),
+        metadata: { path: 'fig-2.jpg' },
+      },
+      { id: 'img_3', type: 'image', data: 'not-an-image', metadata: { path: 'bad.jpg' } },
+    ],
+  };
+}
+
+/**
+ * A document's embedded images become derivatives of its source, and its text
+ * names them instead of the provider's files: in the pool, rooted, filed with
+ * the source, with their page. A reader sees each reference resolved to the
+ * derivative's own id, and a source that reuses the result sees its own.
+ */
+export async function documentImagesScenario(h: ExtractionHarness): Promise<void> {
+  h.documentExtract.mockImplementation((async () => mineruLikeArtifact()) as never);
+  await seedSource(h, 'src-doc', { folderId: 'fold-1' });
+  await ensure(h, 'src-doc');
+  expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+  const state = await stateOf(h, 'src-doc');
+  expect(state.status).toBe('done');
+  const result = state.extraction_result!;
+  expect(result.derivatives.map((d) => [d.key, d.mime, d.pageNumber])).toEqual([
+    ['img-1', 'image/webp', 2],
+    ['img-2', 'image/webp', undefined],
+  ]);
+  expect(result.stats).toMatchObject({ imageCount: 2 });
+
+  // Stored: keys, no provider files, alt text for what was not kept.
+  const stored = Buffer.from(
+    (await h.provider.assetStore.resolve(assetPrincipalForOwner(ACCOUNT), result.text.assetId))!
+      .bytes,
+  ).toString();
+  expect(stored).toContain('![Cell diagram](openmaic-derivative:img-1)');
+  expect(stored).toContain('<img src="openmaic-derivative:img-2">');
+  expect(stored).toContain('[image: gone]');
+  expect(stored).toContain('![remote](https://example.com/x.png)');
+  expect(stored).not.toContain('images/');
+
+  // Each derivative: an owner material, rooted, filed with its source.
+  for (const derivative of result.derivatives) {
+    expect(await rootsOf(h, derivative.id)).toEqual([derivative.assetId]);
+    expect((await stateOf(h, derivative.id)).folder_id).toBe('fold-1');
+  }
+
+  // Read: references name the derivatives.
+  const [first, second] = result.derivatives;
+  const read = (await readOwnerMaterialText({
+    id: 'src-doc',
+    ownerId: ACCOUNT,
+    extractionResult: result,
+  }))!;
+  expect(read.text).toContain(`![Cell diagram](material:${first!.id})`);
+  expect(read.text).toContain(`<img src="material:${second!.id}">`);
+  expect(read.text).not.toContain('openmaic-derivative:');
+
+  // Reuse: same bytes, another source. One extraction, the same text entry,
+  // derivatives of its own, and its reader sees its own ids.
+  await seedSource(h, 'src-copy', { bytes: h.sources.get('src-doc') });
+  await ensure(h, 'src-copy');
+  expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+  expect(h.documentExtract).toHaveBeenCalledTimes(1);
+  const reused = (await stateOf(h, 'src-copy')).extraction_result!;
+  expect(reused.reusedFrom).toBe('src-doc');
+  expect(reused.text.assetId).toBe(result.text.assetId);
+  expect(reused.derivatives.map((d) => d.key)).toEqual(['img-1', 'img-2']);
+  expect(reused.derivatives.map((d) => d.id)).not.toContain(first!.id);
+  const readCopy = (await readOwnerMaterialText({
+    id: 'src-copy',
+    ownerId: ACCOUNT,
+    extractionResult: reused,
+  }))!;
+  expect(readCopy.text).toContain(`![Cell diagram](material:${reused.derivatives[0]!.id})`);
+  expect(readCopy.text).not.toContain(first!.id);
+}
+
+/**
+ * A document whose text fits the owner's pool quota but whose images do not
+ * publishes nothing: the source fails with its reason, and the text's entry,
+ * already allocated, is removed rather than left holding quota.
+ */
+export async function documentImagesQuotaScenario(h: ExtractionHarness): Promise<void> {
+  h.documentExtract.mockImplementation((async () => mineruLikeArtifact(true)) as never);
+  await seedSource(h, 'src-big');
+  await ensure(h, 'src-big');
+  expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+  const state = await stateOf(h, 'src-big');
+  expect(state).toMatchObject({ status: 'failed', extraction_result: null });
+  expect(state.extraction_error).toMatch(/no room/);
+  expect(await entryIds(h)).toEqual([]);
+  // The text did fit: the run got as far as the images.
+  expect(h.documentExtract).toHaveBeenCalledTimes(1);
 }

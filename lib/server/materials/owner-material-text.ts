@@ -10,7 +10,10 @@
  *
  * ## One result, one read
  *
- * The text and its revision always come from the same `extraction_result`:
+ * The text, its revision and the derivatives its image references resolve to
+ * (`openmaic-derivative:<key>` becomes `material:<derivative id>`, see
+ * `lib/server/material-extraction/document-images.ts`) always come from the
+ * same `extraction_result`:
  * a caller never pairs a revision read earlier with text read later, or a
  * page boundary checked against one revision could hand out text of another.
  *
@@ -27,6 +30,7 @@ import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import type { OwnerExtractionResult } from '@/lib/persistence/owner-material-extraction';
 import { forwardOwnerWrite } from '@/lib/persistence/owner-merges';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import { resolveDerivativeRefs } from '@/lib/server/material-extraction/document-images';
 
 /** A source's extracted text at one revision. */
 export interface OwnerMaterialText {
@@ -38,11 +42,25 @@ export interface OwnerMaterialText {
 export interface OwnerMaterialTextLocation {
   id: string;
   ownerId: string;
-  extractionResult: Pick<OwnerExtractionResult, 'revision' | 'text'> | null;
+  extractionResult: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'> | null;
 }
 
 async function provider() {
   return getServerPersistenceProvider(process.env.DATABASE_URL ?? '');
+}
+
+/**
+ * The text as this source's reader sees it: its image references name this
+ * source's own derivatives, from the same result as the revision.
+ */
+function textOf(
+  bytes: Uint8Array,
+  result: Pick<OwnerExtractionResult, 'revision' | 'derivatives'>,
+): OwnerMaterialText {
+  return {
+    text: resolveDerivativeRefs(Buffer.from(bytes).toString('utf8'), result.derivatives ?? []),
+    revision: result.revision,
+  };
 }
 
 async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMaterialText | null> {
@@ -52,9 +70,7 @@ async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMater
     const read = await (
       await provider()
     ).assetStore.resolve(assetPrincipalForOwner(location.ownerId), result.text.assetId);
-    return read
-      ? { text: Buffer.from(read.bytes).toString('utf8'), revision: result.revision }
-      : null;
+    return read ? textOf(read.bytes, result) : null;
   } catch {
     // Retried under the fence.
     return null;
@@ -85,9 +101,7 @@ async function rereadUnderFence(
         const read = await persistence
           .assetStoreIn(tx)
           .resolve(assetPrincipalForOwner(row.owner_id), result.text.assetId);
-        return read
-          ? { text: Buffer.from(read.bytes).toString('utf8'), revision: result.revision }
-          : null;
+        return read ? textOf(read.bytes, result) : null;
       } catch (error) {
         // Out of the transaction, so it rolls back rather than ending aborted.
         throw new FencedTextReadFailed('pool read failed', { cause: error });
