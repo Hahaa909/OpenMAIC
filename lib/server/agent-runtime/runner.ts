@@ -915,6 +915,7 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
   let criticalWriteError: unknown;
   let entryWritesHealthy = true;
   let terminalFrameEmitted = false;
+  let extractionWatcher: ExtractionWatcher | undefined;
 
   const markLeaseLost = () => {
     leaseLost = true;
@@ -998,6 +999,9 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
         abort.abort();
       }
       return;
+    }
+    if (type === LIFECYCLE.sessionEnd || type === LIFECYCLE.sessionInterrupted) {
+      extractionWatcher?.stop();
     }
     runEventEmitted = true;
     if (type === LIFECYCLE.sessionEnd) terminalFrameEmitted = true;
@@ -1144,8 +1148,6 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
   });
 
   const cancelPoll = setInterval(checkCancel, SESSION_WAKEUP_FALLBACK_MS);
-  // Started with the run's tools; stopped with its other timers below.
-  let extractionWatcher: ExtractionWatcher | undefined;
   cancelPoll.unref?.();
 
   try {

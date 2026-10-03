@@ -345,7 +345,7 @@ export async function twoConversationsOneExtractionScenario(h: ExtractionHarness
     result.text.assetId as never,
   );
   const stored = Buffer.from(text!.bytes).toString();
-  expect(stored).toContain('[image]');
+  expect(stored).toContain(String.raw`\[image\]`);
   expect(stored).not.toContain('images/fig-1.jpg');
 
   // A failed source restarts, with a token no earlier claim held.

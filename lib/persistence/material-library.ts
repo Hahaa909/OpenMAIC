@@ -206,6 +206,11 @@ export async function renameMaterialFolder(
   try {
     return await persistence.withTransaction(async (tx) => {
       const ownerId = await fence(tx, input.ownerId, input.fence);
+      // Serialize names with creation before taking a folder row lock: a
+      // create must see this rename, rather than fail its unique constraint.
+      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        folderCreationLockKey(ownerId),
+      ]);
       const current = await tx.query<FolderRow>(
         `SELECT id, name, created_at, updated_at FROM material_folders
           WHERE owner_id = $1 AND id = $2 FOR UPDATE`,

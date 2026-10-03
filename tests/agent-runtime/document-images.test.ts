@@ -4,8 +4,10 @@
  * MinerU's parser keeps the file each image is named by.
  */
 import { describe, expect, it } from 'vitest';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 
 import type { DocumentArtifact, DocumentExtractorProvider } from '@/lib/document/types';
+import { textDocumentExtractorProvider } from '@/lib/document/extractors/text';
 import { extractMinerUResult } from '@/lib/pdf/mineru-parser';
 import {
   imagePathIndex,
@@ -21,6 +23,43 @@ const index = imagePathIndex([
 ]);
 
 describe('rewriteImageReferences', () => {
+  it('rewrites only the src attribute, outside quoted values and data-src', () => {
+    expect(
+      rewriteImageReferences('<img alt="images/fig-2.png" src="images/fig-2.png">', index),
+    ).toBe('<img alt="images/fig-2.png" src="openmaic-derivative:img-2">');
+    expect(
+      rewriteImageReferences('<img data-src="images/missing.png" src="images/fig-2.png">', index),
+    ).toBe('<img data-src="images/missing.png" src="openmaic-derivative:img-2">');
+    const quoted = `<img alt="src='images/missing.png'" src='images/fig-2.png'>`;
+    expect(rewriteImageReferences(quoted, index)).toBe(
+      `<img alt="src='images/missing.png'" src='openmaic-derivative:img-2'>`,
+    );
+    expect(rewriteImageReferences('<img data-src="images/fig-2.png">', index)).toBe(
+      '<img data-src="images/fig-2.png">',
+    );
+  });
+
+  it('keeps missing-image alt text from becoming a link', () => {
+    for (const input of [
+      '![fig](images/missing.png)(Figure1)',
+      String.raw`![a\](https://example.com)](images/missing.png)`,
+      '![fig][gone](Figure1)\n\n[gone]: images/missing.png',
+    ]) {
+      const out = rewriteImageReferences(input, index);
+      const paragraph = fromMarkdown(out).children[0];
+      expect(paragraph?.type).toBe('paragraph');
+      if (paragraph?.type === 'paragraph') {
+        expect(paragraph.children.every((node) => node.type === 'text')).toBe(true);
+      }
+    }
+  });
+
+  it('preserves offsets and surrounding text when markdown starts with a BOM', () => {
+    expect(rewriteImageReferences('\uFEFFhello ![a](images/fig-2.png) end', index)).toBe(
+      '\uFEFFhello ![a](openmaic-derivative:img-2) end',
+    );
+  });
+
   it('names kept images by key, whatever form the reference takes', () => {
     expect(rewriteImageReferences('![a](images/fig%201.jpg)', index)).toBe(
       '![a](openmaic-derivative:img-1)',
@@ -56,12 +95,14 @@ describe('rewriteImageReferences', () => {
 
   it('turns references to files nothing keeps into alt text', () => {
     expect(rewriteImageReferences('see ![a cell](images/other.jpg) here', index)).toBe(
-      'see [image: a cell] here',
+      String.raw`see \[image: a cell\] here`,
     );
-    expect(rewriteImageReferences('![](images/other.jpg)', index)).toBe('[image]');
-    expect(rewriteImageReferences('<img src="images/other.jpg">', index)).toBe('[image]');
+    expect(rewriteImageReferences('![](images/other.jpg)', index)).toBe(String.raw`\[image\]`);
+    expect(rewriteImageReferences('<img src="images/other.jpg">', index)).toBe(
+      String.raw`\[image\]`,
+    );
     expect(rewriteImageReferences('![x][gone]\n\n[gone]: images/gone.png', index)).toBe(
-      '[image: x]\n\n',
+      String.raw`\[image: x\]` + '\n\n',
     );
   });
 
@@ -84,6 +125,18 @@ describe('rewriteImageReferences', () => {
 });
 
 describe('imagePathIndex', () => {
+  it('prefers all real paths over aliases, regardless of image order', () => {
+    const images = [
+      { key: 'img-1', path: 'x.jpg' },
+      { key: 'img-2', path: 'images/x.jpg' },
+    ];
+    for (const ordered of [images, [...images].reverse()]) {
+      expect(rewriteImageReferences('![b](images/x.jpg)', imagePathIndex(ordered))).toBe(
+        '![b](openmaic-derivative:img-2)',
+      );
+    }
+  });
+
   it('prefers a full path over another image’s file name', () => {
     const two = imagePathIndex([
       { key: 'img-1', path: 'other/fig.png' },
@@ -93,7 +146,7 @@ describe('imagePathIndex', () => {
       '![](openmaic-derivative:img-1) ![](openmaic-derivative:img-2)',
     );
     // An ambiguous file name alone matches neither.
-    expect(rewriteImageReferences('![](elsewhere/fig.png)', two)).toBe('[image]');
+    expect(rewriteImageReferences('![](elsewhere/fig.png)', two)).toBe(String.raw`\[image\]`);
   });
 });
 
@@ -105,6 +158,19 @@ describe('ownerDocumentOutcome', () => {
     assets: [],
   });
 
+  it('preserves uploaded markdown instead of treating its paths as provider files', async () => {
+    const text = 'See ![arch](./arch.png) and ![logo][l]\n\n[l]: assets/logo.png';
+    const buffer = Buffer.from(text);
+    const extracted = await textDocumentExtractorProvider.extract({
+      buffer,
+      mimeType: 'text/markdown',
+      fileName: 'notes.md',
+      fileSize: buffer.length,
+      config: { providerId: 'plain-text' },
+    });
+    expect((await ownerDocumentOutcome(extracted, textDocumentExtractorProvider)).text).toBe(text);
+  });
+
   it('never rewrites a plain-text block', async () => {
     expect((await ownerDocumentOutcome(artifact('text'), provider)).text).toBe(
       'Literal: ![x](images/a.png)',
@@ -113,7 +179,7 @@ describe('ownerDocumentOutcome', () => {
 
   it('rewrites a markdown block', async () => {
     expect((await ownerDocumentOutcome(artifact('markdown'), provider)).text).toBe(
-      'Literal: [image: x]',
+      String.raw`Literal: \[image: x\]`,
     );
   });
 });

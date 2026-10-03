@@ -29,7 +29,27 @@ const mocks = vi.hoisted(() => ({
   searchWeb: vi.fn(),
   formatSearchResultsAsContext: vi.fn(),
   listSessionMaterials: vi.fn(async (_sessionId: string): Promise<AgentSessionMaterial[]> => []),
+  extractionWatcher: undefined as
+    | import('@/lib/server/agent-runtime/extraction-watcher').ExtractionWatcher
+    | undefined,
+  readSettled: vi.fn(async (_ids: readonly string[]): Promise<string[]> => []),
 }));
+
+vi.mock('@/lib/server/agent-runtime/extraction-watcher', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@/lib/server/agent-runtime/extraction-watcher')>();
+  return {
+    ...actual,
+    startExtractionWatcher: (options: Parameters<typeof actual.startExtractionWatcher>[0]) => {
+      mocks.extractionWatcher = actual.startExtractionWatcher({
+        ...options,
+        intervalMs: 1,
+        readSettled: mocks.readSettled,
+      });
+      return mocks.extractionWatcher;
+    },
+  };
+});
 
 vi.mock('node:crypto', async (importActual) => {
   const actual = await importActual<typeof import('node:crypto')>();
@@ -219,6 +239,8 @@ interface BuildAgentOptions {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.extractionWatcher = undefined;
+  mocks.readSettled.mockResolvedValue([]);
   mocks.listSessionMaterials.mockResolvedValue([]);
   mocks.resolveAgentDriverModel.mockResolvedValue({
     connection: { model: undefined, thinkingConfig: undefined },
@@ -566,4 +588,68 @@ describe('web_search runner registration', () => {
     expect(options.systemPrompt).toContain('Nothing is attached to this conversation yet.');
     expect(options.systemPrompt).toContain("scope: 'library'");
   });
+});
+
+describe('extraction watcher at run termination', () => {
+  it.each(['succeeded', 'failed', 'interrupted'] as const)(
+    'does not append a settlement after the %s terminal frame',
+    async (exit) => {
+      const meta = makeMeta();
+      const session = await makeEntryTree();
+      const store = makeStore(meta);
+      mocks.openEntryStorage.mockResolvedValue(session.getStorage());
+      mocks.getAgentSessionStore.mockResolvedValue(store);
+      mocks.resolveWebSearchCapability.mockReturnValue(null);
+      const ctx = { running: new Map(), shuttingDown: false };
+      let resolveRead!: () => void;
+      const maySettle = new Promise<void>((resolve) => {
+        resolveRead = resolve;
+      });
+      let markPolling!: () => void;
+      const polling = new Promise<void>((resolve) => {
+        markPolling = resolve;
+      });
+      mocks.readSettled.mockImplementation(async (ids) => {
+        markPolling();
+        await maySettle;
+        return [...ids];
+      });
+      mocks.buildAgent.mockImplementation(() => {
+        const agent = makeFakeAgent();
+        agent.prompt = async () => {
+          mocks.extractionWatcher!.watch(['pending-source']);
+          await polling;
+          if (exit === 'failed') throw new Error('agent failed after starting extraction');
+          if (exit === 'interrupted') {
+            ctx.shuttingDown = true;
+            ctx.running.get(meta.id)!.abort.abort();
+          }
+        };
+        return agent;
+      });
+      const events: string[] = [];
+      store.appendRunEvent.mockImplementation(async (_id, _workerId, event) => {
+        events.push(event.type);
+        if (event.type === 'session_end' || event.type === 'session_interrupted') resolveRead();
+        return events.length;
+      });
+      // Keep settlement open while an already-started status read completes.
+      store.finishSession.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return true;
+      });
+      store.releaseLease.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+      try {
+        await runSession(ctx, meta);
+        expect(mocks.readSettled).toHaveBeenCalled();
+        expect(events).not.toContain('library_changed');
+        expect(events.at(-1)).toBe(exit === 'interrupted' ? 'session_interrupted' : 'session_end');
+      } finally {
+        resolveRead();
+        mocks.extractionWatcher?.stop();
+      }
+    },
+  );
 });

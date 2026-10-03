@@ -644,14 +644,18 @@ export function useMaterialMentions(input: {
 }): MaterialMentionCandidate[] | undefined {
   const { open, enabled, query, sessionId, staged } = input;
   const revision = useWorkbenchStore((state) => state.materialLibraryRevision);
-  const [listed, setListed] = useState<Awaited<ReturnType<typeof fetchMaterialMentionListing>>>([]);
+  const [listing, setListing] = useState<{
+    query: string;
+    sessionId: string | null;
+    materials: Awaited<ReturnType<typeof fetchMaterialMentionListing>>;
+  }>();
   useEffect(() => {
     if (!open || !enabled) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       void fetchMaterialMentionListing({ query, sessionId, signal: controller.signal }).then(
         (materials) => {
-          if (!controller.signal.aborted) setListed(materials);
+          if (!controller.signal.aborted) setListing({ query, sessionId, materials });
         },
       );
     }, 150);
@@ -661,5 +665,7 @@ export function useMaterialMentions(input: {
     };
   }, [open, enabled, query, sessionId, revision]);
   if (!enabled) return undefined;
+  const listed =
+    listing?.query === query && listing.sessionId === sessionId ? listing.materials : [];
   return materialMentionCandidates(listed, new Set(staged.map((material) => material.materialId)));
 }

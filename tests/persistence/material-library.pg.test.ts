@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetClaimParticipantsForTests } from '@/lib/persistence/owner-claims';
 import {
   createMaterialFolder,
+  renameMaterialFolder,
   deleteEmptyMaterialFolder,
   moveMaterials,
 } from '@/lib/persistence/material-library';
@@ -350,6 +351,56 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   });
 
   describe('organizing', () => {
+    it('reuses a folder when create races with a rename to the same name', async () => {
+      const h = await boot();
+      const initial = await createMaterialFolder(h.provider, {
+        ownerId: ACCOUNT,
+        name: 'Old',
+        fence: 'request',
+      });
+      if (initial.status !== 'ok') throw new Error('folder setup failed');
+      let releaseRename!: () => void;
+      const mayCommit = new Promise<void>((resolve) => {
+        releaseRename = resolve;
+      });
+      let markRenamed!: () => void;
+      const renamedInTransaction = new Promise<void>((resolve) => {
+        markRenamed = resolve;
+      });
+      const renamed = renameMaterialFolder(
+        {
+          withTransaction: (body) =>
+            h.provider.withTransaction(async (tx) => {
+              const outcome = await body(tx);
+              markRenamed();
+              await mayCommit;
+              return outcome;
+            }),
+        },
+        { ownerId: ACCOUNT, folderId: initial.folder.id, name: 'Unit 1', fence: 'request' },
+      );
+      let created: ReturnType<typeof createMaterialFolder> | undefined;
+      try {
+        await withinBudget(renamedInTransaction);
+        created = createMaterialFolder(h.provider, {
+          ownerId: ACCOUNT,
+          name: 'Unit 1',
+          fence: 'request',
+        });
+        await untilSomeoneWaits();
+        releaseRename();
+        expect(await withinBudget(renamed)).toMatchObject({ status: 'renamed' });
+        expect(await withinBudget(created)).toMatchObject({
+          status: 'ok',
+          created: false,
+          folder: { id: initial.folder.id, name: 'Unit 1' },
+        });
+      } finally {
+        releaseRename();
+        await Promise.allSettled([renamed, created]);
+      }
+    });
+
     it('creates, lists and renames folders, within the per-owner limit', async () => {
       await foldersScenario(await boot());
     });
