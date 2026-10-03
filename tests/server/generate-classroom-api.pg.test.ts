@@ -76,6 +76,7 @@ function fakeServices(overrides: Partial<RunStepServices> = {}) {
   const outlineRequirements: unknown[] = [];
   const services: RunStepServices = {
     materialKinds: async (_owner, materialIds) => materialIds.map(() => 'document' as const),
+    materialsReady: async () => false,
     analyzeMaterials: async (_owner, materialIds) => {
       analyzed.push([...materialIds]);
       return { text: 'material text', images: [] };
@@ -188,6 +189,10 @@ describe.skipIf(!contractUrl)('the headless classroom API on PostgreSQL', () => 
       },
       get: async (key) => bytes.get(key)!,
       delete: async (key) => void bytes.delete(key),
+      deletePrefix: async (prefix: string) => {
+        for (const key of [...bytes.keys()]) if (key.startsWith(prefix)) bytes.delete(key);
+      },
+      list: async () => [],
     });
   });
 

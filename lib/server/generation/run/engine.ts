@@ -538,16 +538,21 @@ export async function executeGenerationRun(
 
     switch (step.kind) {
       case 'material-analysis': {
-        // The preview names the kind of material it waits on.
-        const kinds = await services.materialKinds(owner, input.materialIds);
-        await commit({ events: [{ type: 'material_kinds', data: { kinds } }] });
-        const analyzed = await withDeadline(
-          stepId,
-          STEP_DEADLINES_MS.materialAnalysis,
+        // Materials are extracted since their upload. Only a run that waits
+        // for an extraction tells the preview what it waits on (the kind of
+        // material it names); one whose materials are all ready reads their
+        // results and shows no analysis.
+        if (!(await services.materialsReady(owner, input.materialIds))) {
+          const kinds = await services.materialKinds(owner, input.materialIds);
+          await commit({ events: [{ type: 'material_kinds', data: { kinds } }] });
+        }
+        // No step deadline around the wait: a material queued behind other
+        // extractions waits its turn, and each extraction has the step's
+        // budget once a worker runs it (awaitOwnerMaterialExtractions).
+        const analyzed = await services.analyzeMaterials(owner, input.materialIds, {
+          log,
           signal,
-          (callSignal) =>
-            services.analyzeMaterials(owner, input.materialIds, { log, signal: callSignal }),
-        );
+        });
         // What the outline will not see in full, as the preview warns about it.
         const warnings = analyzed.truncated
           ? { events: [{ type: 'material_truncated' as const, data: { ...analyzed.truncated } }] }

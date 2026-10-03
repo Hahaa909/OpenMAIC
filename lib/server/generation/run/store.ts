@@ -23,6 +23,7 @@ import { encodeJson } from '@openmaic/storage/pg-json';
 import type { ConnectableQueryable } from '@openmaic/storage/server/reference';
 
 import { ensureGenerationRunSchema } from '@/lib/persistence/generation-runs';
+import { startOwnerMaterialExtractions } from '@/lib/persistence/owner-materials';
 import { withSchemaBootstrapLock } from '@/lib/persistence/schema-bootstrap-lock';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import { notifyDurableAgentEvent } from '@/lib/server/agent-runtime/event-notify-bus';
@@ -1398,6 +1399,11 @@ export async function retryGenerationRun(
       }
       // The run is retryable: whether the owner may run one more decides.
       if (refusal) throw refusal;
+      // A run paused at its materials failed with an extraction's error:
+      // Retry extracts the failed ones again.
+      if (run.step === 'material-analysis') {
+        await restartFailedRunMaterialExtractionsIn(tx, run.owner_id, run.input.materialIds);
+      }
       // A run paused before it chose a step resumes where it was executing.
       const state = run.step
         ? stateForRetry(run.step)
@@ -1418,6 +1424,34 @@ export async function retryGenerationRun(
     },
     limit,
   );
+}
+
+/**
+ * Start the failed extractions of a run's materials again, only among the
+ * materials its owner holds now (a claim moves them to the account; a no-op
+ * without the table).
+ */
+async function restartFailedRunMaterialExtractionsIn(
+  tx: Queryable,
+  storedOwnerId: string,
+  materialIds: readonly string[],
+): Promise<void> {
+  if (materialIds.length === 0) return;
+  const provisioned = await tx.query<{ present: string | null }>(
+    "SELECT to_regclass('owner_material')::text AS present",
+  );
+  if (!provisioned.rows[0]?.present) return;
+  let owner = storedOwnerId;
+  for (let hop = 0; hop < MAX_MERGE_HOPS; hop += 1) {
+    const merged = await tx.query<{ to_owner_id: string }>(
+      'SELECT to_owner_id FROM owner_merges WHERE from_owner_id = $1',
+      [owner],
+    );
+    const next = merged.rows[0]?.to_owner_id;
+    if (!next) break;
+    owner = next;
+  }
+  await startOwnerMaterialExtractions(tx, owner, materialIds, ['failed']);
 }
 
 /** Queue one failed media item of a run again (the run row is locked). */
