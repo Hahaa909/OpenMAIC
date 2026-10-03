@@ -20,9 +20,12 @@
  *    in its own transaction, then publish everything in one more.
  *
  * Every allocation and the publication check the claim first. A claim that
- * is no longer current when it allocates stores nothing; one superseded while
- * an allocation is under way can leave that pending entry behind, which it
- * can never publish and which expires like any unpublished allocation. What
+ * is no longer current when it allocates stores nothing. A run that is
+ * refused for certain -- its claim lost, its source deleted, its publication
+ * refused -- removes the entries it allocated, which nothing will ever name,
+ * so they do not hold the owner's quota for a day; a publication whose
+ * outcome is uncertain keeps them, and an entry whose allocation itself
+ * failed part-way expires like any unpublished allocation. What
  * this does not do: cancel a provider call (none of them takes a signal) or
  * bound how long one runs. A late result is refused when it tries to publish.
  *
@@ -56,6 +59,7 @@ import {
 import { forwardOwnerWrite } from '@/lib/persistence/owner-merges';
 import type { ServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import { getMinerUBackend } from '@/lib/pdf/pdf-providers';
+import { agentRuntimeConfig } from '@/lib/server/agent-runtime/config';
 import { readOwnerMaterialBytes } from '@/lib/server/materials/owner-material-bytes';
 import {
   resolveASRBaseUrl,
@@ -324,27 +328,45 @@ export async function runClaimedOwnerExtraction(
 
   if (state.lost) return 'not-authorized';
   const options = resultOptions(outcome.extractor.id);
-  const textBytes = Buffer.from(outcome.text, 'utf8');
-  const textAssetId = await allocate(persistence, claim, state, textBytes, 'text/markdown');
+  // Every entry this run allocates, so a run that is refused for certain can
+  // remove what nothing will ever name.
+  const allocated: string[] = [];
   const derivatives: OwnerExtractionDerivative[] = [];
-  for (const [index, image] of outcome.images.entries()) {
-    const imageBytes = decodeMediaAssetData(image.data);
-    const assetId = await allocate(persistence, claim, state, imageBytes, image.mimeType);
-    derivatives.push({
-      id: createId(),
-      kind: 'image',
-      assetId,
-      title: derivativeTitle(claim.originalName, image, index),
-      mime: image.mimeType,
-      bytes: imageBytes.byteLength,
-      sha256: sha256Hex(imageBytes),
-      ...(image.pageNumber === undefined ? {} : { pageNumber: image.pageNumber }),
-      ...(image.timeMs === undefined ? {} : { timeMs: image.timeMs }),
-    });
-  }
-  if (state.lost) return 'not-authorized';
+  let textAssetId: string;
   try {
-    return await publishOwnerMaterialExtraction(
+    const textBytes = Buffer.from(outcome.text, 'utf8');
+    textAssetId = await allocate(persistence, claim, state, textBytes, 'text/markdown');
+    allocated.push(textAssetId);
+    for (const [index, image] of outcome.images.entries()) {
+      const imageBytes = decodeMediaAssetData(image.data);
+      const assetId = await allocate(persistence, claim, state, imageBytes, image.mimeType);
+      allocated.push(assetId);
+      derivatives.push({
+        id: createId(),
+        kind: 'image',
+        assetId,
+        title: derivativeTitle(claim.originalName, image, index),
+        mime: image.mimeType,
+        bytes: imageBytes.byteLength,
+        sha256: sha256Hex(imageBytes),
+        ...(image.pageNumber === undefined ? {} : { pageNumber: image.pageNumber }),
+        ...(image.timeMs === undefined ? {} : { timeMs: image.timeMs }),
+      });
+    }
+  } catch (error) {
+    // No publication was attempted: the entries allocated so far are named by
+    // nothing and never will be. (The allocation that threw is not among
+    // them; whether its entry was stored is not known, so it expires.)
+    await releaseAllocations(persistence, claim, allocated);
+    throw error;
+  }
+  if (state.lost) {
+    await releaseAllocations(persistence, claim, allocated);
+    return 'not-authorized';
+  }
+  let published: PublishOutcome;
+  try {
+    published = await publishOwnerMaterialExtraction(
       persistence.withTransaction,
       claim,
       {
@@ -357,14 +379,52 @@ export async function runClaimedOwnerExtraction(
       now(),
     );
   } catch (error) {
-    // An entry allocated above is gone or under another owner: nothing was
-    // published, and a fresh claim allocates again.
+    // An entry allocated above is gone or under another owner: the root call
+    // refused it before anything committed, so nothing was published, and a
+    // fresh claim allocates again.
     if (error instanceof AssetRootTargetError) {
+      await releaseAllocations(persistence, claim, allocated);
       throw new MaterialExtractionError('an extraction output is no longer stored', true, {
         cause: error,
       });
     }
+    // Any other failure may have committed: the entries stay and expire if
+    // nothing names them.
     throw error;
+  }
+  // A refusal writes nothing, so nothing names these entries.
+  if (published !== 'published') await releaseAllocations(persistence, claim, allocated);
+  return published;
+}
+
+/**
+ * Remove entries a run allocated and is certain never to publish -- the
+ * claim was lost, the source was deleted, or the publication was refused --
+ * so they do not hold the owner's quota until they expire. One transaction,
+ * under the owner the claim's source has now (a claim since the allocation
+ * moved them to the account). The store refuses to remove an entry a root
+ * holds, so this can never take bytes something keeps. A failure only warns:
+ * the entries expire like any unpublished allocation.
+ */
+async function releaseAllocations(
+  persistence: Persistence,
+  claim: OwnerExtractionClaim,
+  assetIds: readonly string[],
+): Promise<void> {
+  if (assetIds.length === 0) return;
+  try {
+    await persistence.withTransaction(async (tx) => {
+      const ownerId = await forwardOwnerWrite(tx, claim.ownerId);
+      const store = persistence.assetStoreIn(tx);
+      for (const assetId of assetIds) {
+        await store.remove(assetPrincipalForOwner(ownerId), assetId);
+      }
+    });
+  } catch (error) {
+    console.warn(
+      `[owner-extraction] unpublished outputs of ${claim.materialId} left to expire`,
+      error,
+    );
   }
 }
 
@@ -507,4 +567,84 @@ export async function runNextOwnerExtraction(
     clearInterval(heartbeat);
   }
   return true;
+}
+
+export interface OwnerExtractionRunnerHandle {
+  /**
+   * Stop claiming, then wait for the runs under way, up to `timeoutMs`
+   * (default 15 s). `drained: false` means some are still running -- a
+   * provider that never returns, say -- and the caller decides what to do;
+   * see {@link startOwnerExtractionRunner}.
+   */
+  stop(options?: { timeoutMs?: number }): Promise<{ drained: boolean; running: number }>;
+}
+
+export interface OwnerExtractionRunnerOptions extends OwnerExtractionWorkerOptions {
+  /** The run dependencies; by default this deployment's persistence and providers. */
+  dependencies?: () => Promise<OwnerExtractionDependencies>;
+  scanIntervalMs?: number;
+  maxConcurrent?: number;
+}
+
+/**
+ * Start the process-scoped scanner of owner-level extraction, beside the
+ * session chain's (`./runner.ts`): every interval it fills its free slots
+ * with {@link runNextOwnerExtraction}. Claims, leases and the claim budget
+ * keep several instances from running one source twice; a run whose claim
+ * is lost publishes nothing. `stop` stops claiming and waits for the runs
+ * under way, so shutdown closes the pool only after them.
+ *
+ * The wait is bounded, because a provider call cannot be cancelled and may
+ * never return, and a shutdown must end. When it runs out, `stop` says so
+ * (`drained: false`) instead of pretending the runs finished. A run still
+ * going when the pool closes cannot write anything: every write of a run is
+ * a transaction of its own that checks its claim, so it fails rather than
+ * commits; its lease then expires and another instance claims the source
+ * again, within the claim budget, while the stale claim stays refused.
+ */
+export function startOwnerExtractionRunner(
+  options: OwnerExtractionRunnerOptions = {},
+): OwnerExtractionRunnerHandle {
+  const dependencies =
+    options.dependencies ??
+    (async (): Promise<OwnerExtractionDependencies> => {
+      const { getServerPersistenceProvider } = await import('@/lib/persistence/server-provider');
+      return { persistence: await getServerPersistenceProvider(process.env.DATABASE_URL ?? '') };
+    });
+  const scanIntervalMs = options.scanIntervalMs ?? agentRuntimeConfig.scanIntervalMs;
+  const maxConcurrent = options.maxConcurrent ?? agentRuntimeConfig.maxConcurrent;
+  const running = new Set<Promise<void>>();
+  let stopping = false;
+
+  const scan = async () => {
+    if (stopping) return;
+    try {
+      const resolved = await dependencies();
+      for (let slot = running.size; !stopping && slot < maxConcurrent; slot += 1) {
+        const run: Promise<void> = runNextOwnerExtraction(resolved, options)
+          .then(() => undefined)
+          .catch((error) => {
+            console.error('[owner-extraction] run failed before settlement', error);
+          })
+          .finally(() => running.delete(run));
+        running.add(run);
+      }
+    } catch (error) {
+      console.error('[owner-extraction] scan failed', error);
+    }
+  };
+  const timer = setInterval(() => void scan(), scanIntervalMs);
+  void scan();
+
+  return {
+    async stop(stopOptions) {
+      stopping = true;
+      clearInterval(timer);
+      const deadline = Date.now() + (stopOptions?.timeoutMs ?? 15_000);
+      while (running.size > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return { drained: running.size === 0, running: running.size };
+    },
+  };
 }

@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 
 import { ensureAgentSessionMaterialSchema } from '@openmaic/storage/material/pg';
-import { expect } from 'vitest';
+import { expect, vi } from 'vitest';
 
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { validateAppScene, validateAppStage } from '@/lib/document-store/validators';
@@ -31,7 +31,15 @@ import {
   resolveMaterial,
   resolvedMaterialId,
 } from '@/lib/server/agent-runtime/material-resolver';
-import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
+import {
+  runClaimedOwnerExtraction,
+  runNextOwnerExtraction,
+  startOwnerExtractionRunner,
+} from '@/lib/server/material-extraction/owner-extraction';
+import {
+  claimNextOwnerMaterialExtraction,
+  type OwnerExtractionClaim,
+} from '@/lib/persistence/owner-material-extraction';
 import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import { buildMaterialMediaTool } from '@/lib/server/agent-runtime/material-media';
 import { resolveRawMaterial } from '@/lib/server/agent-runtime/material-resolver';
@@ -817,4 +825,251 @@ export async function mediaLibraryScopeScenario(h: ExtractionHarness): Promise<v
   expect(await linksOf(h, 'ses-1')).toEqual([]);
 
   expect((await run('src-foreign', 'library')).isError).toBe(true);
+}
+
+async function entryIds(h: ExtractionHarness): Promise<string[]> {
+  const result = await h.pool.query<{ id: string }>('SELECT id FROM asset_entries ORDER BY id');
+  return result.rows.map((row) => row.id);
+}
+
+/** Queue and claim one video source of `owner`: its run allocates a transcript and a keyframe. */
+async function claimedVideo(
+  h: ExtractionHarness,
+  id: string,
+  owner = ACCOUNT,
+): Promise<OwnerExtractionClaim> {
+  await seedSource(h, id, { owner, mime: 'video/mp4', bytes: Buffer.from(`mp4-${id}`) });
+  await ensure(h, id, owner);
+  return (await claimNextOwnerMaterialExtraction(h.pool as never, {
+    leaseTtlMs: 60_000,
+    now: h.clock.now,
+    createToken: () => `token-${id}`,
+  }))!;
+}
+
+/**
+ * The run's persistence, with `after(n)` called once the n-th transaction of
+ * the run has committed (the transcript's allocation is the first, the
+ * keyframe's the second, the publication the third, a release the fourth).
+ * `fail(n)` makes the n-th transaction fail as the run sees it: `before` it
+ * runs, so nothing commits, or `after` it committed, the way a connection
+ * dropped while COMMIT's answer was in flight looks.
+ */
+function persistenceWith(
+  h: ExtractionHarness,
+  after: (transaction: number) => Promise<void>,
+  fail: (transaction: number) => 'before' | 'after' | undefined = () => undefined,
+) {
+  let transactions = 0;
+  return {
+    ...h.provider,
+    withTransaction: async <T>(body: (tx: never) => Promise<T>): Promise<T> => {
+      transactions += 1;
+      const failure = fail(transactions);
+      if (failure === 'before') throw new Error('connection reset');
+      const result = await h.provider.withTransaction(body as never);
+      await after(transactions);
+      if (failure === 'after') throw new Error('connection reset');
+      return result as T;
+    },
+  };
+}
+
+/**
+ * A run refused for certain removes what it allocated: the source deleted
+ * after both outputs were stored (the publication is refused), even when a
+ * claim moved the owner to the account in between, and a claim found lost
+ * before publishing. A publication whose outcome is uncertain keeps them.
+ */
+export async function releaseRefusedOutputsScenario(h: ExtractionHarness): Promise<void> {
+  const uploads = await entryIds(h);
+
+  // Deleted after the outputs were allocated, with a claim of the owner first.
+  const deleted = await claimedVideo(h, 'vid-deleted', ANON);
+  const deletedRun = persistenceWith(h, async (transaction) => {
+    if (transaction === 1) await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+    if (transaction === 2) {
+      await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['vid-deleted']);
+    }
+  });
+  expect(
+    await runClaimedOwnerExtraction(deleted, h.deps({ persistence: deletedRun as never })),
+  ).toBe('not-authorized');
+  expect(await entryIds(h)).toEqual(uploads);
+
+  // The claim is found lost after the outputs were allocated.
+  const lost = await claimedVideo(h, 'vid-lost');
+  const state = { lost: false };
+  const lostRun = persistenceWith(h, async (transaction) => {
+    if (transaction === 2) state.lost = true;
+  });
+  expect(
+    await runClaimedOwnerExtraction(lost, h.deps({ persistence: lostRun as never }), state),
+  ).toBe('not-authorized');
+  expect(await entryIds(h)).toEqual(uploads);
+
+  // The publication fails before it ran, as far as the run knows it may have
+  // committed: keep both.
+  const uncertain = await claimedVideo(h, 'vid-uncertain');
+  const uncertainRun = persistenceWith(
+    h,
+    async () => undefined,
+    (n) => (n === 3 ? 'before' : undefined),
+  );
+  await expect(
+    runClaimedOwnerExtraction(uncertain, h.deps({ persistence: uncertainRun as never })),
+  ).rejects.toThrow('connection reset');
+  const kept = (await entryIds(h)).filter((id) => !uploads.includes(id));
+  expect(kept).toHaveLength(2);
+}
+
+/**
+ * The edges of releasing: a publication that committed and then lost its
+ * answer keeps its entries and roots; a root call refused because an output
+ * is gone removes the rest; a release that fails only warns and keeps the
+ * refusal the run reported.
+ */
+export async function releaseEdgesScenario(h: ExtractionHarness): Promise<void> {
+  // Committed, then the answer was lost: published, so nothing is removed.
+  const committed = await claimedVideo(h, 'vid-committed');
+  const committedRun = persistenceWith(
+    h,
+    async () => undefined,
+    (n) => (n === 3 ? 'after' : undefined),
+  );
+  await expect(
+    runClaimedOwnerExtraction(committed, h.deps({ persistence: committedRun as never })),
+  ).rejects.toThrow('connection reset');
+  const published = (await stateOf(h, 'vid-committed')).extraction_result!;
+  expect((await stateOf(h, 'vid-committed')).status).toBe('done');
+  const publishedIds = [published.text.assetId, ...published.derivatives.map((d) => d.assetId)];
+  for (const id of publishedIds) expect(await entryExists(h, id)).toBe(true);
+  const roots = await h.pool.query<{ asset_id: string }>(
+    `SELECT asset_id FROM asset_root_refs WHERE asset_id = ANY($1::text[])`,
+    [publishedIds],
+  );
+  expect(roots.rows).toHaveLength(2);
+
+  // The keyframe's entry is gone before the publication: the root call
+  // refuses it, and the transcript's entry is removed too.
+  const before = await entryIds(h);
+  const refused = await claimedVideo(h, 'vid-refused');
+  const refusedRun = persistenceWith(h, async (n) => {
+    if (n === 2) {
+      const newest = (await entryIds(h)).filter((id) => !before.includes(id));
+      // Both outputs are allocated; drop one of them.
+      await h.pool.query('DELETE FROM asset_entries WHERE id = $1', [newest[0]]);
+    }
+  });
+  await expect(
+    runClaimedOwnerExtraction(refused, h.deps({ persistence: refusedRun as never })),
+  ).rejects.toThrow('no longer stored');
+  expect(await entryIds(h)).toEqual(before);
+
+  // The release itself fails: the run still reports the refusal, the entries
+  // are left to expire, and the failure is logged.
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    const failing = await claimedVideo(h, 'vid-release-fails');
+    const failingRun = persistenceWith(
+      h,
+      async (n) => {
+        if (n === 2) {
+          await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', [
+            'vid-release-fails',
+          ]);
+        }
+      },
+      (n) => (n === 4 ? 'before' : undefined),
+    );
+    expect(
+      await runClaimedOwnerExtraction(failing, h.deps({ persistence: failingRun as never })),
+    ).toBe('not-authorized');
+    expect((await entryIds(h)).filter((id) => !before.includes(id))).toHaveLength(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('vid-release-fails'),
+      expect.any(Error),
+    );
+  } finally {
+    warn.mockRestore();
+  }
+}
+
+async function until(check: () => Promise<boolean>, budgetMs = 10_000): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('condition not met in time');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * The owner-extraction runner extracts what is queued, and its stop waits for
+ * a run under way: shutdown closes the pool only after the run published.
+ */
+export async function ownerRunnerScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'src-a');
+  await seedSource(h, 'src-b');
+  await ensure(h, 'src-a');
+  await ensure(h, 'src-b');
+  const runner = startOwnerExtractionRunner({
+    dependencies: async () => h.deps(),
+    scanIntervalMs: 10,
+    maxConcurrent: 2,
+  });
+  try {
+    await until(async () => (await stateOf(h, 'src-a')).status === 'done');
+    await until(async () => (await stateOf(h, 'src-b')).status === 'done');
+  } finally {
+    await runner.stop();
+  }
+
+  // A run held inside its provider when stop is called.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const original = h.documentExtract.getMockImplementation() as (
+    ...args: unknown[]
+  ) => Promise<unknown>;
+  h.documentExtract.mockImplementationOnce(async (...args: unknown[]) => {
+    await held;
+    return original(...args);
+  });
+  await seedSource(h, 'src-slow');
+  await ensure(h, 'src-slow');
+  const second = startOwnerExtractionRunner({
+    dependencies: async () => h.deps(),
+    scanIntervalMs: 10,
+  });
+  await until(async () => (await stateOf(h, 'src-slow')).status === 'running');
+  let stopped = false;
+  const stopping = second.stop().then((outcome) => {
+    stopped = true;
+    return outcome;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(stopped).toBe(false);
+  release();
+  expect(await stopping).toEqual({ drained: true, running: 0 });
+  expect((await stateOf(h, 'src-slow')).status).toBe('done');
+
+  // A provider that does not return before the wait runs out: stop says the
+  // runner is not drained instead of returning as if it were.
+  let releaseStuck!: () => void;
+  const stuck = new Promise<void>((resolve) => (releaseStuck = resolve));
+  h.documentExtract.mockImplementationOnce(async (...args: unknown[]) => {
+    await stuck;
+    return original(...args);
+  });
+  await seedSource(h, 'src-stuck');
+  await ensure(h, 'src-stuck');
+  const third = startOwnerExtractionRunner({
+    dependencies: async () => h.deps(),
+    scanIntervalMs: 10,
+  });
+  await until(async () => (await stateOf(h, 'src-stuck')).status === 'running');
+  expect(await third.stop({ timeoutMs: 100 })).toEqual({ drained: false, running: 1 });
+  expect((await stateOf(h, 'src-stuck')).status).toBe('running');
+  // Let the stuck run finish so the test leaves nothing behind.
+  releaseStuck();
+  await until(async () => (await stateOf(h, 'src-stuck')).status === 'done');
 }
