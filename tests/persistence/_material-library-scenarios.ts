@@ -13,6 +13,10 @@ import { ensureAgentSessionMaterialSchema } from '@openmaic/storage/material/pg'
 import { expect } from 'vitest';
 
 import { claimOwner } from '@/lib/persistence/owner-claims';
+import { validateAppScene, validateAppStage } from '@/lib/document-store/validators';
+import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
+import { createOwnerBoundDocumentStore } from '@/lib/persistence/owner-bound-document-store';
+import { withMaterialRoots } from '@/lib/persistence/material-roots';
 import {
   allocateOwnerMaterialBytes,
   publishOwnerMaterialUpload,
@@ -47,7 +51,9 @@ import {
   ANON,
   OTHER,
   bootExtractionHarness,
+  collectEntries,
   ensure,
+  entryExists,
   seedSource,
   stateOf,
   type ExtractionHarness,
@@ -617,4 +623,198 @@ export async function rawConsumersScenario(h: LibraryHarness): Promise<void> {
   } as never)) as { content: Array<{ text: string }>; isError?: boolean };
   expect(result.content[0]!.text).toBe('Media bytes are unavailable.');
   expect(result.isError).toBe(true);
+}
+
+interface CourseEntryRow {
+  principal: string;
+  bytes: number | string;
+  committed_at: unknown;
+  expires_at: unknown;
+  unreferenced_at: unknown;
+}
+
+async function entryOf(h: ExtractionHarness, assetId: string): Promise<CourseEntryRow> {
+  const result = await h.pool.query<CourseEntryRow>(
+    `SELECT entries.principal, blobs.byte_size AS bytes, entries.committed_at,
+            entries.expires_at, entries.unreferenced_at
+       FROM asset_entries AS entries
+       JOIN asset_blobs AS blobs ON blobs.content_hash = entries.content_hash
+      WHERE entries.id = $1`,
+    [assetId],
+  );
+  return result.rows[0]!;
+}
+
+/** A course whose one slide shows an image element naming `src`, as patch_stage writes it. */
+function courseNaming(stageId: string, src: string) {
+  return {
+    stage: { id: stageId, name: 'Course', createdAt: 1, updatedAt: 1 },
+    scenes: [
+      {
+        id: 'scene-1',
+        stageId,
+        order: 1,
+        title: 'Cells',
+        type: 'slide',
+        createdAt: 1,
+        updatedAt: 1,
+        content: {
+          type: 'slide',
+          canvas: {
+            id: 'canvas-1',
+            viewportSize: 1000,
+            viewportRatio: 16 / 9,
+            theme: {
+              backgroundColor: '#ffffff',
+              themeColors: ['#2563eb'],
+              fontColor: '#111827',
+              fontName: 'Inter',
+            },
+            elements: [
+              { id: 'img-1', type: 'image', src, left: 0, top: 0, width: 100, height: 100 },
+            ],
+          },
+        },
+      },
+    ],
+    outline: {
+      outlines: [],
+      requirement: 'Course',
+      generationComplete: false,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  };
+}
+
+/**
+ * Copy-on-use (RFC #1716 §4): every use of a material in a course allocates
+ * a pending entry of its own in the owner's partition, never the material's
+ * entry, and each counts in full. The course write naming it commits it with
+ * a reference of its own, so withdrawing the material's root -- what
+ * deleting the material does -- leaves the course's copy committed and
+ * readable while the material's entry becomes unreferenced.
+ */
+export async function copyOnUseScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  const image = Buffer.from('fake-png-for-a-course');
+  await seedPoolSource(h, 'src-img', image, 'image/png');
+  await attachOwnerMaterialsToSession(h.provider, {
+    sessionId: 'ses-1',
+    ownerId: ACCOUNT,
+    materialIds: ['src-img'],
+  });
+  const libraryEntry = (
+    await h.pool.query<{ asset_id: string }>(
+      `SELECT asset_id FROM owner_material WHERE id = 'src-img'`,
+    )
+  ).rows[0]!.asset_id;
+
+  // The owner's logical usage, as the pool's quota check computes it.
+  const usage = async () =>
+    Number(
+      (
+        await h.pool.query<{ used: string }>(
+          `SELECT COALESCE(SUM(blobs.byte_size), 0)::text AS used
+             FROM asset_entries AS entries
+             JOIN asset_blobs AS blobs ON blobs.content_hash = entries.content_hash
+            WHERE entries.principal = $1 AND entries.unreferenced_at IS NULL`,
+          [assetPrincipalForOwner(ACCOUNT).key],
+        )
+      ).rows[0]!.used,
+    );
+  const before = await usage();
+  const media = buildMaterialMediaTool({ sessionId: 'ses-1', ownerId: ACCOUNT });
+  const copyIntoCourse = async () =>
+    (
+      (await media.execute('call', {
+        materialId: 'src-img',
+        stageId: 'stage-course',
+      } as never)) as {
+        details: { src: string };
+      }
+    ).details.src;
+  const first = await copyIntoCourse();
+  const second = await copyIntoCourse();
+
+  expect(first).toMatch(/^ast_/);
+  expect(new Set([first, second, libraryEntry]).size).toBe(3);
+  // The same bytes are stored once, but every use counts in full.
+  expect(await usage()).toBe(before + 2 * image.byteLength);
+  for (const id of [first, second]) {
+    const entry = await entryOf(h, id);
+    expect(entry.principal).toBe(assetPrincipalForOwner(ACCOUNT).key);
+    expect(Number(entry.bytes)).toBe(image.byteLength);
+    // Pending: nothing names it yet, and it carries the deadline it expires on.
+    expect(entry.committed_at).toBeNull();
+    expect(entry.expires_at).not.toBeNull();
+  }
+
+  const courses = createOwnerBoundDocumentStore({
+    pool: h.pool as never,
+    ownerId: ACCOUNT,
+    validateScene: validateAppScene,
+    validateStage: validateAppStage,
+  });
+  await courses.saveDocument(courseNaming('stage-course', first) as never);
+  const refs = await h.pool.query<{ asset_id: string }>(
+    `SELECT asset_id FROM document_asset_refs WHERE stage_id = 'stage-course'`,
+  );
+  expect(refs.rows.map((row) => row.asset_id)).toEqual([first]);
+  expect((await entryOf(h, first)).committed_at).not.toBeNull();
+  // The copy no page names stays pending until it expires.
+  expect((await entryOf(h, second)).committed_at).toBeNull();
+
+  // What deleting the material does to its bytes: its root is withdrawn.
+  await withMaterialRoots(
+    h.provider,
+    { ownerId: ACCOUNT, fence: 'request', materialIds: ['src-img'] },
+    ({ changeRoots }) =>
+      changeRoots({ remove: [{ materialId: 'src-img', assetIds: [libraryEntry] }] }),
+  );
+  expect((await entryOf(h, libraryEntry)).unreferenced_at).not.toBeNull();
+  const course = await entryOf(h, first);
+  expect(course.committed_at).not.toBeNull();
+  expect(course.unreferenced_at).toBeNull();
+  const read = await h.provider.assetStore.resolve(assetPrincipalForOwner(ACCOUNT), first);
+  expect(Buffer.from(read!.bytes)).toEqual(image);
+
+  // The collector, past the pending deadline and the grace period: the copy
+  // no page named and the material's withdrawn entry are reclaimed; the
+  // course's copy stays and still reads.
+  await collectEntries(h, 2 * 24 * 60 * 60 * 1_000);
+  expect(await entryExists(h, second)).toBe(false);
+  expect(await entryExists(h, libraryEntry)).toBe(false);
+  expect(await entryExists(h, first)).toBe(true);
+  const after = await h.provider.assetStore.resolve(assetPrincipalForOwner(ACCOUNT), first);
+  expect(Buffer.from(after!.bytes)).toEqual(image);
+}
+
+/**
+ * Library scope reaches an unattached material of the owner and leaves it
+ * unattached; session scope does not reach it; another owner's material is
+ * reached by neither.
+ */
+export async function mediaLibraryScopeScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  await seedPoolSource(h, 'src-loose', Buffer.from('fake-png-loose'), 'image/png');
+  await seedSource(h, 'src-foreign', { owner: OTHER, mime: 'image/png' });
+  const media = buildMaterialMediaTool({ sessionId: 'ses-1', ownerId: ACCOUNT });
+  const run = async (materialId: string, scope?: 'session' | 'library') =>
+    (await media.execute('call', {
+      materialId,
+      stageId: 'stage-course',
+      ...(scope ? { scope } : {}),
+    } as never)) as { isError?: boolean; details: Record<string, unknown> };
+
+  const unattached = await run('src-loose');
+  expect(unattached.isError).toBe(true);
+  expect(unattached.details).toEqual({ materialId: 'src-loose' });
+
+  const fromLibrary = await run('src-loose', 'library');
+  expect(fromLibrary.isError).toBeUndefined();
+  expect(fromLibrary.details.src).toMatch(/^ast_/);
+  expect(await linksOf(h, 'ses-1')).toEqual([]);
+
+  expect((await run('src-foreign', 'library')).isError).toBe(true);
 }

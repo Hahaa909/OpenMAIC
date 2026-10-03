@@ -3,7 +3,7 @@
  * `import_pptx`, `clip_audio` and `use_material_media` each run to success
  * on a material attached by id, through the production resolver and readers
  * over PGlite. Only what lies outside the material library is faked: the
- * PPTX parser, the ffmpeg clip and the classroom media write.
+ * PPTX parser and the ffmpeg clip.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -11,16 +11,8 @@ import { PGlite } from '@electric-sql/pglite';
 import type { PPTTextElement, Slide } from '@openmaic/dsl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  persist: vi.fn(async (input: { stageId: string; prefix?: string }) => {
-    return `/api/classroom-media/${input.stageId}/media/${input.prefix ?? 'media'}.png`;
-  }),
-}));
-vi.mock('@/lib/server/classroom-media-bytes', () => ({
-  persistClassroomMediaBytes: mocks.persist,
-}));
-
 import type { AppDocumentOutline } from '@/lib/document-store/persistence-types';
+import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
 import {
   buildDslCourseToolset,
@@ -170,7 +162,6 @@ describe('consumers of a linked library source (PGlite)', () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
-    mocks.persist.mockClear();
     await db?.close();
     db = undefined;
   });
@@ -242,27 +233,70 @@ describe('consumers of a linked library source (PGlite)', () => {
     });
   });
 
-  it('places a linked image in a page', async () => {
+  it('copies a linked image into the course as a new pending entry', async () => {
     const h = await boot();
     const image = Buffer.from('fake-png-bytes');
     await seedPoolSource(h, 'src-img', image, 'image/png');
     await attach(h, ['src-img']);
 
-    const media = buildMaterialMediaTool({ sessionId: 'ses-1' });
+    const media = buildMaterialMediaTool({ sessionId: 'ses-1', ownerId: ACCOUNT });
     const result = (await media.execute('call', {
       materialId: 'src-img',
       stageId: 'stage-1',
     } as never)) as ToolResult;
 
     expect(result.isError).toBeUndefined();
+    const src = result.details.src as string;
+    expect(src).toMatch(/^ast_/);
     expect(result.details).toMatchObject({
       materialId: 'src-img',
       mimeType: 'image/png',
       bytes: image.byteLength,
     });
-    expect(mocks.persist).toHaveBeenCalledWith(
-      expect.objectContaining({ stageId: 'stage-1', bytes: image, mime: 'image/png' }),
+    const read = await h.provider.assetStore.resolve(assetPrincipalForOwner(ACCOUNT), src);
+    expect(Buffer.from(read!.bytes)).toEqual(image);
+  });
+
+  it('refuses a stage the run cannot write, before reading the material', async () => {
+    const h = await boot();
+    await seedPoolSource(h, 'src-img', Buffer.from('fake-png-bytes'), 'image/png');
+    await attach(h, ['src-img']);
+
+    const media = buildDslCourseToolset({
+      stageAccess: async () => ({ kind: 'foreign' as const }),
+      store: stageStore(),
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      onCheckpoint: () => {},
+    }).find((candidate) => candidate.name === 'use_material_media')!;
+    const result = (await media.execute('call', {
+      materialId: 'src-img',
+      stageId: 'stage-other',
+    } as never)) as ToolResult;
+
+    expect(result.isError).toBe(true);
+    const entries = await h.pool.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM asset_entries',
     );
+    // Only the upload's own entry.
+    expect(Number(entries.rows[0]!.count)).toBe(1);
+  });
+
+  it('reports a full asset store to the model without a fallback write', async () => {
+    const h = await boot();
+    await seedPoolSource(h, 'src-img', Buffer.from('fake-png-bytes'), 'image/png');
+    await attach(h, ['src-img']);
+    const media = buildMaterialMediaTool({
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      storeAsset: async () => ({ status: 'refused', reason: 'storage-full' }),
+    });
+    const result = (await media.execute('call', {
+      materialId: 'src-img',
+      stageId: 'stage-1',
+    } as never)) as ToolResult;
+    expect(result.isError).toBe(true);
+    expect(result.details).toEqual({ materialId: 'src-img', status: 'storage-full' });
   });
 
   it('reports a linked .pptx whose bytes are unavailable as unavailable, not as another type', async () => {

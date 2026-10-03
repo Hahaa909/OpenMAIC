@@ -12,6 +12,7 @@ import {
   attachByIdScenario,
   attachRefusalScenario,
   bootLibraryHarness,
+  copyOnUseScenario,
   deletedThroughLinkScenario,
   existingCopyScenario,
   libraryListingScenario,
@@ -19,6 +20,7 @@ import {
   libraryReachScenario,
   libraryToolFlowScenario,
   linkAcrossClaimScenario,
+  mediaLibraryScopeScenario,
   rawConsumersScenario,
   resolverScenario,
   textAcrossClaimScenario,
@@ -106,6 +108,16 @@ describe('material library (PGlite)', () => {
 
     it('reads original bytes for every consumer, whatever kind of row, and says when they are unavailable', async () => {
       await rawConsumersScenario(await boot());
+    });
+  });
+
+  describe('courses', () => {
+    it('copies a material into a course as an entry of its own', async () => {
+      await copyOnUseScenario(await boot());
+    });
+
+    it('uses an unattached material in library scope without attaching it', async () => {
+      await mediaLibraryScopeScenario(await boot());
     });
   });
 

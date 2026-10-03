@@ -933,7 +933,7 @@ export async function heartbeatLossScenario(h: ExtractionHarness): Promise<void>
 }
 
 /** The entry pass of the app's collector, run as if `aheadMs` had passed. */
-async function collectEntries(h: ExtractionHarness, aheadMs = 60_000): Promise<void> {
+export async function collectEntries(h: ExtractionHarness, aheadMs = 60_000): Promise<void> {
   const collector = new AssetCollector(
     h.pool as never,
     await resolveConfiguredAssetByteStore(h.pool as never),
@@ -949,7 +949,7 @@ async function collectEntries(h: ExtractionHarness, aheadMs = 60_000): Promise<v
   await collector.collectPass();
 }
 
-async function entryExists(h: ExtractionHarness, assetId: string): Promise<boolean> {
+export async function entryExists(h: ExtractionHarness, assetId: string): Promise<boolean> {
   const found = await h.pool.query('SELECT 1 FROM asset_entries WHERE id = $1', [assetId]);
   return found.rows.length > 0;
 }
