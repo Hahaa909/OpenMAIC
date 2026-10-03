@@ -7,6 +7,8 @@
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { ownerLibraryUsage } from '@/lib/persistence/material-library';
 import type { OwnerMaterialEntry } from '@/lib/persistence/session-material-links';
+import type { ResolvedMaterial } from '@/lib/server/agent-runtime/material-resolver';
+import { publicMaterialView } from '@/lib/server/agent-runtime/session-materials';
 import type { Queryable } from '@openmaic/storage/document/pg';
 import { resolveAssetQuotaBytes } from '@/lib/persistence/asset-quota';
 import { agentRuntimeConfig } from '@/lib/server/agent-runtime/config';
@@ -62,6 +64,17 @@ export function libraryMaterialView(
       : {}),
     createdAt: new Date(entry.createdAt).toISOString(),
   };
+}
+
+/**
+ * The public view of one material a conversation reaches, for the session
+ * material routes: a session row as it always was, an owner material as the
+ * library shows it.
+ */
+export function sessionScopeMaterialView(material: ResolvedMaterial): Record<string, unknown> {
+  return material.origin === 'session'
+    ? publicMaterialView(material.record)
+    : { ...libraryMaterialView(material.entry) };
 }
 
 export interface LibraryLimits {

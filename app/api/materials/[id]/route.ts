@@ -1,11 +1,12 @@
 /**
- * GET /api/materials/[id]?sessionId= — one owned session's material, in the
- * same public projection the list and the agent's `list_materials` tool use.
+ * GET /api/materials/[id]?sessionId= — one material an owned session
+ * reaches (its own row, or a library material its links reach), in the same
+ * public projection the list uses.
  *
  * Materials are session-scoped; the client names the session and the session's
  * owner row is the authorization. A foreign or missing session, and a material
- * id that does not exist or belongs to another session, all answer the same
- * plain 404 (no existence oracle).
+ * id the session does not reach, all answer the same plain 404 (no existence
+ * oracle).
  *
  * PATCH /api/materials/[id] `{ name }` renames a source of the request
  * owner's library: its display name, keeping the uploaded file name;
@@ -18,11 +19,9 @@ import type { NextRequest } from 'next/server';
 
 import { isAgentRuntimeConfigured } from '@/lib/config/feature-flags';
 import { apiError } from '@/lib/server/api-response';
-import {
-  getSessionMaterial,
-  publicMaterialView,
-  resolveOwnedSession,
-} from '@/lib/server/agent-runtime/session-materials';
+import { resolveOwnedSession } from '@/lib/server/agent-runtime/session-materials';
+import { resolveMaterial } from '@/lib/server/agent-runtime/material-resolver';
+import { sessionScopeMaterialView } from '@/lib/server/materials/library-view';
 import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
 import { withRequestOwner } from '@/lib/server/identity/with-owner';
 import { renameMaterial } from '@/lib/persistence/material-library';
@@ -48,9 +47,9 @@ export async function GET(req: NextRequest, { params }: Params) {
     const session = await resolveOwnedSession(sessionId, ownerId);
     if (!session) return ownerNotFound(responseHeaders);
     const { id } = await params;
-    const material = await getSessionMaterial(sessionId, id);
+    const material = await resolveMaterial(sessionId, id);
     if (!material) return ownerNotFound(responseHeaders);
-    return ownerJson({ material: publicMaterialView(material) }, 200, responseHeaders);
+    return ownerJson({ material: sessionScopeMaterialView(material) }, 200, responseHeaders);
   });
 }
 

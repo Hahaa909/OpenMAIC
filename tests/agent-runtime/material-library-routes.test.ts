@@ -23,7 +23,11 @@ vi.mock('@/lib/server/identity/resolve', async () =>
   (await import('../helpers/owner-resolution-mock')).ownerResolveModule(() => mocks.ownerId),
 );
 
-import { PATCH as renameMaterialRoute } from '@/app/api/materials/[id]/route';
+import {
+  GET as sessionMaterialRoute,
+  PATCH as renameMaterialRoute,
+} from '@/app/api/materials/[id]/route';
+import { GET as sessionMaterialsRoute } from '@/app/api/materials/route';
 import {
   DELETE as deleteFolderRoute,
   PATCH as renameFolderRoute,
@@ -50,6 +54,7 @@ import {
   ANON,
   OTHER,
   bootLibraryHarness,
+  seedCopy,
   seedDerivative,
   seedSession,
   type ExtractionScenarioPool,
@@ -418,6 +423,111 @@ describe('material library routes and tools (PGlite)', () => {
     } finally {
       watcher.stop();
     }
+  });
+
+  it('reports a settlement during a wait that first saw the source in progress', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    await seedSession(h, 'ses-1');
+    // Started by an earlier run: this run never extracted it, it only waits.
+    await ensureOwnerMaterialExtraction(h.provider.withTransaction, ACCOUNT, 'src-a');
+    const settled: string[][] = [];
+    const watcher = startExtractionWatcher({
+      intervalMs: 60_000,
+      onSettled: (materialIds) => settled.push(materialIds),
+    });
+    const wait = buildMaterialTools({
+      sessionId: 'ses-1',
+      // The worker finishes while the wait is between two looks.
+      waitForDelay: async () => {
+        await runNextOwnerExtraction(h.deps());
+      },
+      extractionWatcher: watcher,
+    }).find((candidate) => candidate.name === 'wait_for_materials')!;
+    try {
+      const waited = (await wait.execute('call', {
+        materialIds: ['src-a'],
+        scope: 'library',
+        timeoutSec: 1,
+      } as never)) as { details: { complete: boolean } };
+      expect(waited.details.complete).toBe(true);
+      expect(settled).toEqual([['src-a']]);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  /** ses-1 holds a pre-link copy and links src-a (with img-a1); src-loose is not attached. */
+  async function seedLinkedConversation(h: LibraryHarness): Promise<void> {
+    await seedSession(h, 'ses-1');
+    await seedSession(h, 'ses-other', OTHER);
+    await seedSource(h, 'src-a');
+    await seedSource(h, 'src-loose');
+    await seedDerivative(h, 'img-a1', 'src-a');
+    await seedCopy(h, 'ses-1', 'mat_copy', null);
+    await attachOwnerMaterialsToSession(h.provider, {
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      materialIds: ['src-a'],
+    });
+  }
+
+  it('lists a conversation’s linked materials after its own rows, on one cursor', async () => {
+    await seedLinkedConversation(await boot());
+    const list = async (query: string) => {
+      const response = await sessionMaterialsRoute(
+        request('GET', `/api/materials?sessionId=ses-1${query}`),
+      );
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { materials: Array<Record<string, unknown>> }).materials;
+    };
+
+    const all = await list('');
+    expect(all.map((m) => m.materialId)).toEqual(['mat_copy', 'src-a', 'img-a1']);
+    expect(all[1]).toMatchObject({ kind: 'source', extraction: { status: 'idle' } });
+    expect(all[2]).toMatchObject({ kind: 'image', derivedFrom: 'src-a' });
+    // Pool pointers, object keys and digests stay on the server.
+    for (const material of all) {
+      for (const key of ['assetId', 'ossKey', 'sha256', 'ownerId', 'rawAssetId', 'textAssetId']) {
+        expect(material).not.toHaveProperty(key);
+      }
+    }
+    // One cursor pages across both kinds of row.
+    const pages: unknown[] = [];
+    let before = '';
+    for (let page = 0; page < 4; page += 1) {
+      const rows = await list(`&limit=1${before ? `&before=${before}` : ''}`);
+      pages.push(rows.map((m) => m.materialId));
+      if (rows.length === 0) break;
+      before = String(rows[0]!.materialId);
+    }
+    expect(pages).toEqual([['mat_copy'], ['src-a'], ['img-a1'], []]);
+    expect(await list('&limit=2&before=missing')).toEqual([]);
+    expect(
+      (await sessionMaterialsRoute(request('GET', '/api/materials?sessionId=ses-other'))).status,
+    ).toBe(404);
+  });
+
+  it('reads one linked material of a conversation by its id', async () => {
+    await seedLinkedConversation(await boot());
+    const read = (id: string, sessionId = 'ses-1') =>
+      sessionMaterialRoute(
+        request('GET', `/api/materials/${id}?sessionId=${sessionId}`),
+        params(id),
+      );
+
+    const linked = await read('src-a');
+    expect(linked.status).toBe(200);
+    const { material } = (await linked.json()) as { material: Record<string, unknown> };
+    expect(material).toMatchObject({ materialId: 'src-a', kind: 'source' });
+    for (const key of ['assetId', 'ossKey', 'sha256', 'ownerId']) {
+      expect(material).not.toHaveProperty(key);
+    }
+    expect((await read('img-a1')).status).toBe(200);
+    expect((await read('mat_copy')).status).toBe(200);
+    // Unattached, or another owner's conversation: the same 404.
+    expect((await read('src-loose')).status).toBe(404);
+    expect((await read('src-a', 'ses-other')).status).toBe(404);
   });
 
   it('lists the owner’s library with the limits and usage uploads are held to', async () => {

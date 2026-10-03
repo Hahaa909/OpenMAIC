@@ -936,27 +936,28 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         const complete = materials.every(
           (material) => material.status === 'done' || material.status === 'failed',
         );
+        // A library source still going is watched as soon as a look sees it,
+        // so its settlement is reported once, whether this wait sees it or
+        // the agent moves on without waiting again.
+        const owned = resolved.flatMap((material) =>
+          material.origin === 'owner' ? [material.entry] : [],
+        );
+        deps.extractionWatcher?.watch(
+          owned
+            .filter(
+              (entry) =>
+                entry.extraction?.status === 'pending' || entry.extraction?.status === 'running',
+            )
+            .map((entry) => entry.id),
+        );
         const remainingMs = deadline - now();
         const timedOut = !complete && remainingMs <= 0;
         if (requiresExtraction || complete || timedOut) {
-          // Settled sources are reported once, through the watcher; ones still
-          // going are watched, so their settlement is reported even if the
-          // agent does not wait again.
-          const owned = resolved.flatMap((material) =>
-            material.origin === 'owner' ? [material.entry] : [],
-          );
+          // Settled sources are reported through the watcher, once.
           const isSettled = (status: string | undefined) =>
             status === 'done' || status === 'failed';
           deps.extractionWatcher?.settled(
             owned.filter((entry) => isSettled(entry.extraction?.status)).map((entry) => entry.id),
-          );
-          deps.extractionWatcher?.watch(
-            owned
-              .filter(
-                (entry) =>
-                  entry.extraction?.status === 'pending' || entry.extraction?.status === 'running',
-              )
-              .map((entry) => entry.id),
           );
           const summary = {
             complete,
