@@ -335,15 +335,18 @@ export async function twoConversationsOneExtractionScenario(h: ExtractionHarness
   const result = state.extraction_result!;
   expect(result.revision).toEqual(expect.any(String));
   expect(result.extractor).toEqual({ id: 'test-doc', version: '1', options: {} });
-  // The text is kept as the provider wrote it, image reference included, and
-  // document images are not stored.
+  // The fake provider's image is not a readable image, so it is not kept,
+  // and the text's reference to it becomes its alt text rather than a file
+  // nothing holds. (Kept images: documentImagesScenario.)
   expect(result.derivatives).toEqual([]);
   expect(await rootsOf(h, 'src-shared')).toEqual([result.text.assetId]);
   const text = await h.provider.assetStore.resolve(
     { key: `owner:${ACCOUNT}` },
     result.text.assetId as never,
   );
-  expect(Buffer.from(text!.bytes).toString()).toContain('![](images/fig-1.jpg)');
+  const stored = Buffer.from(text!.bytes).toString();
+  expect(stored).toContain('[image]');
+  expect(stored).not.toContain('images/fig-1.jpg');
 
   // A failed source restarts, with a token no earlier claim held.
   await seedSource(h, 'src-retry');

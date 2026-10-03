@@ -29,10 +29,10 @@
  * this does not do: cancel a provider call (none of them takes a signal) or
  * bound how long one runs. A late result is refused when it tries to publish.
  *
- * Document extraction keeps the text only, as the session chain does: images
- * a document provider returns are not stored, and the text is kept as the
- * provider wrote it, including any image references in it. Media extraction
- * keeps its transcript and its images.
+ * Document extraction keeps its text and the images the provider found, as
+ * derivatives; the text's references to them name the derivatives
+ * (`./document-images.ts`). Media extraction keeps its transcript and its
+ * images. The session chain still keeps document text only.
  */
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -68,12 +68,12 @@ import {
   resolveServerASRProviderId,
 } from '@/lib/server/provider-config';
 
+import { ownerDocumentOutcome } from './document-images';
 import { isTransientExtractionError, MaterialExtractionError } from './errors';
 import {
   decodeMediaAssetData,
   documentExtractionFailure,
   documentFailureLine,
-  documentOutcome,
   extractWithDocumentProvider,
   planSourceExtraction,
   plannedExtractor,
@@ -351,6 +351,7 @@ export async function runClaimedOwnerExtraction(
         sha256: sha256Hex(imageBytes),
         ...(image.pageNumber === undefined ? {} : { pageNumber: image.pageNumber }),
         ...(image.timeMs === undefined ? {} : { timeMs: image.timeMs }),
+        ...(image.key === undefined ? {} : { key: image.key }),
       });
     }
   } catch (error) {
@@ -458,7 +459,7 @@ async function extractOrReuse(
     if (reused) return { kind: 'reused', outcome: reused };
     try {
       const artifact = await extractWithDocumentProvider(provider, plan.input);
-      return { kind: 'extracted', outcome: documentOutcome(artifact, provider) };
+      return { kind: 'extracted', outcome: await ownerDocumentOutcome(artifact, provider) };
     } catch (error) {
       errors.push(documentFailureLine(provider, error));
       failures.push(error);

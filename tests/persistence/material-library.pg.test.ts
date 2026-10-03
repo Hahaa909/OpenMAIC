@@ -17,6 +17,8 @@ import {
   bootLibraryHarness,
   copyOnUseScenario,
   deletedThroughLinkScenario,
+  documentImagesQuotaScenario,
+  documentImagesScenario,
   existingCopyScenario,
   libraryListingScenario,
   listingDerivedFieldsScenario,
@@ -42,7 +44,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
   const pools: Pool[] = [];
   let schema: string;
 
-  async function boot(): Promise<LibraryHarness> {
+  async function boot(env: Record<string, string> = {}): Promise<LibraryHarness> {
     serial += 1;
     schema = `openmaic_material_library_test_${serial}`;
     admin = new Pool({ connectionString: contractUrl });
@@ -56,6 +58,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
     });
     pools.push(pool);
     vi.stubEnv('ASSET_S3_BUCKET', '');
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     const databaseUrl = `${contractUrl}${contractUrl!.includes('?') ? '&' : '?'}application_name=material-library-${serial}`;
     vi.stubEnv('DATABASE_URL', databaseUrl);
     return bootLibraryHarness(pool as never, databaseUrl);
@@ -121,6 +124,14 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', () => {
   });
 
   describe('extraction', () => {
+    it('keeps a document’s images as derivatives and names them in its text', async () => {
+      await documentImagesScenario(await boot());
+    });
+
+    it('publishes nothing when a document’s images do not fit the quota', async () => {
+      await documentImagesQuotaScenario(await boot({ ASSET_QUOTA_BYTES: '2000' }));
+    });
+
     it('removes the outputs of a run refused for certain, and keeps them when unsure', async () => {
       await releaseRefusedOutputsScenario(await boot());
     });

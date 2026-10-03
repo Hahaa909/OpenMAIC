@@ -14,6 +14,8 @@ import {
   bootLibraryHarness,
   copyOnUseScenario,
   deletedThroughLinkScenario,
+  documentImagesQuotaScenario,
+  documentImagesScenario,
   existingCopyScenario,
   libraryListingScenario,
   listingDerivedFieldsScenario,
@@ -51,8 +53,9 @@ class PGlitePool implements ExtractionScenarioPool {
 describe('material library (PGlite)', () => {
   let db: PGlite | undefined;
 
-  async function boot(): Promise<LibraryHarness> {
+  async function boot(env: Record<string, string> = {}): Promise<LibraryHarness> {
     vi.stubEnv('ASSET_S3_BUCKET', '');
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
     const databaseUrl = `postgres://material-library-${randomUUID()}`;
     vi.stubEnv('DATABASE_URL', databaseUrl);
     db = new PGlite();
@@ -115,6 +118,14 @@ describe('material library (PGlite)', () => {
   });
 
   describe('extraction', () => {
+    it('keeps a document’s images as derivatives and names them in its text', async () => {
+      await documentImagesScenario(await boot());
+    });
+
+    it('publishes nothing when a document’s images do not fit the quota', async () => {
+      await documentImagesQuotaScenario(await boot({ ASSET_QUOTA_BYTES: '2000' }));
+    });
+
     it('removes the outputs of a run refused for certain, and keeps them when unsure', async () => {
       await releaseRefusedOutputsScenario(await boot());
     });
