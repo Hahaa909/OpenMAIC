@@ -21,7 +21,10 @@ import { isAgentRuntimeConfigured } from '@/lib/config/feature-flags';
 import { listMaterialFolders } from '@/lib/persistence/material-library';
 import { attachedMaterialIds, listOwnerLibrary } from '@/lib/persistence/session-material-links';
 import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
-import { resolveOwnedSession } from '@/lib/server/agent-runtime/session-materials';
+import {
+  getSessionMaterialQueryable,
+  resolveOwnedSession,
+} from '@/lib/server/agent-runtime/session-materials';
 import { withRequestOwner } from '@/lib/server/identity/with-owner';
 import { libraryPersistence, libraryRefusal } from '@/lib/server/materials/library-routes';
 import { libraryLimits, libraryMaterialView } from '@/lib/server/materials/library-view';
@@ -70,7 +73,8 @@ export async function GET(req: NextRequest) {
     ]);
     const attached = sessionId
       ? await attachedMaterialIds(
-          pool,
+          // The links table is provisioned with the session-material schema.
+          await getSessionMaterialQueryable(),
           sessionId,
           entries.map((entry) => entry.id),
         )

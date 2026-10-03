@@ -7,10 +7,10 @@
  * owner's `owner_material` row instead, so every conversation shares one
  * extraction of one source.
  *
- * Nothing in production calls this module yet: no runner claims from it and
- * no route or tool starts it. Its results are read by nothing until the
- * Phase 2 readers land, and RFC #1716 does not publish new extraction output
- * before then.
+ * `extract_material` ensures a source's extraction here, the owner runner
+ * (`lib/server/material-extraction/owner-extraction.ts`) claims and publishes,
+ * and the material tools read the results through the shared resolver
+ * (RFC #1716 Phase 2).
  *
  * ## State
  *
@@ -54,7 +54,7 @@
  * Every write here checks `deleted_at`: a deleted source is not claimed, and
  * a claim of one cannot heartbeat, settle or publish. Deleting a material --
  * marking it, cancelling its work and withdrawing its roots together -- is
- * the library operation's job (Phase 2), not this module's.
+ * the library's deletion operation, not this module's.
  */
 import type { Queryable, WithTransaction } from '@openmaic/storage/document/pg';
 import { encodeJson } from '@openmaic/storage/pg-json';

@@ -578,5 +578,14 @@ describe('material library routes and tools (PGlite)', () => {
         )
       ).status,
     ).toBe(404);
+    // Every route of the library, so no entry point outlives the gate.
+    const answers = await Promise.all([
+      createFolderRoute(request('POST', '/api/materials/folders', { name: 'X' })),
+      renameFolderRoute(request('PATCH', '/api/materials/folders/f', { name: 'X' }), params('f')),
+      deleteFolderRoute(request('DELETE', '/api/materials/folders/f'), params('f')),
+      renameMaterialRoute(request('PATCH', '/api/materials/m', { name: 'X' }), params('m')),
+      libraryRoute(request('GET', '/api/materials/library')),
+    ]);
+    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404]);
   });
 });

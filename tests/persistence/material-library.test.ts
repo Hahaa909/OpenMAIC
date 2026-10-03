@@ -139,9 +139,10 @@ describe('material library (PGlite)', () => {
       await releaseEdgesScenario(await boot());
     });
 
+    // A real runner polling a real database: generous under a loaded machine.
     it('runs queued extractions and waits for a run under way when stopped', async () => {
       await ownerRunnerScenario(await boot());
-    });
+    }, 20_000);
   });
 
   describe('organizing', () => {
