@@ -45,6 +45,7 @@ import {
 } from './fetch-url';
 import { assembleRunnerTools, buildRunnerCoursePrompt } from './runner-contract';
 import { buildMaterialTools, MATERIAL_TOOL_NAMES } from './material-tools';
+import { buildMaterialLibraryTools, MATERIAL_LIBRARY_TOOL_NAMES } from './material-library-tools';
 import { buildRosterTools, ROSTER_TOOL_NAMES, ROSTER_TOOLS_PROMPT } from './roster-tools';
 import {
   buildVoiceCloneTools,
@@ -1398,6 +1399,8 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
     // the tools read through the same session-scoped store on each call.
     const materials = await listSessionMaterials(id);
     const materialTools = buildMaterialTools({ sessionId: id });
+    // Organizing the knowledge base: the run's owner, never a parameter.
+    const materialLibraryTools = buildMaterialLibraryTools({ ownerId: meta.ownerId });
     // Session-scoped registered voices: register_voice appends here, and
     // list_voices / set_roster (roster-tools) read the same array, so a cloned
     // voice stays bindable within the session that registered it (in-session
@@ -1459,6 +1462,7 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
       curriculumTools,
       scenePreviewTools,
       materialTools,
+      materialLibraryTools,
       rosterTools,
       voiceCloneTools,
       personalHistoryTools,
@@ -1486,6 +1490,7 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
         ...SKILL_EDIT_TOOL_NAMES,
         ...(skillReadTool ? ['read'] : []),
         ...MATERIAL_TOOL_NAMES,
+        ...MATERIAL_LIBRARY_TOOL_NAMES,
         ...dslTools.map((tool) => tool.name),
         ...scenePreviewTools.map((tool) => tool.name),
         ...CURRICULUM_ALLOWLIST,
