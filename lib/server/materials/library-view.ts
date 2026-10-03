@@ -20,6 +20,10 @@ export interface LibraryMaterialView {
   mime?: string;
   bytes: number;
   folderId: string | null;
+  /** The folder's name, when the listing knows it. */
+  folderName?: string;
+  /** Attached to the conversation the listing was asked about, when it was asked. */
+  attached?: boolean;
   derivedFrom?: string;
   pageNumber?: number;
   timeMs?: number;
@@ -28,8 +32,12 @@ export interface LibraryMaterialView {
   createdAt: string;
 }
 
-export function libraryMaterialView(entry: OwnerMaterialEntry): LibraryMaterialView {
+export function libraryMaterialView(
+  entry: OwnerMaterialEntry,
+  context: { folderNames?: ReadonlyMap<string, string>; attached?: ReadonlySet<string> } = {},
+): LibraryMaterialView {
   const status = entry.extraction?.status ?? 'idle';
+  const folderName = entry.folderId ? context.folderNames?.get(entry.folderId) : undefined;
   return {
     materialId: entry.id,
     kind: entry.kind,
@@ -38,6 +46,8 @@ export function libraryMaterialView(entry: OwnerMaterialEntry): LibraryMaterialV
     ...(entry.mime ? { mime: entry.mime } : {}),
     bytes: entry.bytes,
     folderId: entry.folderId,
+    ...(folderName ? { folderName } : {}),
+    ...(context.attached ? { attached: context.attached.has(entry.id) } : {}),
     ...(entry.derivedFrom ? { derivedFrom: entry.derivedFrom } : {}),
     ...(entry.lineage ?? {}),
     ...(entry.kind === 'source'

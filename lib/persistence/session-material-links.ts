@@ -219,6 +219,8 @@ export interface OwnerLibraryListOptions {
   query?: string;
   /** Only sources with a successful extraction: the materials search can read. */
   withTextOnly?: boolean;
+  /** Only sources: what a conversation can attach (a derivative comes with its source). */
+  sourcesOnly?: boolean;
   /** Keyset cursor: list only materials after this id in the listing's order. */
   before?: string;
   /** Default 100, at most 200. */
@@ -283,6 +285,7 @@ async function listLibrary(
   if (options.withTextOnly) {
     where.push(`material.kind = 'source' AND material.extraction_result IS NOT NULL`);
   }
+  if (options.sourcesOnly) where.push(`material.kind = 'source'`);
   if (options.before !== undefined) {
     params.push(options.before);
     const p = `$${params.length}`;

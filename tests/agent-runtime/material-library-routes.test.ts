@@ -35,6 +35,7 @@ import {
 import { GET as libraryRoute } from '@/app/api/materials/library/route';
 import { POST as moveRoute } from '@/app/api/materials/move/route';
 import { claimOwner } from '@/lib/persistence/owner-claims';
+import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
 import { ensureOwnerMaterialExtraction } from '@/lib/persistence/owner-material-extraction';
 import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import { startExtractionWatcher } from '@/lib/server/agent-runtime/extraction-watcher';
@@ -519,6 +520,51 @@ describe('material library routes and tools (PGlite)', () => {
       createWorkbenchTranslator('en-US'),
     );
     expect(row.chips.map((chip) => chip.label)).toEqual(['1 materials']);
+  });
+
+  it('lists sources only, with folder names and what a conversation has attached', async () => {
+    const h = await boot();
+    await seedSession(h, 'ses-1');
+    await seedSession(h, 'ses-other', OTHER);
+    await seedSource(h, 'src-linked');
+    await seedSource(h, 'src-loose');
+    await seedDerivative(h, 'img-linked', 'src-linked');
+    const made = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Unit 1' }),
+    );
+    const { folder } = (await made.json()) as { folder: { id: string } };
+    await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-linked'], folderId: folder.id }),
+    );
+    await attachOwnerMaterialsToSession(h.provider, {
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      materialIds: ['src-linked'],
+    });
+
+    const listed = await libraryRoute(
+      request('GET', '/api/materials/library?sources=1&sessionId=ses-1'),
+    );
+    const body = (await listed.json()) as { materials: Array<Record<string, unknown>> };
+    expect(
+      body.materials
+        .map((m) => [m.materialId, m.attached, m.folderName ?? null])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual([
+      ['src-linked', true, 'Unit 1'],
+      ['src-loose', false, null],
+    ]);
+    // Without a conversation, nothing says attached.
+    const plain = await libraryRoute(request('GET', '/api/materials/library?sources=1'));
+    expect(
+      ((await plain.json()) as { materials: Array<Record<string, unknown>> }).materials.every(
+        (m) => !('attached' in m),
+      ),
+    ).toBe(true);
+    // Another owner's conversation is not one to ask about.
+    expect(
+      (await libraryRoute(request('GET', '/api/materials/library?sessionId=ses-other'))).status,
+    ).toBe(404);
   });
 
   it('answers 404 without the configured runtime', async () => {
