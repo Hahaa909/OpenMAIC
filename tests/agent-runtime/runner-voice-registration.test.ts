@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => ({
   createCallLlmStreamFn: vi.fn(),
   buildAgent: vi.fn(),
   resolveWebSearchCapability: vi.fn(),
-  listSessionMaterials: vi.fn(async (): Promise<AgentSessionMaterial[]> => []),
+  listSessionMaterials: vi.fn(async (_sessionId: string): Promise<AgentSessionMaterial[]> => []),
   enabledServerTTSProviderIds: vi.fn(),
   resolveTTSApiKey: vi.fn(),
   getVoiceRegistrationAdapter: vi.fn(),
@@ -56,6 +56,20 @@ vi.mock('@/lib/server/agent-runtime/session-materials', async (importActual) => 
   const actual =
     await importActual<typeof import('@/lib/server/agent-runtime/session-materials')>();
   return { ...actual, listSessionMaterials: mocks.listSessionMaterials };
+});
+// The runner lists what the session reaches through the shared resolver;
+// links need a database these tests do not have.
+vi.mock('@/lib/server/agent-runtime/material-resolver', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@/lib/server/agent-runtime/material-resolver')>();
+  return {
+    ...actual,
+    listSessionScopeMaterials: async (sessionId: string) =>
+      (await mocks.listSessionMaterials(sessionId)).map((record) => ({
+        origin: 'session' as const,
+        record,
+      })),
+  };
 });
 
 vi.mock('@/lib/server/agent-runtime/entry-tree-storage', async (importActual) => {

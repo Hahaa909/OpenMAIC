@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
   resolveWebSearchCapability: vi.fn(),
   searchWeb: vi.fn(),
   formatSearchResultsAsContext: vi.fn(),
-  listSessionMaterials: vi.fn(async (): Promise<AgentSessionMaterial[]> => []),
+  listSessionMaterials: vi.fn(async (_sessionId: string): Promise<AgentSessionMaterial[]> => []),
 }));
 
 vi.mock('node:crypto', async (importActual) => {
@@ -51,6 +51,20 @@ vi.mock('@/lib/server/agent-runtime/session-materials', async (importActual) => 
   const actual =
     await importActual<typeof import('@/lib/server/agent-runtime/session-materials')>();
   return { ...actual, listSessionMaterials: mocks.listSessionMaterials };
+});
+// The runner lists what the session reaches through the shared resolver;
+// links need a database these tests do not have.
+vi.mock('@/lib/server/agent-runtime/material-resolver', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@/lib/server/agent-runtime/material-resolver')>();
+  return {
+    ...actual,
+    listSessionScopeMaterials: async (sessionId: string) =>
+      (await mocks.listSessionMaterials(sessionId)).map((record) => ({
+        origin: 'session' as const,
+        record,
+      })),
+  };
 });
 
 vi.mock('@/lib/web-search', () => ({
@@ -515,19 +529,21 @@ describe('web_search runner registration', () => {
     const options = await runToBuildAgent();
 
     expect(mocks.listSessionMaterials).toHaveBeenCalledWith(SESSION_ID);
-    expect(options.systemPrompt).toContain('## Registered session materials');
+    expect(options.systemPrompt).toContain('## Materials and the knowledge base');
     expect(options.systemPrompt).toContain('Example article');
     expect(options.systemPrompt).toContain('list_materials');
     expect(options.systemPrompt).toContain('read_material');
     expect(options.systemPrompt).toContain('search_material');
   });
 
-  it('omits the materials block when the session has no materials', async () => {
+  it('still teaches the knowledge base when the session has no materials', async () => {
     mocks.resolveWebSearchCapability.mockReturnValue(null);
     mocks.listSessionMaterials.mockResolvedValue([]);
 
     const options = await runToBuildAgent();
 
-    expect(options.systemPrompt).not.toContain('## Registered session materials');
+    expect(options.systemPrompt).toContain('## Materials and the knowledge base');
+    expect(options.systemPrompt).toContain('Nothing is attached to this conversation yet.');
+    expect(options.systemPrompt).toContain("scope: 'library'");
   });
 });
