@@ -4,10 +4,13 @@
  *
  * Query: `folderId` (a folder id, or the literal `unfiled` for Unfiled; omit
  * it for every folder), `query` (literal text in names and file types),
- * `before` and `limit` (keyset paging, newest first, at most 200). The answer
- * is `{ materials, limits, nextBefore? }`; a failed extraction carries its
- * reason, a quota refusal included. The composer's picker and `@`, and later
- * the library page, read it.
+ * `sources=1` (sources only: what a conversation attaches), `sessionId` (one
+ * of the owner's conversations: each material says whether it is
+ * `attached` there; another owner's or a missing one is 404), `before` and
+ * `limit` (keyset paging, newest first, at most 200). The answer is
+ * `{ materials, limits, nextBefore? }`, each material with its folder's name;
+ * a failed extraction carries its reason, a quota refusal included. The
+ * composer's picker and `@`, and later the library page, read it.
  *
  * Gated like the rest of `/api/materials`: without the configured agent
  * runtime it answers a plain 404.
@@ -15,8 +18,13 @@
 import type { NextRequest } from 'next/server';
 
 import { isAgentRuntimeConfigured } from '@/lib/config/feature-flags';
-import { listOwnerLibrary } from '@/lib/persistence/session-material-links';
-import { ownerJson } from '@/lib/server/agent-runtime/route-response';
+import { listMaterialFolders } from '@/lib/persistence/material-library';
+import { attachedMaterialIds, listOwnerLibrary } from '@/lib/persistence/session-material-links';
+import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
+import {
+  getSessionMaterialQueryable,
+  resolveOwnedSession,
+} from '@/lib/server/agent-runtime/session-materials';
 import { withRequestOwner } from '@/lib/server/identity/with-owner';
 import { libraryPersistence, libraryRefusal } from '@/lib/server/materials/library-routes';
 import { libraryLimits, libraryMaterialView } from '@/lib/server/materials/library-view';
@@ -32,6 +40,8 @@ export async function GET(req: NextRequest) {
   const rawFolder = url.searchParams.get('folderId');
   const query = url.searchParams.get('query')?.trim() || undefined;
   const before = url.searchParams.get('before')?.trim() || undefined;
+  const sourcesOnly = url.searchParams.get('sources') === '1';
+  const sessionId = url.searchParams.get('sessionId')?.trim() || undefined;
   const rawLimit = url.searchParams.get('limit');
   const limit = rawLimit === null || rawLimit === '' ? DEFAULT_LIMIT : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
@@ -46,20 +56,36 @@ export async function GET(req: NextRequest) {
     rawFolder === null || rawFolder === '' ? undefined : rawFolder === 'unfiled' ? null : rawFolder;
 
   return withRequestOwner(req, async ({ ownerId }, headers) => {
+    if (sessionId && !(await resolveOwnedSession(sessionId, ownerId))) {
+      return ownerNotFound(headers);
+    }
     const { pool } = await libraryPersistence();
-    const [entries, limits] = await Promise.all([
+    const [entries, limits, folders] = await Promise.all([
       listOwnerLibrary(pool, ownerId, {
         ...(folderId !== undefined ? { folderId } : {}),
         ...(query ? { query } : {}),
         ...(before ? { before } : {}),
+        ...(sourcesOnly ? { sourcesOnly } : {}),
         limit,
       }),
       libraryLimits(pool, ownerId),
+      listMaterialFolders(pool, ownerId),
     ]);
+    const attached = sessionId
+      ? await attachedMaterialIds(
+          // The links table is provisioned with the session-material schema.
+          await getSessionMaterialQueryable(),
+          sessionId,
+          entries.map((entry) => entry.id),
+        )
+      : undefined;
+    const folderNames = new Map(folders.map((folder) => [folder.id, folder.name]));
     const nextBefore = entries.length === limit ? entries.at(-1)!.id : undefined;
     return ownerJson(
       {
-        materials: entries.map(libraryMaterialView),
+        materials: entries.map((entry) =>
+          libraryMaterialView(entry, { folderNames, ...(attached ? { attached } : {}) }),
+        ),
         limits,
         ...(nextBefore ? { nextBefore } : {}),
       },

@@ -600,6 +600,51 @@ describe('material library routes and tools (PGlite)', () => {
     expect(row.chips.map((chip) => chip.label)).toEqual(['1 materials']);
   });
 
+  it('lists sources only, with folder names and what a conversation has attached', async () => {
+    const h = await boot();
+    await seedSession(h, 'ses-1');
+    await seedSession(h, 'ses-other', OTHER);
+    await seedSource(h, 'src-linked');
+    await seedSource(h, 'src-loose');
+    await seedDerivative(h, 'img-linked', 'src-linked');
+    const made = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Unit 1' }),
+    );
+    const { folder } = (await made.json()) as { folder: { id: string } };
+    await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-linked'], folderId: folder.id }),
+    );
+    await attachOwnerMaterialsToSession(h.provider, {
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      materialIds: ['src-linked'],
+    });
+
+    const listed = await libraryRoute(
+      request('GET', '/api/materials/library?sources=1&sessionId=ses-1'),
+    );
+    const body = (await listed.json()) as { materials: Array<Record<string, unknown>> };
+    expect(
+      body.materials
+        .map((m) => [m.materialId, m.attached, m.folderName ?? null])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual([
+      ['src-linked', true, 'Unit 1'],
+      ['src-loose', false, null],
+    ]);
+    // Without a conversation, nothing says attached.
+    const plain = await libraryRoute(request('GET', '/api/materials/library?sources=1'));
+    expect(
+      ((await plain.json()) as { materials: Array<Record<string, unknown>> }).materials.every(
+        (m) => !('attached' in m),
+      ),
+    ).toBe(true);
+    // Another owner's conversation is not one to ask about.
+    expect(
+      (await libraryRoute(request('GET', '/api/materials/library?sessionId=ses-other'))).status,
+    ).toBe(404);
+  });
+
   it('answers 404 without the configured runtime', async () => {
     await boot();
     mocks.runtimeConfigured = false;
@@ -611,5 +656,14 @@ describe('material library routes and tools (PGlite)', () => {
         )
       ).status,
     ).toBe(404);
+    // Every route of the library, so no entry point outlives the gate.
+    const answers = await Promise.all([
+      createFolderRoute(request('POST', '/api/materials/folders', { name: 'X' })),
+      renameFolderRoute(request('PATCH', '/api/materials/folders/f', { name: 'X' }), params('f')),
+      deleteFolderRoute(request('DELETE', '/api/materials/folders/f'), params('f')),
+      renameMaterialRoute(request('PATCH', '/api/materials/m', { name: 'X' }), params('m')),
+      libraryRoute(request('GET', '/api/materials/library')),
+    ]);
+    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404]);
   });
 });
