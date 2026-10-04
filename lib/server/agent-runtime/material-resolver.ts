@@ -59,9 +59,10 @@ export function resolvedMaterialId(material: ResolvedMaterial): string {
 
 /**
  * Resolve one id in `scope`, or `null` when it names nothing the session may
- * read there. Session scope: the session's own rows, then the materials its
- * links reach. Library scope: the owner's live materials, attached or not,
- * then the session's own rows. Foreign, missing and deleted ids are all
+ * read there. The session's own rows come first in either scope, so an id
+ * means the same row whichever scope names it. Then session scope reaches
+ * the materials the session's links reach, library scope the owner's live
+ * materials, attached or not. Foreign, missing and deleted ids are all
  * `null`, so the answer says nothing about whether another owner has the id.
  */
 export async function resolveMaterial(
@@ -69,15 +70,12 @@ export async function resolveMaterial(
   materialId: string,
   scope: MaterialScope = 'session',
 ): Promise<ResolvedMaterial | null> {
-  if (scope === 'library') {
-    const entry = await getSessionOwnerMaterial(await pool(), sessionId, materialId);
-    if (entry) return { origin: 'owner', entry };
-    const record = await getSessionMaterial(sessionId, materialId);
-    return record ? { origin: 'session', record } : null;
-  }
   const record = await getSessionMaterial(sessionId, materialId);
   if (record) return { origin: 'session', record };
-  const entry = await getLinkedOwnerMaterial(await pool(), sessionId, materialId);
+  const entry =
+    scope === 'library'
+      ? await getSessionOwnerMaterial(await pool(), sessionId, materialId)
+      : await getLinkedOwnerMaterial(await pool(), sessionId, materialId);
   return entry ? { origin: 'owner', entry } : null;
 }
 
@@ -95,6 +93,40 @@ export async function listSessionScopeMaterials(sessionId: string): Promise<Reso
     ...records.map((record) => ({ origin: 'session' as const, record })),
     ...entries.map((entry) => ({ origin: 'owner' as const, entry })),
   ];
+}
+
+/**
+ * One page of what the session reaches in session scope, in the order of
+ * {@link listSessionScopeMaterials}: its own rows newest first, then the
+ * materials its links reach. `before` is the last id of the previous page,
+ * of either kind; an id the session does not reach answers an empty page, as
+ * the session rows' own paging does. The links are listed only once the
+ * session's rows run out on a page.
+ */
+export async function listSessionScopePage(
+  sessionId: string,
+  options: { limit?: number; before?: string } = {},
+): Promise<ResolvedMaterial[]> {
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 200);
+  const { before } = options;
+  const linkedPage = (entries: OwnerMaterialEntry[]) =>
+    entries.map((entry) => ({ origin: 'owner' as const, entry }));
+  if (before === undefined || (await getSessionMaterial(sessionId, before))) {
+    const records = await listSessionMaterials(sessionId, {
+      limit,
+      ...(before === undefined ? {} : { before }),
+    });
+    const page: ResolvedMaterial[] = records.map((record) => ({
+      origin: 'session' as const,
+      record,
+    }));
+    if (records.length === limit) return page;
+    const linked = await listLinkedOwnerMaterials(await pool(), sessionId);
+    return [...page, ...linkedPage(linked.slice(0, limit - records.length))];
+  }
+  const linked = await listLinkedOwnerMaterials(await pool(), sessionId);
+  const cursor = linked.findIndex((entry) => entry.id === before);
+  return cursor < 0 ? [] : linkedPage(linked.slice(cursor + 1, cursor + 1 + limit));
 }
 
 /** A material's original bytes and their media type, or `null` when unreadable. */

@@ -336,8 +336,9 @@ export async function resolverScenario(h: ExtractionHarness): Promise<void> {
     ['owner', 'src-a'],
   ]);
 
-  // The copy keyed on the owner id keeps meaning the copy.
+  // The copy keyed on the owner id keeps meaning the copy, in either scope.
   expect((await resolveMaterial('ses-1', 'src-old'))?.origin).toBe('session');
+  expect((await resolveMaterial('ses-1', 'src-old', 'library'))?.origin).toBe('session');
   // Unattached: only library scope reaches it.
   expect(await resolveMaterial('ses-1', 'src-b')).toBeNull();
   expect((await resolveMaterial('ses-1', 'src-b', 'library'))?.origin).toBe('owner');
@@ -1158,7 +1159,7 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   ).toString();
   expect(stored).toContain('![Cell diagram](openmaic-derivative:img-1)');
   expect(stored).toContain('<img src="openmaic-derivative:img-2">');
-  expect(stored).toContain('[image: gone]');
+  expect(stored).toContain(String.raw`\[image: gone\]`);
   expect(stored).toContain('![remote](https://example.com/x.png)');
   expect(stored).not.toContain('images/');
 

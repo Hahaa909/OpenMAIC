@@ -15,8 +15,7 @@
  *   markdown is parsed, not pattern-matched ({@link rewriteImageReferences}).
  * - The built-in PDF parser and AliDocMind return images beside text that
  *   names none of them: the images are kept, there is nothing to rewrite.
- * - Plain text and markdown uploads return no images, and a plain-text block
- *   is never rewritten.
+ * - Plain text and markdown uploads return no images and keep their own text.
  *
  * ## References that do not depend on the source
  *
@@ -30,7 +29,7 @@
  * ## Bounds
  *
  * The same as media keyframes (`lib/document/extractors/images.ts`): at most
- * `MAX_DERIVED_IMAGES` images, in document order, each downsampled to a WebP
+ * `MAX_DERIVED_IMAGES` images, in provider order, each downsampled to a WebP
  * within `MAX_DERIVED_IMAGE_BYTES`. A reference to an image that was not kept
  * -- past the limit, unreadable, or unknown to the provider -- becomes its
  * alt text, so the stored text never names a file nothing holds.
@@ -53,7 +52,8 @@ export const DERIVATIVE_REF_PREFIX = 'openmaic-derivative:';
 export const MATERIAL_REF_PREFIX = 'material:';
 
 /** `<img ... src="target" ...>`, inside a raw HTML node (MinerU's tables carry them). */
-const HTML_IMAGE = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const HTML_IMAGE =
+  /(<img\b(?:[^"'<>]|"[^"]*"|'[^']*')*?\ssrc\s*=\s*)(?:"([^"]+)"|'([^']+)')((?:[^"'<>]|"[^"]*"|'[^']*')*>)/gi;
 const DERIVATIVE_REF = /openmaic-derivative:([A-Za-z0-9_-]+)/g;
 
 /** A target the provider resolved against its own files: no scheme, not absolute. */
@@ -82,7 +82,7 @@ interface KeptImage {
 }
 
 /**
- * The document's images to keep, in document order and within the bounds,
+ * The document's images to keep, in provider order and within the bounds,
  * each prepared as WebP, keyed `img-<n>`. An image that cannot be decoded or
  * prepared is skipped.
  */
@@ -142,15 +142,17 @@ export function imagePathIndex(
   for (const { key, path } of images) {
     if (!path) continue;
     const normalized = normalizePath(path);
-    // MinerU's markdown names an image `images/<file>` where its dictionary
-    // says `<file>`.
-    for (const form of normalized.includes('/')
-      ? [normalized]
-      : [normalized, `images/${normalized}`]) {
-      if (!exact.has(form)) exact.set(form, key);
-    }
+    if (!exact.has(normalized)) exact.set(normalized, key);
     const name = basename(normalized);
     basenames.set(name, (basenames.get(name) ?? new Set()).add(key));
+  }
+  // MinerU's markdown names an image `images/<file>` where its dictionary
+  // says `<file>`. Add aliases only after every real path has its place.
+  for (const { key, path } of images) {
+    if (!path) continue;
+    const normalized = normalizePath(path);
+    const alias = `images/${normalized}`;
+    if (!normalized.includes('/') && !exact.has(alias)) exact.set(alias, key);
   }
   const byBasename = new Map<string, string>();
   for (const [name, keys] of basenames) {
@@ -211,7 +213,11 @@ function span(node: MarkdownNode): { start: number; end: number } | null {
  * references are kept.
  */
 export function rewriteImageReferences(markdown: string, index: ImagePathIndex): string {
-  const tree = fromMarkdown(markdown) as unknown as MarkdownNode;
+  // CommonMark offsets exclude an initial BOM; edit that same input, then
+  // restore the prefix so surrounding characters retain their positions.
+  const prefix = markdown.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const input = prefix ? markdown.slice(1) : markdown;
+  const tree = fromMarkdown(input) as unknown as MarkdownNode;
   const definitions = new Map<string, MarkdownNode>();
   const linkLabels = new Set<string>();
   walk(tree, (node) => {
@@ -227,7 +233,7 @@ export function rewriteImageReferences(markdown: string, index: ImagePathIndex):
     const key = keyOf(index, target);
     return key
       ? `![${escapeAlt(alt)}](${DERIVATIVE_REF_PREFIX}${key})`
-      : `[image${alt ? `: ${alt}` : ''}]`;
+      : `\\[image${alt ? `: ${escapeAlt(alt)}` : ''}\\]`;
   };
   const usedDefinitions = new Set<string>();
   walk(tree, (node) => {
@@ -244,11 +250,24 @@ export function rewriteImageReferences(markdown: string, index: ImagePathIndex):
       edits.push({ ...at, text });
       usedDefinitions.add(node.identifier);
     } else if (node.type === 'html' && node.value) {
-      const value = node.value.replace(HTML_IMAGE, (whole, target: string) => {
-        if (!isProviderPath(target)) return whole;
-        const key = keyOf(index, target);
-        return key ? whole.replace(target, `${DERIVATIVE_REF_PREFIX}${key}`) : '[image]';
-      });
+      const value = node.value.replace(
+        HTML_IMAGE,
+        (
+          whole,
+          before: string,
+          doubleQuoted: string | undefined,
+          singleQuoted: string | undefined,
+          after: string,
+        ) => {
+          const target = doubleQuoted ?? singleQuoted!;
+          if (!isProviderPath(target)) return whole;
+          const key = keyOf(index, target);
+          const quote = doubleQuoted === undefined ? "'" : '"';
+          return key
+            ? `${before}${quote}${DERIVATIVE_REF_PREFIX}${key}${quote}${after}`
+            : '\\[image\\]';
+        },
+      );
       if (value !== node.value) edits.push({ ...at, text: value });
     }
   });
@@ -258,11 +277,11 @@ export function rewriteImageReferences(markdown: string, index: ImagePathIndex):
     if (at) edits.push({ ...at, text: '' });
   }
 
-  let out = markdown;
+  let out = input;
   for (const edit of edits.sort((a, b) => b.start - a.start)) {
     out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
   }
-  return out;
+  return prefix + out;
 }
 
 /**
@@ -276,12 +295,12 @@ export async function ownerDocumentOutcome(
 ): Promise<SourceExtractionOutcome> {
   const { kept, skipped } = await keptImages(artifact);
   const index = imagePathIndex(kept);
-  // Only markdown is parsed for image references: a plain-text block is the
-  // file's own text, and `![x](y)` in it is just characters.
+  // Uploads decoded by plain-text have no provider-owned image paths. MinerU
+  // output still needs rewriting when all of its images are missing.
   const rewritten: DocumentArtifact = {
     ...artifact,
     blocks: artifact.blocks.map((block) =>
-      block.type === 'markdown' && block.text
+      provider.id !== 'plain-text' && block.type === 'markdown' && block.text
         ? { ...block, text: rewriteImageReferences(block.text, index) }
         : block,
     ),
