@@ -1,11 +1,17 @@
 /**
  * What the material library shows outside the agent: the public view of one
- * library material (RFC #1716 §8). Pool pointers, object keys and digests
- * never leave the server.
+ * library material, and the limits and usage the page and the composer show
+ * (RFC #1716 §8). Pool pointers, object keys and digests never leave the
+ * server.
  */
+import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
+import { ownerLibraryUsage } from '@/lib/persistence/material-library';
 import type { OwnerMaterialEntry } from '@/lib/persistence/session-material-links';
 import type { ResolvedMaterial } from '@/lib/server/agent-runtime/material-resolver';
 import { publicMaterialView } from '@/lib/server/agent-runtime/session-materials';
+import type { Queryable } from '@openmaic/storage/document/pg';
+import { resolveAssetQuotaBytes } from '@/lib/persistence/asset-quota';
+import { agentRuntimeConfig } from '@/lib/server/agent-runtime/config';
 
 export interface LibraryMaterialView {
   materialId: string;
@@ -59,4 +65,37 @@ export function sessionScopeMaterialView(material: ResolvedMaterial): Record<str
   return material.origin === 'session'
     ? publicMaterialView(material.record)
     : { ...libraryMaterialView(material.entry) };
+}
+
+export interface LibraryLimits {
+  /** Largest document or image upload, in bytes. */
+  documentMaxBytes: number;
+  /** Largest audio or video upload, in bytes. */
+  mediaMaxBytes: number;
+  /** Most active sources, and their most bytes in total. */
+  maxCount: number;
+  maxTotalBytes: number;
+  usedCount: number;
+  usedBytes: number;
+  /** The owner's pool quota, or `null` when the deployment has none. */
+  assetQuotaBytes: number | null;
+  assetUsedBytes: number;
+}
+
+/** The limits upload admission applies to the owner, and what the owner uses of them. */
+export async function libraryLimits(queryable: Queryable, ownerId: string): Promise<LibraryLimits> {
+  const usage = await ownerLibraryUsage(queryable, ownerId, assetPrincipalForOwner(ownerId).key);
+  return {
+    documentMaxBytes: Math.min(
+      agentRuntimeConfig.maxDocumentBytes,
+      agentRuntimeConfig.maxUploadBytes,
+    ),
+    mediaMaxBytes: agentRuntimeConfig.maxUploadBytes,
+    maxCount: agentRuntimeConfig.maxMaterialsPerOwner,
+    maxTotalBytes: agentRuntimeConfig.maxMaterialBytesPerOwner,
+    usedCount: usage.usedCount,
+    usedBytes: usage.usedBytes,
+    assetQuotaBytes: resolveAssetQuotaBytes() ?? null,
+    assetUsedBytes: usage.assetUsedBytes,
+  };
 }

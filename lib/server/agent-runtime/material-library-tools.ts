@@ -61,9 +61,23 @@ export const MATERIAL_LIBRARY_TOOL_NAMES = [
   'rename_material',
 ] as const;
 
+/**
+ * A change the run made to the material library, sent as the durable
+ * `library_changed` event with `library: 'materials'` (RFC #1716 §7): what
+ * lists materials refetches. Only actual changes are sent -- a call that
+ * changed nothing, or was refused, sends none.
+ */
+export type MaterialLibraryChange = { library: 'materials' } & (
+  | { change: 'folder_created' | 'folder_renamed'; folderId: string }
+  | { change: 'materials_moved'; materialIds: string[]; folderId: string | null }
+  | { change: 'material_renamed'; materialId: string }
+  | { change: 'extraction_started' | 'extraction_settled'; materialIds: string[] }
+);
+
 export interface MaterialLibraryToolDependencies {
   /** The run's owner as recorded on its session; claims are followed. */
   ownerId: string;
+  onLibraryChanged?: (change: MaterialLibraryChange) => void;
 }
 
 function result(details: Record<string, unknown>, text: string, isError = false) {
@@ -141,6 +155,13 @@ export function buildMaterialLibraryTools(
           true,
         );
       }
+      if (outcome.created) {
+        deps.onLibraryChanged?.({
+          library: 'materials',
+          change: 'folder_created',
+          folderId: outcome.folder.id,
+        });
+      }
       const details = {
         status: outcome.created ? 'created' : 'exists',
         folderId: outcome.folder.id,
@@ -171,6 +192,13 @@ export function buildMaterialLibraryTools(
         case 'name_taken':
           return result({ status: 'name_taken' }, 'Another folder already has that name.', true);
         default: {
+          if (outcome.status === 'renamed') {
+            deps.onLibraryChanged?.({
+              library: 'materials',
+              change: 'folder_renamed',
+              folderId: outcome.folder.id,
+            });
+          }
           const details = {
             status: outcome.status,
             folderId: outcome.folder.id,
@@ -212,6 +240,14 @@ export function buildMaterialLibraryTools(
             true,
           );
         default: {
+          if (outcome.status === 'moved') {
+            deps.onLibraryChanged?.({
+              library: 'materials',
+              change: 'materials_moved',
+              materialIds: outcome.materialIds,
+              folderId: outcome.folderId,
+            });
+          }
           const details = {
             status: outcome.status,
             materialIds: outcome.materialIds,
@@ -249,6 +285,13 @@ export function buildMaterialLibraryTools(
             true,
           );
         default:
+          if (outcome.status === 'renamed') {
+            deps.onLibraryChanged?.({
+              library: 'materials',
+              change: 'material_renamed',
+              materialId: outcome.materialId,
+            });
+          }
           return result({ ...outcome }, JSON.stringify(outcome, null, 2));
       }
     },

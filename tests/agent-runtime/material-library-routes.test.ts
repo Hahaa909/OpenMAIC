@@ -36,9 +36,14 @@ import {
   GET as listFoldersRoute,
   POST as createFolderRoute,
 } from '@/app/api/materials/folders/route';
+import { GET as libraryRoute } from '@/app/api/materials/library/route';
 import { POST as moveRoute } from '@/app/api/materials/move/route';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
+import { ensureOwnerMaterialExtraction } from '@/lib/persistence/owner-material-extraction';
+import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
+import { startExtractionWatcher } from '@/lib/server/agent-runtime/extraction-watcher';
+import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
 import { buildMaterialLibraryTools } from '@/lib/server/agent-runtime/material-library-tools';
 
 import {
@@ -280,6 +285,143 @@ describe('material library routes and tools (PGlite)', () => {
     expect(refused).toMatchObject({ isError: true, details: { status: 'not_movable' } });
   });
 
+  it('tells the client only about changes the run actually made', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    const changes: unknown[] = [];
+    const tools = buildMaterialLibraryTools({
+      ownerId: ACCOUNT,
+      onLibraryChanged: (change) => changes.push(change),
+    });
+    const run = (name: string, args: Record<string, unknown>) =>
+      tools.find((tool) => tool.name === name)!.execute('call', args as never) as Promise<{
+        details: Record<string, unknown>;
+      }>;
+    const folder = await run('create_material_folder', { name: 'Unit 1' });
+    await run('create_material_folder', { name: 'unit 1' });
+    await run('rename_material_folder', { folderId: folder.details.folderId, name: 'Unit 1' });
+    await run('move_materials', { materialIds: ['src-a'], folderId: folder.details.folderId });
+    await run('move_materials', { materialIds: ['src-a'], folderId: folder.details.folderId });
+    await run('move_materials', { materialIds: ['missing'], folderId: null });
+    await run('rename_material', { materialId: 'src-a', name: 'src-a.pdf' });
+    await run('rename_material', { materialId: 'src-a', name: 'Lesson' });
+    expect(changes).toEqual([
+      { library: 'materials', change: 'folder_created', folderId: folder.details.folderId },
+      {
+        library: 'materials',
+        change: 'materials_moved',
+        materialIds: ['src-a'],
+        folderId: folder.details.folderId,
+      },
+      { library: 'materials', change: 'material_renamed', materialId: 'src-a' },
+    ]);
+  });
+
+  it('reports an extraction that settles after a wait timed out, without another wait', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    await seedSession(h, 'ses-1');
+    const changes: unknown[] = [];
+    const watcher = startExtractionWatcher({
+      intervalMs: 20,
+      onSettled: (materialIds) =>
+        changes.push({ library: 'materials', change: 'extraction_settled', materialIds }),
+    });
+    let clock = 0;
+    const materialTools = buildMaterialTools({
+      sessionId: 'ses-1',
+      now: () => clock,
+      waitForDelay: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      onLibraryChanged: (change) => changes.push(change),
+      extractionWatcher: watcher,
+    });
+    const tool = (name: string) => materialTools.find((candidate) => candidate.name === name)!;
+    try {
+      await tool('extract_material').execute('call', {
+        materialId: 'src-a',
+        scope: 'library',
+      } as never);
+      // Started again: already pending, not started a second time, no second event.
+      await tool('extract_material').execute('call', {
+        materialId: 'src-a',
+        scope: 'library',
+      } as never);
+      const waited = (await tool('wait_for_materials').execute('call', {
+        materialIds: ['src-a'],
+        scope: 'library',
+        timeoutSec: 1,
+      } as never)) as { details: { timedOut: boolean } };
+      expect(waited.details.timedOut).toBe(true);
+      expect(changes).toEqual([
+        { library: 'materials', change: 'extraction_started', materialIds: ['src-a'] },
+      ]);
+
+      // The worker finishes later; the agent does not wait again.
+      expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+      for (let attempt = 0; attempt < 200 && changes.length < 2; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(changes).toEqual([
+        { library: 'materials', change: 'extraction_started', materialIds: ['src-a'] },
+        { library: 'materials', change: 'extraction_settled', materialIds: ['src-a'] },
+      ]);
+
+      // A later wait that sees it done reports nothing more.
+      await tool('wait_for_materials').execute('call', {
+        materialIds: ['src-a'],
+        scope: 'library',
+        timeoutSec: 1,
+      } as never);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(changes).toHaveLength(2);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it('reports a settlement a wait sees once, and nothing for a source the run never watched', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    await seedSource(h, 'src-done');
+    await h.pool.query(
+      `UPDATE owner_material SET extraction = '{"status":"done"}'::jsonb WHERE id = 'src-done'`,
+    );
+    await seedSession(h, 'ses-1');
+    const settled: string[][] = [];
+    const watcher = startExtractionWatcher({
+      intervalMs: 60_000,
+      onSettled: (materialIds) => settled.push(materialIds),
+    });
+    const materialTools = buildMaterialTools({
+      sessionId: 'ses-1',
+      waitForDelay: async () => undefined,
+      extractionWatcher: watcher,
+    });
+    const tool = (name: string) => materialTools.find((candidate) => candidate.name === name)!;
+    try {
+      await tool('extract_material').execute('call', {
+        materialId: 'src-a',
+        scope: 'library',
+      } as never);
+      await h.pool.query(
+        `UPDATE owner_material SET extraction = '{"status":"failed"}'::jsonb,
+                extraction_error = 'unreadable' WHERE id = 'src-a'`,
+      );
+      for (let round = 0; round < 2; round += 1) {
+        await tool('wait_for_materials').execute('call', {
+          materialIds: ['src-a', 'src-done'],
+          scope: 'library',
+          timeoutSec: 1,
+        } as never);
+      }
+      expect(settled).toEqual([['src-a']]);
+    } finally {
+      watcher.stop();
+    }
+  });
+
   /** ses-1 holds a pre-link copy and links src-a (with img-a1); src-loose is not attached. */
   async function seedLinkedConversation(h: LibraryHarness): Promise<void> {
     await seedSession(h, 'ses-1');
@@ -351,6 +493,72 @@ describe('material library routes and tools (PGlite)', () => {
     // Unattached, or another owner's conversation: the same 404.
     expect((await read('src-loose')).status).toBe(404);
     expect((await read('src-a', 'ses-other')).status).toBe(404);
+  });
+
+  it('lists the owner’s library with the limits and usage uploads are held to', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a', { bytes: Buffer.from('12345') });
+    await seedSource(h, 'src-b', { bytes: Buffer.from('123') });
+    await seedDerivative(h, 'img-a1', 'src-a');
+    await seedSource(h, 'src-foreign', { owner: OTHER });
+    const made = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Unit 1' }),
+    );
+    const { folder } = (await made.json()) as { folder: { id: string } };
+    await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-b'], folderId: folder.id }),
+    );
+    await ensureOwnerMaterialExtraction(h.provider.withTransaction, ACCOUNT, 'src-a');
+    await h.pool.query(
+      `UPDATE owner_material SET extraction = '{"status":"failed"}'::jsonb,
+              extraction_error = 'the asset store has no room for this extraction' WHERE id = 'src-a'`,
+    );
+    vi.stubEnv('ASSET_QUOTA_BYTES', '0');
+
+    const listed = await libraryRoute(request('GET', '/api/materials/library'));
+    const body = (await listed.json()) as {
+      materials: Array<Record<string, unknown>>;
+      limits: Record<string, unknown>;
+    };
+    expect(body.materials.map((m) => m.materialId).sort()).toEqual(['img-a1', 'src-a', 'src-b']);
+    expect(body.materials.find((m) => m.materialId === 'src-a')).toMatchObject({
+      name: 'src-a.pdf',
+      folderId: null,
+      extraction: { status: 'failed', reason: 'the asset store has no room for this extraction' },
+    });
+    expect(JSON.stringify(body)).not.toMatch(/ossKey|assetId|sha256|objects\//);
+    expect(body.limits).toMatchObject({
+      usedCount: 2,
+      usedBytes: 8,
+      assetQuotaBytes: null,
+      maxCount: expect.any(Number),
+      maxTotalBytes: expect.any(Number),
+      documentMaxBytes: expect.any(Number),
+      mediaMaxBytes: expect.any(Number),
+      assetUsedBytes: expect.any(Number),
+    });
+
+    const unfiled = await libraryRoute(request('GET', '/api/materials/library?folderId=unfiled'));
+    expect(
+      ((await unfiled.json()) as { materials: Array<{ materialId: string }> }).materials
+        .map((m) => m.materialId)
+        .sort(),
+    ).toEqual(['img-a1', 'src-a']);
+    const inFolder = await libraryRoute(
+      request('GET', `/api/materials/library?folderId=${folder.id}`),
+    );
+    expect(
+      ((await inFolder.json()) as { materials: Array<{ materialId: string }> }).materials.map(
+        (m) => m.materialId,
+      ),
+    ).toEqual(['src-b']);
+
+    vi.stubEnv('ASSET_QUOTA_BYTES', '5000');
+    const quota = await libraryRoute(request('GET', '/api/materials/library'));
+    expect(
+      ((await quota.json()) as { limits: { assetQuotaBytes: number } }).limits.assetQuotaBytes,
+    ).toBe(5000);
+    expect((await libraryRoute(request('GET', '/api/materials/library?limit=0'))).status).toBe(400);
   });
 
   it('answers 404 without the configured runtime', async () => {

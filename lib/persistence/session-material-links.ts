@@ -243,8 +243,29 @@ export async function listSessionOwnerLibrary(
   sessionId: string,
   options: OwnerLibraryListOptions = {},
 ): Promise<OwnerMaterialEntry[]> {
+  return listLibrary(queryable, { sessionId }, options);
+}
+
+/** {@link listSessionOwnerLibrary} for an owner directly: what the library page lists. */
+export async function listOwnerLibrary(
+  queryable: Queryable,
+  ownerId: string,
+  options: OwnerLibraryListOptions = {},
+): Promise<OwnerMaterialEntry[]> {
+  return listLibrary(queryable, { ownerId }, options);
+}
+
+async function listLibrary(
+  queryable: Queryable,
+  of: { sessionId: string } | { ownerId: string },
+  options: OwnerLibraryListOptions,
+): Promise<OwnerMaterialEntry[]> {
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 200);
-  const params: unknown[] = [sessionId];
+  // `owner` is the owner whose library is listed: the session's owner now,
+  // or the owner given.
+  const bySession = 'sessionId' in of;
+  const params: unknown[] = [bySession ? of.sessionId : of.ownerId];
+  const owner = bySession ? 'session.owner_id' : '$1';
   const where: string[] = [];
   if (options.folderId === null) {
     where.push('material.folder_id IS NULL');
@@ -269,15 +290,19 @@ export async function listSessionOwnerLibrary(
     const p = `$${params.length}`;
     where.push(`(material.created_at, material.id) < (
         SELECT cursor.created_at, cursor.id FROM owner_material AS cursor
-         WHERE cursor.id = ${p} AND cursor.owner_id = session.owner_id)`);
+         WHERE cursor.id = ${p} AND cursor.owner_id = ${owner})`);
   }
   params.push(limit);
   const result = await queryable.query<RawOwnerMaterialEntryRow>(
     `SELECT ${entryColumns('material')}
-       FROM agent_sessions AS session
-       JOIN owner_material AS material ON material.owner_id = session.owner_id
+       FROM ${
+         bySession
+           ? `agent_sessions AS session
+       JOIN owner_material AS material ON material.owner_id = session.owner_id`
+           : 'owner_material AS material'
+       }
        LEFT JOIN owner_material AS source ON source.id = material.derived_from
-      WHERE session.id = $1 AND session.deleted_at IS NULL
+      WHERE ${bySession ? 'session.id = $1 AND session.deleted_at IS NULL' : 'material.owner_id = $1'}
         AND material.status = 'ready' AND material.deleted_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM agent_session_materials AS copy
