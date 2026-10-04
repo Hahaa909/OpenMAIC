@@ -2,9 +2,11 @@
  * Owner-level extraction of library sources: claim, extract, allocate and
  * publish, on the state in `lib/persistence/owner-material-extraction.ts`.
  *
- * Not started anywhere. `instrumentation.ts` starts only the session runner
- * (`./runner.ts`); nothing in a route, a tool or that runner calls into this
- * module. It is wired up together with its readers in Phase 2 of RFC #1716.
+ * `instrumentation.ts` starts {@link startOwnerExtractionRunner} beside the
+ * session runner (`./runner.ts`), which keeps serving copies made before
+ * links. `extract_material` queues a library source here; the material tools
+ * and every consumer read the results through
+ * `lib/server/agent-runtime/material-resolver.ts` (RFC #1716 Phase 2).
  *
  * ## One run
  *

@@ -28,7 +28,6 @@ import {
   listLinkedOwnerMaterials,
   type OwnerMaterialEntry,
 } from '@/lib/persistence/session-material-links';
-import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import {
   OwnerMaterialBytesUnavailableError,
   readOwnerMaterialBytes,
@@ -37,6 +36,7 @@ import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-tex
 
 import {
   getSessionMaterial,
+  getSessionMaterialQueryable,
   listSessionMaterials,
   resolveSessionMaterialRawAsset,
   resolveSessionMaterialText,
@@ -49,11 +49,8 @@ export type ResolvedMaterial =
   | { origin: 'session'; record: AgentSessionMaterial }
   | { origin: 'owner'; entry: OwnerMaterialEntry };
 
-async function pool() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error('Agent runtime requires DATABASE_URL');
-  return (await getServerPersistenceProvider(connectionString)).pool;
-}
+/** The pool, once the links table exists (see `getSessionMaterialQueryable`). */
+const pool = getSessionMaterialQueryable;
 
 /** The id a resolved material is known by. */
 export function resolvedMaterialId(material: ResolvedMaterial): string {

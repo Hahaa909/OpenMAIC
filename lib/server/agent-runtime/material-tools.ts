@@ -59,7 +59,7 @@ import {
   type MaterialScope,
   type ResolvedMaterial,
 } from './material-resolver';
-import { getAgentSessionMaterialStore } from './session-materials';
+import { getAgentSessionMaterialStore, getSessionMaterialQueryable } from './session-materials';
 
 const TEXT_WINDOW_CHARS = 8000;
 const SEARCH_CONTEXT_CHARS = 200;
@@ -473,7 +473,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
   const attachedIds =
     deps.attachedIds ??
     (async (sessionId: string, materialIds: readonly string[]) =>
-      attachedMaterialIds(await pool(), sessionId, materialIds));
+      attachedMaterialIds(await getSessionMaterialQueryable(), sessionId, materialIds));
   const readText =
     deps.readText ??
     (legacyReadText

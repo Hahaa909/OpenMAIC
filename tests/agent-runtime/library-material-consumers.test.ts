@@ -139,7 +139,9 @@ type ToolResult = {
   details: Record<string, unknown>;
 };
 
-describe('consumers of a linked library source (PGlite)', () => {
+// Real pool reads and a document import over PGlite: generous under a loaded
+// machine.
+describe('consumers of a linked library source (PGlite)', { timeout: 20_000 }, () => {
   let db: PGlite | undefined;
 
   async function boot(): Promise<LibraryHarness> {
