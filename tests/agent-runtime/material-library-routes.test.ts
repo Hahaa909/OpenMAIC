@@ -45,6 +45,9 @@ import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import { startExtractionWatcher } from '@/lib/server/agent-runtime/extraction-watcher';
 import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
 import { buildMaterialLibraryTools } from '@/lib/server/agent-runtime/material-library-tools';
+import { presentTool } from '@/components/workbench/chat/tool-presentation';
+import { createWorkbenchTranslator } from '@/lib/i18n/workbench';
+import type { ChatNode } from '@/lib/workbench/session-store';
 
 import {
   ACCOUNT,
@@ -559,6 +562,42 @@ describe('material library routes and tools (PGlite)', () => {
       ((await quota.json()) as { limits: { assetQuotaBytes: number } }).limits.assetQuotaBytes,
     ).toBe(5000);
     expect((await libraryRoute(request('GET', '/api/materials/library?limit=0'))).status).toBe(400);
+  });
+
+  it('counts in the tool row only the sources that actually moved', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-in');
+    await seedSource(h, 'src-out');
+    await seedDerivative(h, 'img-out', 'src-out');
+    const tools = buildMaterialLibraryTools({ ownerId: ACCOUNT });
+    const run = (name: string, args: Record<string, unknown>) =>
+      tools.find((tool) => tool.name === name)!.execute('call', args as never) as Promise<{
+        details: Record<string, unknown>;
+      }>;
+    const folder = await run('create_material_folder', { name: 'Unit 1' });
+    await run('move_materials', { materialIds: ['src-in'], folderId: folder.details.folderId });
+
+    const moved = await run('move_materials', {
+      materialIds: ['src-in', 'src-out'],
+      folderId: folder.details.folderId,
+    });
+    // One source moved (its derivative with it, not counted); one was there already.
+    expect(moved.details).toMatchObject({ status: 'moved', movedCount: 1 });
+    const row = presentTool(
+      {
+        key: 'k',
+        kind: 'tool',
+        text: '',
+        toolCallId: 'c',
+        toolName: 'move_materials',
+        toolArgs: {},
+        toolState: 'done',
+        toolDetails: moved.details,
+      } as ChatNode,
+      [],
+      createWorkbenchTranslator('en-US'),
+    );
+    expect(row.chips.map((chip) => chip.label)).toEqual(['1 materials']);
   });
 
   it('answers 404 without the configured runtime', async () => {

@@ -252,6 +252,7 @@ export function buildMaterialLibraryTools(
             status: outcome.status,
             materialIds: outcome.materialIds,
             folderId: outcome.folderId,
+            movedCount: outcome.movedCount,
           };
           return result(details, JSON.stringify(details, null, 2));
         }

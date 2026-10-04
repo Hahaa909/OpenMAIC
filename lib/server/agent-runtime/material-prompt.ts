@@ -88,6 +88,7 @@ export function materialsPromptBlock(materials: readonly ResolvedMaterial[]): st
           'A `source` of this conversation that is not a knowledge-base source is read through the `extraction` material its extraction produced (see `list_materials`).',
         ]
       : []),
+    'To organize the knowledge base: `list_material_folders`, `create_material_folder`, `rename_material_folder`, `move_materials` (a source moves with its images and keyframes; null is Unfiled), `rename_material`. Deleting a material or a folder is left to the teacher, on the knowledge base page: you cannot delete.',
     ...(materials.some(isPptx)
       ? [
           'An attached .pptx can be imported INTO a stage as appended pages with `import_pptx` (layout-preserving: original slides become pages; the stage keeps its own title). Use that instead of an AI rewrite when the user wants the PowerPoint’s own pages.',
