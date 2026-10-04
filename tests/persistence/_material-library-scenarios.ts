@@ -61,6 +61,7 @@ import {
   getSessionOwnerMaterial,
   listLinkedOwnerMaterials,
   listSessionOwnerLibrary,
+  listOwnerLibrary,
   attachedMaterialIds,
 } from '@/lib/persistence/session-material-links';
 
@@ -498,6 +499,28 @@ export async function legacyCopyLibraryToolsScenario(h: ExtractionHarness): Prom
   });
   expect(followUp.content[0]!.text).toContain('# Lesson');
   expect(followUp.details).toMatchObject({ materialId: 'src-readable', revision });
+}
+
+/** Session-copy precedence is local to the session, not the owner's page. */
+export async function ownerListingWithSessionCopyScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  await seedSource(h, 'src-shadowed');
+  await seedSource(h, 'src-readable');
+  await seedCopy(h, 'ses-1', 'src-shadowed', null);
+  expect(
+    (await listSessionOwnerLibrary(h.pool as never, 'ses-1')).map((entry) => entry.id),
+  ).toEqual(['src-readable']);
+  const first = await listOwnerLibrary(h.pool as never, ACCOUNT, { sourcesOnly: true, limit: 1 });
+  const second = await listOwnerLibrary(h.pool as never, ACCOUNT, {
+    sourcesOnly: true,
+    limit: 1,
+    before: first[0]!.id,
+  });
+  expect([...first, ...second].map((entry) => entry.id).sort()).toEqual([
+    'src-readable',
+    'src-shadowed',
+  ]);
+  expect(await listOwnerLibrary(h.pool as never, OTHER)).toEqual([]);
 }
 
 /** Exercise both storage's 200-row cursor and the tool's 50-row cursor. */

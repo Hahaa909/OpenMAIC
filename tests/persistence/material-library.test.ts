@@ -28,6 +28,7 @@ import {
   libraryToolFlowScenario,
   legacyCopyLibraryToolsScenario,
   sessionListingPaginationScenario,
+  ownerListingWithSessionCopyScenario,
   linkAcrossClaimScenario,
   mediaLibraryScopeScenario,
   ownerRunnerScenario,
@@ -180,6 +181,9 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
   });
 
   describe('tools', () => {
+    it('keeps session-copy precedence out of the owner page listing', async () => {
+      await ownerListingWithSessionCopyScenario(await boot());
+    });
     it('pages all legacy sources before document derivatives using real storage', async () => {
       await sessionListingPaginationScenario(await boot());
     });

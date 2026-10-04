@@ -269,6 +269,14 @@ async function listLibrary(
   const params: unknown[] = [bySession ? of.sessionId : of.ownerId];
   const owner = bySession ? 'session.owner_id' : '$1';
   const where: string[] = [];
+  // A copy shadows an id only inside that session's tool scope. The owner's
+  // page has no session context and must list the original owner entry.
+  if (bySession) {
+    where.push(`NOT EXISTS (
+          SELECT 1 FROM agent_session_materials AS copy
+           WHERE copy.session_id = session.id AND copy.id = material.id
+        )`);
+  }
   if (options.folderId === null) {
     where.push('material.folder_id IS NULL');
   } else if (options.folderId !== undefined) {
@@ -307,10 +315,6 @@ async function listLibrary(
        LEFT JOIN owner_material AS source ON source.id = material.derived_from
       WHERE ${bySession ? 'session.id = $1 AND session.deleted_at IS NULL' : 'material.owner_id = $1'}
         AND material.status = 'ready' AND material.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_session_materials AS copy
-           WHERE copy.session_id = session.id AND copy.id = material.id
-        )
         AND (material.derived_from IS NULL
           OR (source.owner_id = material.owner_id AND source.status = 'ready'
               AND source.deleted_at IS NULL))
