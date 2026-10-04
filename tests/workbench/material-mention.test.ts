@@ -168,6 +168,77 @@ describe('staging a picked material', () => {
 });
 
 describe('listing for the menu', () => {
+  it.each(['query', 'session'] as const)(
+    'does not offer or select the previous listing after a %s change',
+    async (changed) => {
+      const fetchMock = vi.fn(async () =>
+        Response.json({ materials: [listing('unrelated', { attached: true })] }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const picked: string[] = [];
+      const sink: { current: MaterialMentionCandidate[] | undefined } = { current: undefined };
+      const record = recorder(sink);
+      function Harness(props: { query: string; sessionId: string }) {
+        const materials = record(
+          useMaterialMentions({
+            ...props,
+            open: true,
+            enabled: true,
+            staged: [],
+          }),
+        );
+        return createElement(
+          'div',
+          null,
+          createElement(CourseMentionMenu, {
+            candidates: [],
+            materials,
+            onPick: () => undefined,
+            onClose: () => undefined,
+            onPickMaterial: (material) => picked.push(material.materialId),
+          }),
+          createElement('textarea'),
+        );
+      }
+      const mounted = mount();
+      try {
+        await mounted.render(createElement(Harness, { query: '', sessionId: 'ses-1' }));
+        await settle();
+        expect(sink.current?.[0]).toMatchObject({ materialId: 'unrelated', attached: true });
+        fetchMock.mockImplementation(async () =>
+          Response.json({ materials: [listing('report', { attached: false })] }),
+        );
+        await mounted.render(
+          createElement(Harness, {
+            query: changed === 'query' ? 'report' : '',
+            sessionId: changed === 'session' ? 'ses-2' : 'ses-1',
+          }),
+        );
+        expect(sink.current).toEqual([]);
+        await act(async () => {
+          mounted.container
+            .querySelector('textarea')!
+            .dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+            );
+        });
+        expect(picked).toEqual([]);
+        await settle();
+        expect(sink.current?.[0]).toMatchObject({ materialId: 'report', attached: false });
+        await act(async () => {
+          mounted.container
+            .querySelector('textarea')!
+            .dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+            );
+        });
+        expect(picked).toEqual(['report']);
+      } finally {
+        await mounted.dispose();
+      }
+    },
+  );
+
   it('fetches sources for the query and conversation while open, and again on a library change', async () => {
     const urls: string[] = [];
     vi.stubGlobal(

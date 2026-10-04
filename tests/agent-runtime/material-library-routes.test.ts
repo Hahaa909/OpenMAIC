@@ -425,6 +425,38 @@ describe('material library routes and tools (PGlite)', () => {
     }
   });
 
+  it('reports a settlement during a wait that first saw the source in progress', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    await seedSession(h, 'ses-1');
+    // Started by an earlier run: this run never extracted it, it only waits.
+    await ensureOwnerMaterialExtraction(h.provider.withTransaction, ACCOUNT, 'src-a');
+    const settled: string[][] = [];
+    const watcher = startExtractionWatcher({
+      intervalMs: 60_000,
+      onSettled: (materialIds) => settled.push(materialIds),
+    });
+    const wait = buildMaterialTools({
+      sessionId: 'ses-1',
+      // The worker finishes while the wait is between two looks.
+      waitForDelay: async () => {
+        await runNextOwnerExtraction(h.deps());
+      },
+      extractionWatcher: watcher,
+    }).find((candidate) => candidate.name === 'wait_for_materials')!;
+    try {
+      const waited = (await wait.execute('call', {
+        materialIds: ['src-a'],
+        scope: 'library',
+        timeoutSec: 1,
+      } as never)) as { details: { complete: boolean } };
+      expect(waited.details.complete).toBe(true);
+      expect(settled).toEqual([['src-a']]);
+    } finally {
+      watcher.stop();
+    }
+  });
+
   /** ses-1 holds a pre-link copy and links src-a (with img-a1); src-loose is not attached. */
   async function seedLinkedConversation(h: LibraryHarness): Promise<void> {
     await seedSession(h, 'ses-1');
