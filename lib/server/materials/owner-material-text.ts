@@ -30,7 +30,7 @@ import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import type { OwnerExtractionResult } from '@/lib/persistence/owner-material-extraction';
 import { forwardOwnerWrite } from '@/lib/persistence/owner-merges';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
-import { resolveDerivativeRefs } from '@/lib/server/material-extraction/document-images';
+import { resolveDerivativeRefsAsync } from '@/lib/server/material-extraction/document-images';
 
 /** A source's extracted text at one revision. */
 export interface OwnerMaterialText {
@@ -53,17 +53,19 @@ async function provider() {
  * The text as this source's reader sees it: its image references name this
  * source's own derivatives, from the same result as the revision.
  */
-function textOf(
+async function textOf(
   bytes: Uint8Array,
   result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>,
   ownerId: string,
-): OwnerMaterialText {
-  const cacheKey = JSON.stringify([ownerId, result.text.assetId, result.revision]);
+  byteRevision: number,
+): Promise<OwnerMaterialText> {
+  const cacheKey = JSON.stringify([ownerId, result.text.assetId, result.revision, byteRevision]);
   return {
-    text: resolveDerivativeRefs(
+    text: await resolveDerivativeRefsAsync(
       Buffer.from(bytes).toString('utf8'),
       result.derivatives ?? [],
       cacheKey,
+      result.text.imageRefs,
     ),
     revision: result.revision,
   };
@@ -76,7 +78,7 @@ async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMater
     const read = await (
       await provider()
     ).assetStore.resolve(assetPrincipalForOwner(location.ownerId), result.text.assetId);
-    return read ? textOf(read.bytes, result, location.ownerId) : null;
+    return read ? await textOf(read.bytes, result, location.ownerId, read.revision) : null;
   } catch {
     // Retried under the fence.
     return null;
@@ -107,7 +109,7 @@ async function rereadUnderFence(
         const read = await persistence
           .assetStoreIn(tx)
           .resolve(assetPrincipalForOwner(row.owner_id), result.text.assetId);
-        return read ? textOf(read.bytes, result, row.owner_id) : null;
+        return read ? await textOf(read.bytes, result, row.owner_id, read.revision) : null;
       } catch (error) {
         // Out of the transaction, so it rolls back rather than ending aborted.
         throw new FencedTextReadFailed('pool read failed', { cause: error });

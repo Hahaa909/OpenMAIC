@@ -71,6 +71,8 @@ const MAX_SEARCH_CHARS_PER_EXEC = 1_000_000;
 const SEARCH_SCAN_CHUNK_CHARS = 16_384;
 /** CPU scan budget; excludes resolving and projecting the text being scanned. */
 const SEARCH_TIME_BUDGET_MS = 100;
+/** End the call between awaits even when empty/missing texts consume no scan budget. */
+const SEARCH_WALL_TIME_BUDGET_MS = 5_000;
 const DEFAULT_MATERIAL_WAIT_SECONDS = 60;
 const MAX_MATERIAL_WAIT_SECONDS = 300;
 const MATERIAL_WAIT_POLL_MS = 1_000;
@@ -726,6 +728,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
       throwIfAborted(signal);
       const scope = scopeOf(params.scope);
       let materials: Iterable<ResolvedMaterial> | AsyncIterable<ResolvedMaterial>;
+      const wallDeadline = now() + SEARCH_WALL_TIME_BUDGET_MS;
       if (params.materialId) {
         const material = await resolve(deps.sessionId, params.materialId, scope);
         throwIfAborted(signal);
@@ -759,6 +762,10 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
 
       for await (const material of materials) {
         throwIfAborted(signal);
+        if (now() >= wallDeadline) {
+          truncated = true;
+          break;
+        }
         if (!isSearchable(material)) continue;
         if (scannedChars >= MAX_SEARCH_CHARS_PER_EXEC || now() >= deadline) {
           truncated = true;
@@ -771,6 +778,10 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         // text must not consume it before even its first character is searched.
         deadline += Math.max(0, now() - readStartedAt);
         throwIfAborted(signal);
+        if (now() >= wallDeadline) {
+          truncated = true;
+          break;
+        }
         // A missing text contributes nothing; it must not abort the search of
         // the remaining materials.
         if (!read) continue;
@@ -790,7 +801,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         ) {
           throwIfAborted(signal);
           const remainingChars = MAX_SEARCH_CHARS_PER_EXEC - scannedChars;
-          if (remainingChars <= 0 || now() >= deadline) {
+          if (remainingChars <= 0 || now() >= deadline || now() >= wallDeadline) {
             truncated = true;
             break;
           }

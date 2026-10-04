@@ -115,6 +115,36 @@ function fencedBodyOf(result: { content: Array<{ type?: string; text?: string }>
 }
 
 describe('material agent tools', () => {
+  it.each([null, '', 'tiny'])('bounds slow library reads even with %s text', async (text) => {
+    let elapsed = 0;
+    let reads = 0;
+    const entries = Array.from({ length: 80 }, (_, i) => ({
+      ...ownerSource({ revision: 'r' }),
+      id: `src_${i}`,
+    }));
+    const search = tool(
+      buildMaterialTools({
+        sessionId: 'ses_1',
+        now: () => elapsed,
+        listLibrary: async (_id, options) => {
+          const start = options.before
+            ? entries.findIndex((entry) => entry.id === options.before) + 1
+            : 0;
+          return entries.slice(start, start + (options.limit ?? 50));
+        },
+        readText: async () => {
+          elapsed += 100;
+          reads += 1;
+          return text === null ? null : { text, revision: 'r' };
+        },
+      }),
+      'search_material',
+    );
+    const result = await search.execute('call', { query: 'absent', scope: 'library' } as never);
+    expect(result.details).toMatchObject({ truncated: true, hits: [] });
+    expect(reads).toBeLessThan(entries.length);
+    expect(elapsed).toBeLessThanOrEqual(5_000);
+  });
   it('pages a session listing with many document images without losing later sources', async () => {
     const first = { ...ownerSource(), id: 'src_first' };
     const later = { ...ownerSource(), id: 'src_later' };
@@ -828,28 +858,34 @@ describe('material agent tools', () => {
   });
 
   it('stops at the per-execution scan time budget and reports truncation', async () => {
-    let clockCalls = 0;
+    let clock = 0;
+    const immediate = globalThis.setImmediate;
+    const advanceClock = vi.spyOn(globalThis, 'setImmediate').mockImplementation((callback) => {
+      clock = 1_000;
+      return immediate(callback);
+    });
     const search = tool(
       buildMaterialTools({
         sessionId: 'ses_1',
         listMaterials: vi.fn().mockResolvedValue([material()]),
         readTextAsset: singleAsset(Buffer.from('a'.repeat(1_100_000))),
-        // Clock reads, in order: deadline (0 + 100), the pre-read check, the
-        // two read-duration checks, the post-decode check, and the first
-        // per-chunk check all see 0, so one
-        // 16_384-char chunk is scanned; the second per-chunk check reads 1_000
-        // and trips the time budget with the counter at exactly one chunk.
-        now: () => (clockCalls++ < 6 ? 0 : 1_000),
+        // Time passes when the first scanned chunk yields, independent of
+        // how many deadline checks the implementation performs.
+        now: () => clock,
       }),
       'search_material',
     );
-    const result = await search.execute('call_1', { query: 'not-present' } as never);
-    expect(result.details).toMatchObject({
-      mode: 'literal',
-      scannedChars: 16_384,
-      truncated: true,
-      hits: [],
-    });
+    try {
+      const result = await search.execute('call_1', { query: 'not-present' } as never);
+      expect(result.details).toMatchObject({
+        mode: 'literal',
+        scannedChars: 16_384,
+        truncated: true,
+        hits: [],
+      });
+    } finally {
+      advanceClock.mockRestore();
+    }
   });
 
   it('uses the same session-scoped lookup gate when materialId is provided', async () => {

@@ -1176,6 +1176,7 @@ async function mineruLikeArtifact(noisy = false) {
         type: 'markdown',
         text: [
           '# Lesson',
+          'If $a<b$ then.',
           '![Cell diagram](images/fig-1.jpg)',
           '<table><tr><td><img src="images/fig-2.jpg"></td></tr></table>',
           '![gone](images/missing.jpg)',
@@ -1238,6 +1239,10 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   expect(stored).toContain(String.raw`\[image: gone\]`);
   expect(stored).toContain('![remote](https://example.com/x.png)');
   expect(stored).not.toContain('images/');
+  expect(result.text.imageRefs).toHaveLength(2);
+  for (const ref of result.text.imageRefs!) {
+    expect(stored.slice(ref.start, ref.end)).toBe(`openmaic-derivative:${ref.key}`);
+  }
 
   // Each derivative: an owner material, rooted, filed with its source.
   for (const derivative of result.derivatives) {
@@ -1263,6 +1268,15 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
     'inline <script>const example = "![x](openmaic-derivative:img-1)";</script> text',
   ];
   for (const literal of preserved) expect(read.text).toContain(literal);
+  // Old persisted results still read through the worker/cache fallback.
+  const { imageRefs: _refs, ...legacyText } = result.text;
+  expect(
+    await readOwnerMaterialText({
+      id: 'src-doc',
+      ownerId: ACCOUNT,
+      extractionResult: { ...result, text: legacyText },
+    }),
+  ).toEqual(read);
 
   // Reuse: same bytes, another source. One extraction, the same text entry,
   // derivatives of its own, and its reader sees its own ids.
@@ -1273,6 +1287,7 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   const reused = (await stateOf(h, 'src-copy')).extraction_result!;
   expect(reused.reusedFrom).toBe('src-doc');
   expect(reused.text.assetId).toBe(result.text.assetId);
+  expect(reused.text.imageRefs).toEqual(result.text.imageRefs);
   expect(reused.derivatives.map((d) => d.key)).toEqual(['img-1', 'img-2']);
   expect(reused.derivatives.map((d) => d.id)).not.toContain(first!.id);
   const readCopy = (await readOwnerMaterialText({

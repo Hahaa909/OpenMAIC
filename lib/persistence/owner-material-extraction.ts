@@ -109,7 +109,12 @@ export interface OwnerExtractionDerivative {
 export interface OwnerExtractionResult {
   /** Changes whenever the result does: the token of the claim that published it. */
   revision: string;
-  text: { assetId: string; chars: number };
+  text: {
+    assetId: string;
+    chars: number;
+    /** UTF-16 targets in these exact bytes; absent on older published results. */
+    imageRefs?: Array<{ start: number; end: number; key: string }>;
+  };
   extractor: { id: string; version: string; options: Record<string, string> };
   stats: Record<string, unknown>;
   derivatives: OwnerExtractionDerivative[];

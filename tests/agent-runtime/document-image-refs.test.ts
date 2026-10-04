@@ -18,6 +18,18 @@ const bothPasses = (text: string) =>
   resolveDerivativeRefs(rewriteImageReferences(text, index), derivatives);
 
 describe('document image references through storage and reading', () => {
+  it('does not treat inequalities as tags spanning later Markdown blocks', () => {
+    for (const text of [
+      'If $a<b$ then.\n\n![x](images/fig.png)\n\n| p | <b>q</b> |',
+      'a<b\n\n<img src="images/fig.png">',
+      'a<b\n\ntext <img src=images/fig.png>',
+      '$$0<t<1$$\n\n![x](images/fig.png)\n\n<b>tail</b>',
+    ]) {
+      expect(rewriteImageReferences(text, index)).toContain('openmaic-derivative:img-1');
+      const stored = text.replace('images/fig.png', 'openmaic-derivative:img-1');
+      expect(resolveDerivativeRefs(stored, derivatives)).toContain('material:own-image');
+    }
+  });
   it('resolves real images and leaves literal keys, code, escapes and links untouched', () => {
     const literal = [
       'Literal openmaic-derivative:img-1.',

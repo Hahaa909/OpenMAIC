@@ -374,7 +374,11 @@ export async function runClaimedOwnerExtraction(
       claim,
       {
         cacheKey: ownerExtractionCacheKey(source, outcome.extractor, options),
-        text: { assetId: textAssetId, chars: outcome.text.length },
+        text: {
+          assetId: textAssetId,
+          chars: outcome.text.length,
+          ...(outcome.imageRefs === undefined ? {} : { imageRefs: outcome.imageRefs }),
+        },
         extractor: { ...outcome.extractor, options },
         stats: { ...outcome.stats },
         derivatives,
