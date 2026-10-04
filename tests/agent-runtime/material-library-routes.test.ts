@@ -1,7 +1,8 @@
 /**
- * The session material routes over PGlite: what a conversation reaches --
- * its own rows and the library materials its links reach -- under the
- * request owner. Only owner resolution and the runtime gate are stubbed.
+ * The material library's organizing routes and agent tools over PGlite: the
+ * thin adapters answer what the shared operations decide, under the request
+ * owner (routes) or the run's owner (tools). Only owner resolution and the
+ * runtime gate are stubbed.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -22,12 +23,27 @@ vi.mock('@/lib/server/identity/resolve', async () =>
   (await import('../helpers/owner-resolution-mock')).ownerResolveModule(() => mocks.ownerId),
 );
 
-import { GET as sessionMaterialRoute } from '@/app/api/materials/[id]/route';
+import {
+  GET as sessionMaterialRoute,
+  PATCH as renameMaterialRoute,
+} from '@/app/api/materials/[id]/route';
 import { GET as sessionMaterialsRoute } from '@/app/api/materials/route';
+import {
+  DELETE as deleteFolderRoute,
+  PATCH as renameFolderRoute,
+} from '@/app/api/materials/folders/[id]/route';
+import {
+  GET as listFoldersRoute,
+  POST as createFolderRoute,
+} from '@/app/api/materials/folders/route';
+import { POST as moveRoute } from '@/app/api/materials/move/route';
+import { claimOwner } from '@/lib/persistence/owner-claims';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
+import { buildMaterialLibraryTools } from '@/lib/server/agent-runtime/material-library-tools';
 
 import {
   ACCOUNT,
+  ANON,
   OTHER,
   bootLibraryHarness,
   seedCopy,
@@ -36,7 +52,7 @@ import {
   type ExtractionScenarioPool,
   type LibraryHarness,
 } from '../persistence/_material-library-scenarios';
-import { seedSource } from '../persistence/_owner-extraction-scenarios';
+import { seedSource, stateOf } from '../persistence/_owner-extraction-scenarios';
 
 class PGlitePool implements ExtractionScenarioPool {
   constructor(readonly db: PGlite) {}
@@ -66,7 +82,7 @@ function request(method: string, path: string, body?: unknown): NextRequest {
 
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
-describe('session material routes (PGlite)', () => {
+describe('material library routes and tools (PGlite)', () => {
   let db: PGlite | undefined;
 
   async function boot(): Promise<LibraryHarness> {
@@ -84,6 +100,184 @@ describe('session material routes (PGlite)', () => {
     mocks.ownerId = ACCOUNT;
     await db?.close();
     db = undefined;
+  });
+
+  it('creates, lists, renames and deletes folders for the request owner', async () => {
+    const h = await boot();
+    const created = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Unit 1' }),
+    );
+    expect(created.status).toBe(201);
+    const { folder } = (await created.json()) as { folder: { id: string } };
+    const again = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'unit 1' }),
+    );
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ created: false, folder: { id: folder.id } });
+    const invalid = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: ' ' }),
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ reason: 'name_empty' });
+    await createFolderRoute(request('POST', '/api/materials/folders', { name: 'Unit 2' }));
+
+    const listed = await listFoldersRoute(request('GET', '/api/materials/folders'));
+    expect(
+      ((await listed.json()) as { folders: Array<{ name: string }> }).folders.map((f) => f.name),
+    ).toEqual(['Unit 1', 'Unit 2']);
+
+    const taken = await renameFolderRoute(
+      request('PATCH', `/api/materials/folders/${folder.id}`, { name: 'UNIT 2' }),
+      params(folder.id),
+    );
+    expect(taken.status).toBe(409);
+    expect(await taken.json()).toMatchObject({ reason: 'name_taken' });
+    const renamed = await renameFolderRoute(
+      request('PATCH', `/api/materials/folders/${folder.id}`, { name: 'Cells' }),
+      params(folder.id),
+    );
+    expect(await renamed.json()).toMatchObject({ status: 'renamed', folder: { name: 'Cells' } });
+
+    await seedSource(h, 'src-a');
+    await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-a'], folderId: folder.id }),
+    );
+    const notEmpty = await deleteFolderRoute(
+      request('DELETE', `/api/materials/folders/${folder.id}`),
+      params(folder.id),
+    );
+    expect(notEmpty.status).toBe(409);
+    expect(await notEmpty.json()).toMatchObject({ reason: 'not_empty' });
+
+    // Another owner sees none of it.
+    mocks.ownerId = OTHER;
+    expect(
+      (
+        await renameFolderRoute(
+          request('PATCH', `/api/materials/folders/${folder.id}`, { name: 'Mine' }),
+          params(folder.id),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await deleteFolderRoute(
+          request('DELETE', `/api/materials/folders/${folder.id}`),
+          params(folder.id),
+        )
+      ).status,
+    ).toBe(404);
+    mocks.ownerId = ACCOUNT;
+
+    await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-a'], folderId: null }),
+    );
+    const deleted = await deleteFolderRoute(
+      request('DELETE', `/api/materials/folders/${folder.id}`),
+      params(folder.id),
+    );
+    expect(deleted.status).toBe(204);
+  });
+
+  it('moves all or nothing and renames sources only', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-a');
+    await seedDerivative(h, 'img-a1', 'src-a');
+    const made = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Unit 1' }),
+    );
+    const { folder } = (await made.json()) as { folder: { id: string } };
+
+    const refused = await moveRoute(
+      request('POST', '/api/materials/move', {
+        materialIds: ['src-a', 'img-a1'],
+        folderId: folder.id,
+      }),
+    );
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({ reason: 'not_movable', materialIds: ['img-a1'] });
+    expect((await stateOf(h, 'src-a')).folder_id).toBeNull();
+
+    const moved = await moveRoute(
+      request('POST', '/api/materials/move', { materialIds: ['src-a'], folderId: folder.id }),
+    );
+    expect(await moved.json()).toMatchObject({ status: 'moved' });
+    expect((await stateOf(h, 'img-a1')).folder_id).toBe(folder.id);
+    expect(
+      (
+        await moveRoute(
+          request('POST', '/api/materials/move', { materialIds: ['src-a'], folderId: 'nope' }),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (await moveRoute(request('POST', '/api/materials/move', { materialIds: [], folderId: null })))
+        .status,
+    ).toBe(400);
+
+    const renamed = await renameMaterialRoute(
+      request('PATCH', '/api/materials/src-a', { name: 'Lesson 1' }),
+      params('src-a'),
+    );
+    expect(await renamed.json()).toEqual({
+      status: 'renamed',
+      materialId: 'src-a',
+      name: 'Lesson 1',
+    });
+    const derivative = await renameMaterialRoute(
+      request('PATCH', '/api/materials/img-a1', { name: 'Mine' }),
+      params('img-a1'),
+    );
+    expect(derivative.status).toBe(409);
+    mocks.ownerId = OTHER;
+    expect(
+      (
+        await renameMaterialRoute(
+          request('PATCH', '/api/materials/src-a', { name: 'Mine' }),
+          params('src-a'),
+        )
+      ).status,
+    ).toBe(404);
+  });
+
+  it('refuses a retired owner’s request, while a run of it keeps organizing for the account', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-anon', { owner: ANON });
+    await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+
+    mocks.ownerId = ANON;
+    const late = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Late' }),
+    );
+    expect(late.status).toBe(403);
+
+    const tools = buildMaterialLibraryTools({ ownerId: ANON });
+    const run = (name: string, args: Record<string, unknown>) =>
+      tools.find((tool) => tool.name === name)!.execute('call', args as never) as Promise<{
+        details: Record<string, unknown>;
+        isError?: boolean;
+      }>;
+    const folder = await run('create_material_folder', { name: 'From the run' });
+    expect(folder.details).toMatchObject({ status: 'created', created: true });
+    expect(
+      (
+        await run('move_materials', {
+          materialIds: ['src-anon'],
+          folderId: folder.details.folderId,
+        })
+      ).details,
+    ).toMatchObject({ status: 'moved' });
+    expect(
+      (await run('rename_material', { materialId: 'src-anon', name: 'Renamed' })).details,
+    ).toMatchObject({
+      status: 'renamed',
+    });
+    const listed = await run('list_material_folders', {});
+    expect(listed.details.folders).toEqual([
+      { folderId: folder.details.folderId, name: 'From the run', materialCount: 1 },
+    ]);
+    const refused = await run('move_materials', { materialIds: ['missing'], folderId: null });
+    expect(refused).toMatchObject({ isError: true, details: { status: 'not_movable' } });
   });
 
   /** ses-1 holds a pre-link copy and links src-a (with img-a1); src-loose is not attached. */
@@ -157,5 +351,18 @@ describe('session material routes (PGlite)', () => {
     // Unattached, or another owner's conversation: the same 404.
     expect((await read('src-loose')).status).toBe(404);
     expect((await read('src-a', 'ses-other')).status).toBe(404);
+  });
+
+  it('answers 404 without the configured runtime', async () => {
+    await boot();
+    mocks.runtimeConfigured = false;
+    expect((await listFoldersRoute(request('GET', '/api/materials/folders'))).status).toBe(404);
+    expect(
+      (
+        await moveRoute(
+          request('POST', '/api/materials/move', { materialIds: ['x'], folderId: null }),
+        )
+      ).status,
+    ).toBe(404);
   });
 });

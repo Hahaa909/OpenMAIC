@@ -12,6 +12,11 @@ import {
   attachByIdScenario,
   attachRefusalScenario,
   bootLibraryHarness,
+  foldersScenario,
+  moveScenario,
+  renameMaterialScenario,
+  deleteFolderScenario,
+  organizeAcrossClaimScenario,
   copyOnUseScenario,
   deletedThroughLinkScenario,
   documentImagesQuotaScenario,
@@ -139,6 +144,28 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
 
     it('runs queued extractions and waits for a run under way when stopped', async () => {
       await ownerRunnerScenario(await boot());
+    });
+  });
+
+  describe('organizing', () => {
+    it('creates, lists and renames folders, within the per-owner limit', async () => {
+      await foldersScenario(await boot());
+    });
+
+    it('moves sources with their derivatives, all or nothing', async () => {
+      await moveScenario(await boot());
+    });
+
+    it('renames a source, never a derivative', async () => {
+      await renameMaterialScenario(await boot());
+    });
+
+    it('deletes only an empty folder, tombstones aside', async () => {
+      await deleteFolderScenario(await boot());
+    });
+
+    it('refuses a retired owner’s request and follows a claim for a run', async () => {
+      await organizeAcrossClaimScenario(await boot());
     });
   });
 

@@ -14,6 +14,15 @@ import sharp from 'sharp';
 import { expect, vi } from 'vitest';
 
 import { claimOwner } from '@/lib/persistence/owner-claims';
+import {
+  createMaterialFolder,
+  deleteEmptyMaterialFolder,
+  listMaterialFolders,
+  moveMaterials,
+  renameMaterial,
+  renameMaterialFolder,
+} from '@/lib/persistence/material-library';
+import { FOLDER_COUNT_LIMIT } from '@/lib/utils/folder-name-validation';
 import { validateAppScene, validateAppStage } from '@/lib/document-store/validators';
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { createOwnerBoundDocumentStore } from '@/lib/persistence/owner-bound-document-store';
@@ -1332,4 +1341,199 @@ export async function documentImagesQuotaScenario(h: ExtractionHarness): Promise
   expect(await entryIds(h)).toEqual([]);
   // The text did fit: the run got as far as the images.
   expect(h.documentExtract).toHaveBeenCalledTimes(1);
+}
+
+async function folderOfMaterial(h: ExtractionHarness, id: string): Promise<string | null> {
+  return (await stateOf(h, id)).folder_id;
+}
+
+/**
+ * Folders: create (the same name returns the folder), list with counts and a
+ * literal query, rename (unchanged, taken, invalid), the per-owner limit.
+ */
+export async function foldersScenario(h: ExtractionHarness): Promise<void> {
+  const create = (name: string, owner = ACCOUNT) =>
+    createMaterialFolder(h.provider, { ownerId: owner, name, fence: 'request' });
+  const made = await create('  Biology ');
+  expect(made).toMatchObject({ status: 'ok', created: true, folder: { name: 'Biology' } });
+  const again = await create('BIOLOGY');
+  expect(again).toMatchObject({ status: 'ok', created: false });
+  if (made.status !== 'ok' || again.status !== 'ok') return;
+  expect(again.folder.id).toBe(made.folder.id);
+  expect(await create('   ')).toEqual({ status: 'invalid_name', reason: 'empty' });
+  expect(await create('x'.repeat(41))).toEqual({ status: 'invalid_name', reason: 'tooLong' });
+
+  const chem = await create('Chem_100%');
+  if (chem.status !== 'ok') throw new Error('expected a folder');
+  await seedSource(h, 'src-a', { folderId: made.folder.id });
+  // The seed helper files by id; the folder exists already.
+  const listed = await listMaterialFolders(h.pool as never, ACCOUNT);
+  expect(listed.map((f) => [f.name, f.materialCount])).toEqual([
+    ['Biology', 1],
+    ['Chem_100%', 0],
+  ]);
+  expect(
+    (await listMaterialFolders(h.pool as never, ACCOUNT, { query: '100%' })).map((f) => f.name),
+  ).toEqual(['Chem_100%']);
+  expect(await listMaterialFolders(h.pool as never, OTHER)).toEqual([]);
+
+  const rename = (folderId: string, name: string) =>
+    renameMaterialFolder(h.provider, { ownerId: ACCOUNT, folderId, name, fence: 'request' });
+  expect(await rename(made.folder.id, 'Biology')).toMatchObject({ status: 'unchanged' });
+  expect(await rename(made.folder.id, 'chem_100%')).toEqual({ status: 'name_taken' });
+  expect(await rename(made.folder.id, 'Cell biology')).toMatchObject({
+    status: 'renamed',
+    folder: { name: 'Cell biology' },
+  });
+  expect(await rename('missing', 'X')).toEqual({ status: 'not_found' });
+  expect(
+    await renameMaterialFolder(h.provider, {
+      ownerId: OTHER,
+      folderId: made.folder.id,
+      name: 'Mine',
+      fence: 'request',
+    }),
+  ).toEqual({ status: 'not_found' });
+
+  for (
+    let index = (await listMaterialFolders(h.pool as never, ACCOUNT)).length;
+    index < FOLDER_COUNT_LIMIT;
+    index += 1
+  ) {
+    expect((await create(`Folder ${index}`)).status).toBe('ok');
+  }
+  expect(await create('One too many')).toEqual({ status: 'limit', limit: FOLDER_COUNT_LIMIT });
+  // At the limit, a name the owner already has still returns its folder.
+  expect(await create('cell BIOLOGY')).toMatchObject({ status: 'ok', created: false });
+}
+
+/**
+ * Moving: into a folder and back to Unfiled, derivatives with their source,
+ * all or nothing, never a derivative, a deleted or another owner's material,
+ * and `unchanged` when nothing moves.
+ */
+export async function moveScenario(h: ExtractionHarness): Promise<void> {
+  const folder = await createMaterialFolder(h.provider, {
+    ownerId: ACCOUNT,
+    name: 'Unit 1',
+    fence: 'request',
+  });
+  if (folder.status !== 'ok') throw new Error('expected a folder');
+  const target = folder.folder.id;
+  await seedSource(h, 'src-a');
+  await seedDerivative(h, 'img-a1', 'src-a');
+  await seedSource(h, 'src-b');
+  await seedSource(h, 'src-gone');
+  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+  await seedSource(h, 'src-foreign', { owner: OTHER });
+  const move = (ids: string[], folderId: string | null) =>
+    moveMaterials(h.provider, { ownerId: ACCOUNT, materialIds: ids, folderId, fence: 'request' });
+
+  expect(await move(['src-a', 'src-b'], target)).toMatchObject({ status: 'moved' });
+  expect(await folderOfMaterial(h, 'src-a')).toBe(target);
+  expect(await folderOfMaterial(h, 'img-a1')).toBe(target);
+  expect(await folderOfMaterial(h, 'src-b')).toBe(target);
+  expect(await move(['src-a'], target)).toMatchObject({ status: 'unchanged' });
+
+  for (const bad of ['img-a1', 'src-gone', 'src-foreign', 'missing']) {
+    expect(await move(['src-a', bad], null)).toEqual({ status: 'not_movable', materialIds: [bad] });
+  }
+  // Nothing moved by the refused calls.
+  expect(await folderOfMaterial(h, 'src-a')).toBe(target);
+  expect(await move(['src-a'], 'no-such-folder')).toEqual({ status: 'folder_not_found' });
+
+  expect(await move(['src-a'], null)).toMatchObject({ status: 'moved', folderId: null });
+  expect(await folderOfMaterial(h, 'src-a')).toBeNull();
+  expect(await folderOfMaterial(h, 'img-a1')).toBeNull();
+  expect(await folderOfMaterial(h, 'src-b')).toBe(target);
+}
+
+/** Renaming a source's display name; derivatives and others' materials refused. */
+export async function renameMaterialScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'src-a');
+  await seedDerivative(h, 'img-a1', 'src-a');
+  await seedSource(h, 'src-foreign', { owner: OTHER });
+  const rename = (materialId: string, name: string) =>
+    renameMaterial(h.provider, { ownerId: ACCOUNT, materialId, name, fence: 'request' });
+  // The original filename is what it shows until renamed.
+  expect(await rename('src-a', 'src-a.pdf')).toMatchObject({ status: 'unchanged' });
+  expect(await rename('src-a', ' Lesson 1 ')).toEqual({
+    status: 'renamed',
+    materialId: 'src-a',
+    name: 'Lesson 1',
+  });
+  const row = await h.pool.query<{ display_name: string; original_name: string }>(
+    'SELECT display_name, original_name FROM owner_material WHERE id = $1',
+    ['src-a'],
+  );
+  expect(row.rows[0]).toEqual({ display_name: 'Lesson 1', original_name: 'src-a.pdf' });
+  expect(await rename('src-a', 'Lesson 1')).toMatchObject({ status: 'unchanged' });
+  expect(await rename('img-a1', 'Mine')).toEqual({ status: 'derivative' });
+  expect(await rename('src-foreign', 'Mine')).toEqual({ status: 'not_found' });
+  expect(await rename('src-a', '')).toEqual({ status: 'invalid_name' });
+}
+
+/** Deleting a folder: refused while a live material is in it; tombstones do not count. */
+export async function deleteFolderScenario(h: ExtractionHarness): Promise<void> {
+  const folder = await createMaterialFolder(h.provider, {
+    ownerId: ACCOUNT,
+    name: 'Unit 1',
+    fence: 'request',
+  });
+  if (folder.status !== 'ok') throw new Error('expected a folder');
+  const id = folder.folder.id;
+  await seedSource(h, 'src-a');
+  await seedSource(h, 'src-old');
+  await moveMaterials(h.provider, {
+    ownerId: ACCOUNT,
+    materialIds: ['src-a', 'src-old'],
+    folderId: id,
+    fence: 'request',
+  });
+  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-old']);
+  const remove = (owner = ACCOUNT) =>
+    deleteEmptyMaterialFolder(h.provider, { ownerId: owner, folderId: id, fence: 'request' });
+
+  expect(await remove()).toEqual({ status: 'not_empty', materialCount: 1 });
+  expect(await remove(OTHER)).toEqual({ status: 'not_found' });
+  await moveMaterials(h.provider, {
+    ownerId: ACCOUNT,
+    materialIds: ['src-a'],
+    folderId: null,
+    fence: 'request',
+  });
+  expect(await remove()).toEqual({ status: 'deleted' });
+  expect(await folderOfMaterial(h, 'src-old')).toBeNull();
+  expect(await listMaterialFolders(h.pool as never, ACCOUNT)).toEqual([]);
+  expect(await remove()).toEqual({ status: 'not_found' });
+}
+
+/**
+ * The fences: a request of a claimed (retired) owner is refused; an agent
+ * run's write follows the claim to the account.
+ */
+export async function organizeAcrossClaimScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'src-anon', { owner: ANON });
+  await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+  await expect(
+    createMaterialFolder(h.provider, { ownerId: ANON, name: 'Late', fence: 'request' }),
+  ).rejects.toThrow();
+  const background = await createMaterialFolder(h.provider, {
+    ownerId: ANON,
+    name: 'From the run',
+    fence: 'background',
+  });
+  expect(background).toMatchObject({ status: 'ok', created: true });
+  if (background.status !== 'ok') return;
+  expect(
+    await moveMaterials(h.provider, {
+      ownerId: ANON,
+      materialIds: ['src-anon'],
+      folderId: background.folder.id,
+      fence: 'background',
+    }),
+  ).toMatchObject({ status: 'moved' });
+  expect((await listMaterialFolders(h.pool as never, ACCOUNT)).map((f) => f.materialCount)).toEqual(
+    [1],
+  );
 }
