@@ -57,6 +57,19 @@ export function resolvedMaterialId(material: ResolvedMaterial): string {
   return material.origin === 'session' ? material.record.id : material.entry.id;
 }
 
+/** Counts of the derivatives reachable in this snapshot, keyed by their source id. */
+export function materialDerivativeCounts(
+  materials: readonly ResolvedMaterial[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const material of materials) {
+    const sourceId =
+      material.origin === 'session' ? material.record.derivedFrom : material.entry.derivedFrom;
+    if (sourceId) counts.set(sourceId, (counts.get(sourceId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /**
  * Resolve one id in `scope`, or `null` when it names nothing the session may
  * read there. The session's own rows come first in either scope, so an id
@@ -85,8 +98,21 @@ export async function resolveMaterial(
  * derivatives.
  */
 export async function listSessionScopeMaterials(sessionId: string): Promise<ResolvedMaterial[]> {
+  const sessionRows = async () => {
+    const records: AgentSessionMaterial[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const page = await listSessionMaterials(sessionId, {
+        limit: 200,
+        ...(before === undefined ? {} : { before }),
+      });
+      records.push(...page);
+      if (page.length < 200) return records;
+      before = page.at(-1)!.id;
+    }
+  };
   const [records, entries] = await Promise.all([
-    listSessionMaterials(sessionId),
+    sessionRows(),
     listLinkedOwnerMaterials(await pool(), sessionId),
   ]);
   return [

@@ -55,10 +55,16 @@ async function provider() {
  */
 function textOf(
   bytes: Uint8Array,
-  result: Pick<OwnerExtractionResult, 'revision' | 'derivatives'>,
+  result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>,
+  ownerId: string,
 ): OwnerMaterialText {
+  const cacheKey = JSON.stringify([ownerId, result.text.assetId, result.revision]);
   return {
-    text: resolveDerivativeRefs(Buffer.from(bytes).toString('utf8'), result.derivatives ?? []),
+    text: resolveDerivativeRefs(
+      Buffer.from(bytes).toString('utf8'),
+      result.derivatives ?? [],
+      cacheKey,
+    ),
     revision: result.revision,
   };
 }
@@ -70,7 +76,7 @@ async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMater
     const read = await (
       await provider()
     ).assetStore.resolve(assetPrincipalForOwner(location.ownerId), result.text.assetId);
-    return read ? textOf(read.bytes, result) : null;
+    return read ? textOf(read.bytes, result, location.ownerId) : null;
   } catch {
     // Retried under the fence.
     return null;
@@ -101,7 +107,7 @@ async function rereadUnderFence(
         const read = await persistence
           .assetStoreIn(tx)
           .resolve(assetPrincipalForOwner(row.owner_id), result.text.assetId);
-        return read ? textOf(read.bytes, result) : null;
+        return read ? textOf(read.bytes, result, row.owner_id) : null;
       } catch (error) {
         // Out of the transaction, so it rolls back rather than ending aborted.
         throw new FencedTextReadFailed('pool read failed', { cause: error });

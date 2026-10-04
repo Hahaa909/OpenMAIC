@@ -59,6 +59,26 @@ function entry(overrides: Partial<OwnerMaterialEntry>): ResolvedMaterial {
 }
 
 describe('materialsPromptBlock', () => {
+  it('keeps attached sources visible when an earlier source has a hundred derivatives', () => {
+    const prompt = materialsPromptBlock([
+      entry({ id: 'src_first' }),
+      ...Array.from({ length: 100 }, (_, i) =>
+        entry({
+          id: `img_${i}`,
+          kind: 'image',
+          derivedFrom: 'src_first',
+          extraction: null,
+        }),
+      ),
+      entry({ id: 'src_second', originalName: 'second.pdf' }),
+      row({ id: 'mat_legacy', kind: 'source', textAssetId: null }),
+    ]);
+    expect(prompt).toContain('id src_second');
+    expect(prompt).toContain('id mat_legacy');
+    expect(prompt).toContain('100 derivatives');
+    expect(prompt).not.toContain('id img_');
+    expect(prompt).not.toContain('…and');
+  });
   it('teaches the knowledge base to a conversation with nothing attached', () => {
     const prompt = materialsPromptBlock([]);
     expect(prompt).toContain('## Materials and the knowledge base');
@@ -100,7 +120,8 @@ describe('materialsPromptBlock', () => {
     expect(prompt).toContain(
       '- "lesson.pdf" (knowledge-base source, id src_lesson, extraction running)',
     );
-    expect(prompt).toContain('- "lesson.pdf at page 2" (image of src_lesson, id img_1)');
+    expect(prompt).not.toContain('id img_1');
+    expect(prompt).toContain('1 derivative');
     expect(prompt).toContain('- "Week 1" (knowledge-base source, id src_deck');
     expect(prompt).toContain('A `web` material was already fetched and extracted');
     expect(prompt).toContain('read through the `extraction` material');

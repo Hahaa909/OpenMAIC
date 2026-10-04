@@ -234,7 +234,9 @@ function likeLiteral(text: string): string {
  * The session owner's live library, newest first: sources and their live
  * derivatives, attached or not. A derivative is listed only while its source
  * is live, and is filed with it. `folderId` distinguishes omitted (every
- * folder) from `null` (Unfiled).
+ * folder) from `null` (Unfiled). Session rows win over owner materials of the
+ * same id, as in the resolver: skip those owner entries before paging, so a
+ * listing or broad search never advertises text that reading that id cannot reach.
  */
 export async function listSessionOwnerLibrary(
   queryable: Queryable,
@@ -277,6 +279,10 @@ export async function listSessionOwnerLibrary(
        LEFT JOIN owner_material AS source ON source.id = material.derived_from
       WHERE session.id = $1 AND session.deleted_at IS NULL
         AND material.status = 'ready' AND material.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_session_materials AS copy
+           WHERE copy.session_id = session.id AND copy.id = material.id
+        )
         AND (material.derived_from IS NULL
           OR (source.owner_id = material.owner_id AND source.status = 'ready'
               AND source.deleted_at IS NULL))

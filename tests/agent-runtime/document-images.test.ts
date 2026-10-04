@@ -64,8 +64,9 @@ describe('rewriteImageReferences', () => {
     expect(rewriteImageReferences('![a](images/fig%201.jpg)', index)).toBe(
       '![a](openmaic-derivative:img-1)',
     );
+    // Rewriting the destination preserves the image's title.
     expect(rewriteImageReferences('![a](<./images/fig 1.jpg> "Figure 1")', index)).toBe(
-      '![a](openmaic-derivative:img-1)',
+      '![a](openmaic-derivative:img-1 "Figure 1")',
     );
     // Balanced parentheses belong to the destination.
     expect(rewriteImageReferences('![cell](images/cell(1).png)', index)).toBe(

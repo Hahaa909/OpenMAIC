@@ -453,6 +453,76 @@ export async function libraryToolFlowScenario(h: ExtractionHarness): Promise<voi
   expect(await linksOf(h, 'ses-1')).toEqual([]);
 }
 
+/** A library enumeration must not advertise owner text under a legacy copy's id. */
+export async function legacyCopyLibraryToolsScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  for (const id of ['src-shadowed', 'src-readable']) {
+    await seedSource(h, id);
+    await extractToDone(h, id);
+  }
+  await seedCopy(h, 'ses-1', 'src-shadowed', null);
+
+  const listed = await runTool('ses-1', 'list_materials', { scope: 'library' });
+  expect(listed.details.materials).toEqual([
+    expect.objectContaining({ materialId: 'src-readable' }),
+  ]);
+  const broad = await runTool('ses-1', 'search_material', { query: 'lesson', scope: 'library' });
+  const revision = (await stateOf(h, 'src-readable')).extraction_result!.revision;
+  expect(broad.details.hits).toEqual([
+    expect.objectContaining({ materialId: 'src-readable', revision }),
+  ]);
+  const targeted = await runTool('ses-1', 'search_material', {
+    query: 'lesson',
+    scope: 'library',
+    materialId: 'src-shadowed',
+  });
+  expect(targeted.details.hits).toEqual([]);
+  const shadowed = await runTool('ses-1', 'read_material', {
+    scope: 'library',
+    materialId: 'src-shadowed',
+  });
+  expect(shadowed.details.status).toBe('source_requires_derivative');
+  const followUp = await runTool('ses-1', 'read_material', {
+    scope: 'library',
+    materialId: 'src-readable',
+    revision,
+  });
+  expect(followUp.content[0]!.text).toContain('# Lesson');
+  expect(followUp.details).toMatchObject({ materialId: 'src-readable', revision });
+}
+
+/** Exercise both storage's 200-row cursor and the tool's 50-row cursor. */
+export async function sessionListingPaginationScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'ses-1');
+  const copies = Array.from({ length: 205 }, (_, i) => `copy-${String(i).padStart(3, '0')}`);
+  for (const id of copies) await seedCopy(h, 'ses-1', id, null);
+  await seedSource(h, 'src-many-images');
+  await seedSource(h, 'src-later');
+  const images = Array.from({ length: 100 }, (_, i) => `image-${i}`);
+  for (const id of images) await seedDerivative(h, id, 'src-many-images');
+  await attach(h, 'ses-1', ['src-many-images', 'src-later']);
+  const seen: string[] = [];
+  let before: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const listed = await runTool('ses-1', 'list_materials', { before });
+    const details = listed.details as {
+      materials: Array<{ materialId: string; derivativeCount?: number }>;
+      nextBefore?: string;
+    };
+    expect(details.materials.length).toBeLessThanOrEqual(50);
+    for (const row of details.materials) {
+      seen.push(row.materialId);
+      if (row.materialId === 'src-many-images') expect(row.derivativeCount).toBe(100);
+    }
+    before = details.nextBefore;
+    if (!before) break;
+  }
+  expect(before).toBeUndefined();
+  expect(new Set(seen).size).toBe(307);
+  expect(seen.slice(0, 207).sort()).toEqual([...copies, 'src-many-images', 'src-later'].sort());
+  expect(seen.slice(207).sort()).toEqual(images.sort());
+}
+
 /**
  * The library listing: omitted folderId lists every folder, null lists
  * Unfiled only; query matches names and types literally; derivatives of a
@@ -1110,6 +1180,12 @@ async function mineruLikeArtifact(noisy = false) {
           '<table><tr><td><img src="images/fig-2.jpg"></td></tr></table>',
           '![gone](images/missing.jpg)',
           '![remote](https://example.com/x.png)',
+          'Literal openmaic-derivative:img-1.',
+          '`![inline code](openmaic-derivative:img-1)`',
+          '```md\n![fenced code](openmaic-derivative:img-2)\n```',
+          String.raw`\![escaped](openmaic-derivative:img-1)`,
+          '<script>const example = "openmaic-derivative:img-1";</script>',
+          'inline <script>const example = "![x](openmaic-derivative:img-1)";</script> text',
         ].join('\n\n'),
       },
     ],
@@ -1178,7 +1254,15 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   }))!;
   expect(read.text).toContain(`![Cell diagram](material:${first!.id})`);
   expect(read.text).toContain(`<img src="material:${second!.id}">`);
-  expect(read.text).not.toContain('openmaic-derivative:');
+  const preserved = [
+    'Literal openmaic-derivative:img-1.',
+    '`![inline code](openmaic-derivative:img-1)`',
+    '```md\n![fenced code](openmaic-derivative:img-2)\n```',
+    String.raw`\![escaped](openmaic-derivative:img-1)`,
+    '<script>const example = "openmaic-derivative:img-1";</script>',
+    'inline <script>const example = "![x](openmaic-derivative:img-1)";</script> text',
+  ];
+  for (const literal of preserved) expect(read.text).toContain(literal);
 
   // Reuse: same bytes, another source. One extraction, the same text entry,
   // derivatives of its own, and its reader sees its own ids.
@@ -1198,6 +1282,23 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   }))!;
   expect(readCopy.text).toContain(`![Cell diagram](material:${reused.derivatives[0]!.id})`);
   expect(readCopy.text).not.toContain(first!.id);
+  for (const literal of preserved) expect(readCopy.text).toContain(literal);
+
+  // Reusing a parsed plan does not bypass resolving the current bytes.
+  const resolveBytes = vi.spyOn(h.provider.assetStore, 'resolve');
+  try {
+    expect(
+      await readOwnerMaterialText({ id: 'src-copy', ownerId: ACCOUNT, extractionResult: reused }),
+    ).toEqual(readCopy);
+    expect(resolveBytes).toHaveBeenCalledWith(assetPrincipalForOwner(ACCOUNT), reused.text.assetId);
+    // A warmed plan must not resurrect a now-unavailable pooled entry.
+    await h.pool.query('DELETE FROM asset_entries WHERE id = $1', [reused.text.assetId]);
+    expect(
+      await readOwnerMaterialText({ id: 'src-copy', ownerId: ACCOUNT, extractionResult: reused }),
+    ).toBeNull();
+  } finally {
+    resolveBytes.mockRestore();
+  }
 }
 
 /**

@@ -52,6 +52,7 @@ import { getServerPersistenceProvider } from '@/lib/persistence/server-provider'
 
 import {
   listSessionScopeMaterials,
+  materialDerivativeCounts,
   readResolvedMaterialText,
   resolveMaterial,
   resolvedMaterialId,
@@ -68,12 +69,14 @@ const MAX_SEARCH_HITS_PER_MATERIAL = 10;
 const MAX_SEARCH_HITS_TOTAL = 30;
 const MAX_SEARCH_CHARS_PER_EXEC = 1_000_000;
 const SEARCH_SCAN_CHUNK_CHARS = 16_384;
+/** CPU scan budget; excludes resolving and projecting the text being scanned. */
 const SEARCH_TIME_BUDGET_MS = 100;
 const DEFAULT_MATERIAL_WAIT_SECONDS = 60;
 const MAX_MATERIAL_WAIT_SECONDS = 300;
 const MATERIAL_WAIT_POLL_MS = 1_000;
 /** How many library sources one listing call fetches while a search scans them. */
 const LIBRARY_SEARCH_PAGE = 50;
+const SESSION_LIST_PAGE = 50;
 
 const SCOPE_SCHEMA = Type.Optional(
   Type.Union([Type.Literal('session'), Type.Literal('library')], {
@@ -100,7 +103,8 @@ const LIST_MATERIALS_SCHEMA = Type.Object({
   ),
   before: Type.Optional(
     Type.String({
-      description: 'Library scope paging: the nextBefore value of the previous listing.',
+      description:
+        'Paging in either scope: the nextBefore value of the previous listing. Keep the same filters.',
     }),
   ),
 });
@@ -546,21 +550,46 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
       }
       const all = await listSessionScope(deps.sessionId);
       throwIfAborted(signal);
-      const materials = all
-        .filter((material) => {
-          if (params.folderId !== undefined) {
-            if (material.origin !== 'owner' || material.entry.folderId !== params.folderId) {
-              return false;
-            }
+      const counts = materialDerivativeCounts(all);
+      const filtered = all.filter((material) => {
+        if (params.folderId !== undefined) {
+          if (material.origin !== 'owner' || material.entry.folderId !== params.folderId) {
+            return false;
           }
-          if (!query) return true;
-          const name =
-            material.origin === 'owner'
-              ? `${material.entry.displayName ?? ''} ${material.entry.originalName ?? ''} ${material.entry.mime ?? ''}`
-              : (material.record.title ?? '');
-          return name.toLowerCase().includes(query);
-        })
-        .map((material) => publicMaterialOf(material));
+        }
+        if (!query) return true;
+        const name =
+          material.origin === 'owner'
+            ? `${material.entry.displayName ?? ''} ${material.entry.originalName ?? ''} ${material.entry.mime ?? ''}`
+            : (material.record.title ?? '');
+        return name.toLowerCase().includes(query);
+      });
+      // Show every source before its derivatives, retaining the order within
+      // each group. Derivative ids remain discoverable on the following pages.
+      const isDerivative = (material: ResolvedMaterial) =>
+        Boolean(
+          material.origin === 'owner' ? material.entry.derivedFrom : material.record.derivedFrom,
+        );
+      filtered.sort((a, b) => Number(isDerivative(a)) - Number(isDerivative(b)));
+      const cursor =
+        params.before === undefined
+          ? -1
+          : filtered.findIndex((material) => resolvedMaterialId(material) === params.before);
+      const start = cursor + 1;
+      const page =
+        params.before !== undefined && cursor < 0
+          ? []
+          : filtered.slice(start, start + SESSION_LIST_PAGE);
+      const materials = page.map((material) => ({
+        ...publicMaterialOf(material),
+        ...((material.origin === 'owner' ? material.entry.kind : material.record.kind) === 'source'
+          ? { derivativeCount: counts.get(resolvedMaterialId(material)) ?? 0 }
+          : {}),
+      }));
+      const nextBefore =
+        page.length > 0 && start + page.length < filtered.length
+          ? resolvedMaterialId(page.at(-1)!)
+          : undefined;
       return {
         content: [
           {
@@ -569,8 +598,16 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
               ? JSON.stringify(materials, null, 2)
               : 'No materials are attached to this session.',
           },
+          ...(nextBefore
+            ? [
+                {
+                  type: 'text' as const,
+                  text: `More materials are available. Call list_materials with before set to nextBefore ${JSON.stringify(nextBefore)} and the same filters.`,
+                },
+              ]
+            : []),
         ],
-        details: { materials },
+        details: { materials, ...(nextBefore ? { nextBefore } : {}) },
       };
     },
   };
@@ -707,7 +744,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         throw new Error('search_material query must contain 1 to 200 characters');
       }
       const needle = foldCase(params.query);
-      const deadline = now() + SEARCH_TIME_BUDGET_MS;
+      let deadline = now() + SEARCH_TIME_BUDGET_MS;
       let scannedChars = 0;
       let truncated = false;
       const hits: Array<{
@@ -728,7 +765,11 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
           break;
         }
         const remainingCharsBeforeRead = MAX_SEARCH_CHARS_PER_EXEC - scannedChars;
+        const readStartedAt = now();
         const read = await readText(deps.sessionId, material);
+        // The budget bounds the scan. Reading and projecting one revision's
+        // text must not consume it before even its first character is searched.
+        deadline += Math.max(0, now() - readStartedAt);
         throwIfAborted(signal);
         // A missing text contributes nothing; it must not abort the search of
         // the remaining materials.

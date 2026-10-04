@@ -24,6 +24,8 @@ import {
   listingDerivedFieldsScenario,
   libraryReachScenario,
   libraryToolFlowScenario,
+  legacyCopyLibraryToolsScenario,
+  sessionListingPaginationScenario,
   linkAcrossClaimScenario,
   mediaLibraryScopeScenario,
   ownerRunnerScenario,
@@ -157,6 +159,12 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   });
 
   describe('tools', () => {
+    it('pages all legacy sources before document derivatives using real storage', async () => {
+      await sessionListingPaginationScenario(await boot());
+    });
+    it('keeps library search, listing and follow-up reads consistent with legacy-copy precedence', async () => {
+      await legacyCopyLibraryToolsScenario(await boot());
+    });
     it('extracts, waits for, reads and searches a library source by its own id', async () => {
       await libraryToolFlowScenario(await boot());
     });

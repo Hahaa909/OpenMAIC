@@ -115,6 +115,52 @@ function fencedBodyOf(result: { content: Array<{ type?: string; text?: string }>
 }
 
 describe('material agent tools', () => {
+  it('pages a session listing with many document images without losing later sources', async () => {
+    const first = { ...ownerSource(), id: 'src_first' };
+    const later = { ...ownerSource(), id: 'src_later' };
+    const entries = [
+      first,
+      ...Array.from({ length: 100 }, (_, i) => ({
+        ...ownerSource(),
+        id: `img_${i}`,
+        kind: 'image' as const,
+        derivedFrom: first.id,
+      })),
+      later,
+    ];
+    const list = tool(
+      buildMaterialTools({
+        sessionId: 'ses_1',
+        listSessionScope: async () => entries.map((entry) => ({ origin: 'owner', entry })),
+      }),
+      'list_materials',
+    );
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < 4; page += 1) {
+      const result = await list.execute('call', { before } as never);
+      const details = result.details as {
+        materials: Array<{ materialId: string; derivativeCount?: number }>;
+        nextBefore?: string;
+      };
+      expect(details.materials.length).toBeLessThanOrEqual(50);
+      if (page === 0) {
+        expect(details.materials[0]).toMatchObject({ materialId: first.id, derivativeCount: 100 });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ text: expect.stringContaining('nextBefore') }),
+          ]),
+        );
+      }
+      seen.push(...details.materials.map((m) => m.materialId));
+      before = details.nextBefore;
+      if (!before) break;
+    }
+    expect(seen).toEqual([first.id, later.id, ...entries.slice(1, -1).map((entry) => entry.id)]);
+    expect(new Set(seen).size).toBe(seen.length);
+    const missing = await list.execute('call', { before: 'missing' } as never);
+    expect(missing.details).toMatchObject({ materials: [] });
+  });
   it('registers list, read, search, extract, and wait on the material tool surface', () => {
     const tools = buildMaterialTools({ sessionId: 'ses_1' });
     expect(tools.map((candidate) => candidate.name)).toEqual([
@@ -760,7 +806,28 @@ describe('material agent tools', () => {
     });
   });
 
-  it('stops at the per-execution time budget and reports truncation', async () => {
+  it('keeps the scan budget available after a slow text read', async () => {
+    let clock = 0;
+    const search = tool(
+      buildMaterialTools({
+        sessionId: 'ses_1',
+        listMaterials: async () => [material()],
+        readTextAsset: async () => {
+          clock = 1_000;
+          return Buffer.from('needle at the start');
+        },
+        now: () => clock,
+      }),
+      'search_material',
+    );
+    const result = await search.execute('call', { query: 'needle' } as never);
+    expect(result.details).toMatchObject({
+      hits: [expect.objectContaining({ materialId: 'mat_visible' })],
+      truncated: false,
+    });
+  });
+
+  it('stops at the per-execution scan time budget and reports truncation', async () => {
     let clockCalls = 0;
     const search = tool(
       buildMaterialTools({
@@ -768,10 +835,11 @@ describe('material agent tools', () => {
         listMaterials: vi.fn().mockResolvedValue([material()]),
         readTextAsset: singleAsset(Buffer.from('a'.repeat(1_100_000))),
         // Clock reads, in order: deadline (0 + 100), the pre-read check, the
-        // post-decode check, and the first per-chunk check all see 0, so one
+        // two read-duration checks, the post-decode check, and the first
+        // per-chunk check all see 0, so one
         // 16_384-char chunk is scanned; the second per-chunk check reads 1_000
         // and trips the time budget with the counter at exactly one chunk.
-        now: () => (clockCalls++ < 4 ? 0 : 1_000),
+        now: () => (clockCalls++ < 6 ? 0 : 1_000),
       }),
       'search_material',
     );

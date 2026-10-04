@@ -9,7 +9,11 @@
  * then read with the same id.
  */
 import { isPptxMaterial } from './pptx-mime';
-import type { ResolvedMaterial } from './material-resolver';
+import {
+  materialDerivativeCounts,
+  resolvedMaterialId,
+  type ResolvedMaterial,
+} from './material-resolver';
 
 /** How many attached materials the block names; the rest are a list_materials away. */
 const MAX_LISTED = 30;
@@ -45,8 +49,14 @@ function isPptx(material: ResolvedMaterial): boolean {
 }
 
 export function materialsPromptBlock(materials: readonly ResolvedMaterial[]): string {
-  const listed = materials.slice(0, MAX_LISTED);
-  const more = materials.length - listed.length;
+  const sources = materials.filter((material) =>
+    material.origin === 'owner'
+      ? material.entry.kind === 'source'
+      : material.record.derivedFrom === null,
+  );
+  const counts = materialDerivativeCounts(materials);
+  const listed = sources.slice(0, MAX_LISTED);
+  const more = sources.length - listed.length;
   const hasSessionText = materials.some(
     (material) => material.origin === 'session' && material.record.kind === 'web',
   );
@@ -59,12 +69,15 @@ export function materialsPromptBlock(materials: readonly ResolvedMaterial[]): st
     ...(materials.length > 0
       ? [
           'Attached to this conversation:',
-          ...listed.map(lineOf),
+          ...listed.map((material) => {
+            const count = counts.get(resolvedMaterialId(material)) ?? 0;
+            return `${lineOf(material)}${count > 0 ? `; ${count} ${count === 1 ? 'derivative' : 'derivatives'}` : ''}`;
+          }),
           ...(more > 0 ? [`- …and ${more} more; call \`list_materials\` to see them all.`] : []),
         ]
       : ['Nothing is attached to this conversation yet.']),
     '',
-    "The user's knowledge base holds their uploaded materials, in folders. `list_materials` lists what this conversation has; with `scope: 'library'` it lists the whole knowledge base (filter by `folderId` -- `null` is Unfiled -- or `query`). `read_material`, `search_material`, `extract_material`, `wait_for_materials` and `use_material_media` take `scope: 'library'` too, to reach a knowledge-base material this conversation has not attached; doing so never attaches it. Every other tool, PowerPoint import included, reaches only what is attached.",
+    "The user's knowledge base holds their uploaded materials, in folders. `list_materials` lists what this conversation has; with `scope: 'library'` it lists the whole knowledge base (filter by `folderId` -- `null` is Unfiled -- or `query`). Listings are paged: when a listing returns `nextBefore`, call again with `before` set to that value and the same scope and filters. `read_material`, `search_material`, `extract_material`, `wait_for_materials` and `use_material_media` take `scope: 'library'` too, to reach a knowledge-base material this conversation has not attached; doing so never attaches it. Every other tool, PowerPoint import included, reaches only what is attached.",
     "Reading a knowledge-base source: call `extract_material` with its id, then `wait_for_materials`, then `read_material` with the same id. Pages come about 8000 characters at a time: continue with the `nextOffset` and the `revision` the previous page returned; if the text changed, start again at offset 0. `search_material` finds case-insensitive literal text across readable materials (with `scope: 'library'`, across the knowledge base). A `textChars` in a listing is approximate; `read_material` reports the exact length.",
     'Images and keyframes extracted from a source are materials of their own (their listing names the source in `derivedFrom`, with any page or time), and extracted text names them as `material:<id>`. To show image, video or audio material on a page, call `use_material_media` with its id and the stage, and put the returned `src` on the media element.',
     ...(hasSessionText
