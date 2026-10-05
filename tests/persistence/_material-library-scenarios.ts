@@ -50,6 +50,10 @@ import {
   claimNextOwnerMaterialExtraction,
   type OwnerExtractionClaim,
 } from '@/lib/persistence/owner-material-extraction';
+import {
+  startExtractionWatcher,
+  readSettledSources,
+} from '@/lib/server/agent-runtime/extraction-watcher';
 import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import { buildMaterialMediaTool } from '@/lib/server/agent-runtime/material-media';
 import { resolveRawMaterial } from '@/lib/server/agent-runtime/material-resolver';
@@ -1563,4 +1567,112 @@ export async function organizeAcrossClaimScenario(h: ExtractionHarness): Promise
   expect((await listMaterialFolders(h.pool as never, ACCOUNT)).map((f) => f.materialCount)).toEqual(
     [1],
   );
+}
+
+/** An old failed poll must not consume the watch registered by a new retry. */
+export async function watcherRetryScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'watch-session');
+  await seedSource(h, 'watch-source', { mime: 'video/mp4' });
+  await h.pool.query(`UPDATE owner_material SET extraction = '{"status":"failed"}'::jsonb
+    WHERE id = 'watch-source'`);
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queried = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  const settled: string[][] = [];
+  let reads = 0;
+  const watcher = startExtractionWatcher({
+    intervalMs: 10,
+    onSettled: (ids) => settled.push(ids),
+    readSettled: async (ids) => {
+      const result = await readSettledSources(h.pool as never, ids);
+      reads += 1;
+      if (reads === 1) {
+        captured();
+        await held;
+      }
+      return result;
+    },
+  });
+  try {
+    watcher.watch(['watch-source']);
+    await queried;
+    const tool = buildMaterialTools({
+      sessionId: 'watch-session',
+      extractionWatcher: watcher,
+    }).find((tool) => tool.name === 'extract_material')!;
+    expect(
+      (await tool.execute('retry', { materialId: 'watch-source', scope: 'library' } as never))
+        .details,
+    ).toMatchObject({ started: true, status: 'pending' });
+    release();
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(1));
+    expect(settled).toEqual([]);
+    expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+    await vi.waitFor(() => expect(settled).toEqual([['watch-source']]));
+    expect((await stateOf(h, 'watch-source')).status).toBe('done');
+  } finally {
+    release();
+    watcher.stop();
+  }
+}
+
+/** A wait's late running snapshot must not re-watch a settlement already reported. */
+export async function watcherStaleWaitScenario(h: ExtractionHarness): Promise<void> {
+  await seedSession(h, 'watch-session');
+  await seedSource(h, 'watch-source');
+  await h.pool.query(`UPDATE owner_material SET extraction = '{"status":"running"}'::jsonb
+    WHERE id = 'watch-source'`);
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queried = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  const settled: string[][] = [];
+  const watcher = startExtractionWatcher({
+    intervalMs: 10,
+    readSettled: (ids) => readSettledSources(h.pool as never, ids),
+    onSettled: (ids) => settled.push(ids),
+  });
+  let first = true;
+  const tool = buildMaterialTools({
+    sessionId: 'watch-session',
+    extractionWatcher: watcher,
+    waitPollIntervalMs: 1,
+    resolveMaterial: async (...args) => {
+      const result = await resolveMaterial(...args);
+      if (first) {
+        first = false;
+        captured();
+        await held;
+      }
+      return result;
+    },
+  }).find((tool) => tool.name === 'wait_for_materials')!;
+  watcher.watch(['watch-source']);
+  const waiting = tool.execute('wait', {
+    materialIds: ['watch-source'],
+    scope: 'library',
+    timeoutSec: 1,
+  } as never);
+  try {
+    await queried;
+    await h.pool.query(`UPDATE owner_material SET extraction = '{"status":"done"}'::jsonb
+      WHERE id = 'watch-source'`);
+    await vi.waitFor(() => expect(settled).toEqual([['watch-source']]));
+    release();
+    expect((await waiting).details).toMatchObject({ complete: true });
+    expect(settled).toEqual([['watch-source']]);
+  } finally {
+    release();
+    watcher.stop();
+    await waiting;
+  }
 }

@@ -76,6 +76,41 @@ describe('extraction watcher', () => {
     watcher.stop();
   });
 
+  it('does not let an old wait settle a freshly registered retry', () => {
+    const onSettled = vi.fn();
+    const watcher = startExtractionWatcher({ readSettled: async () => [], onSettled });
+    watcher.watch(['a']);
+    const old = watcher.observe();
+    watcher.watch(['a']);
+    old.settled(['a']);
+    expect(onSettled).not.toHaveBeenCalled();
+    watcher.observe().settled(['a']);
+    expect(onSettled).toHaveBeenCalledExactlyOnceWith(['a']);
+    watcher.stop();
+  });
+
+  it('ignores an in-flight poll and retained observations after stop', async () => {
+    vi.useFakeTimers();
+    let release!: (ids: string[]) => void;
+    const pending = new Promise<string[]>((resolve) => {
+      release = resolve;
+    });
+    const onSettled = vi.fn();
+    const readSettled = vi.fn(() => pending);
+    const watcher = startExtractionWatcher({ readSettled, onSettled, intervalMs: 100 });
+    watcher.watch(['a']);
+    const observation = watcher.observe();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(readSettled).toHaveBeenCalledTimes(1);
+    watcher.stop();
+    observation.watch(['a']);
+    observation.settled(['a']);
+    release(['a']);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(onSettled).not.toHaveBeenCalled();
+    expect(readSettled).toHaveBeenCalledTimes(1);
+  });
+
   it('stops for good with the run', async () => {
     vi.useFakeTimers();
     const readSettled = vi.fn(async (ids: readonly string[]) => [...ids]);

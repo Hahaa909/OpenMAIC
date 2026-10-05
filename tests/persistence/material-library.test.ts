@@ -9,6 +9,8 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import {
+  watcherRetryScenario,
+  watcherStaleWaitScenario,
   attachByIdScenario,
   attachRefusalScenario,
   bootLibraryHarness,
@@ -76,6 +78,13 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
     vi.unstubAllEnvs();
     await db?.close();
     db = undefined;
+  });
+
+  it('keeps watching a retry when an older failed poll returns', async () => {
+    await watcherRetryScenario(await boot());
+  });
+  it('reports once when a wait returns a stale running snapshot', async () => {
+    await watcherStaleWaitScenario(await boot());
   });
 
   describe('links', () => {

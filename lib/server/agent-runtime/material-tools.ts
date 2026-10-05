@@ -206,7 +206,7 @@ export interface MaterialToolDependencies {
    * (`./extraction-watcher.ts`): it reports each one's settlement once, as
    * the run's `library_changed`, whether or not the agent waits for it.
    */
-  extractionWatcher?: Pick<ExtractionWatcher, 'watch' | 'settled'>;
+  extractionWatcher?: Pick<ExtractionWatcher, 'watch' | 'observe'>;
 }
 
 /** The fail-closed answer: a referenced id does not exist or is not visible here. */
@@ -898,6 +898,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
       let state: { status: ExtractionStatus; reason?: string; stats?: unknown };
       let started = false;
       if (material.origin === 'owner') {
+        const observation = deps.extractionWatcher?.observe();
         const ensured = await ensureOwnerExtraction(material.entry);
         throwIfAborted(signal);
         if (!ensured) return notFoundResult();
@@ -910,7 +911,9 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
           });
         }
         if (ensured.status === 'pending' || ensured.status === 'running') {
-          deps.extractionWatcher?.watch([material.entry.id]);
+          // A newly queued attempt supersedes every earlier status read.
+          if (started) deps.extractionWatcher?.watch([material.entry.id]);
+          else observation?.watch([material.entry.id]);
         }
         state =
           ensured.queued || ensured.status !== material.entry.extraction?.status
@@ -962,6 +965,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
       const deadline = now() + timeoutMs;
       for (;;) {
         throwIfAborted(signal);
+        const observation = deps.extractionWatcher?.observe();
         let resolved: ResolvedMaterial[];
         if (params.materialIds) {
           const found = await Promise.all(
@@ -994,7 +998,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         const owned = resolved.flatMap((material) =>
           material.origin === 'owner' ? [material.entry] : [],
         );
-        deps.extractionWatcher?.watch(
+        observation?.watch(
           owned
             .filter(
               (entry) =>
@@ -1008,7 +1012,7 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
           // Settled sources are reported through the watcher, once.
           const isSettled = (status: string | undefined) =>
             status === 'done' || status === 'failed';
-          deps.extractionWatcher?.settled(
+          observation?.settled(
             owned.filter((entry) => isSettled(entry.extraction?.status)).map((entry) => entry.id),
           );
           const summary = {

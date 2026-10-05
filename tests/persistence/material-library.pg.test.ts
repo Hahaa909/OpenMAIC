@@ -25,6 +25,8 @@ import { runClaimedOwnerExtraction } from '@/lib/server/material-extraction/owne
 import { ACCOUNT, seedDerivative } from './_material-library-scenarios';
 import { seedSource, stateOf } from './_owner-extraction-scenarios';
 import {
+  watcherRetryScenario,
+  watcherStaleWaitScenario,
   attachByIdScenario,
   attachRefusalScenario,
   bootLibraryHarness,
@@ -281,6 +283,13 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
       await admin.end();
       admin = undefined;
     }
+  });
+
+  it('keeps watching a retry when an older failed poll returns', async () => {
+    await watcherRetryScenario(await boot());
+  });
+  it('reports once when a wait returns a stale running snapshot', async () => {
+    await watcherStaleWaitScenario(await boot());
   });
 
   describe('links', () => {

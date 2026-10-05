@@ -18,11 +18,16 @@
  */
 import type { Queryable } from '@openmaic/storage/document/pg';
 
-export interface ExtractionWatcher {
+export interface ExtractionObservation {
   /** Start watching sources whose extraction has not settled. */
   watch(materialIds: readonly string[]): void;
   /** These sources were seen settled elsewhere: report the watched ones now. */
   settled(materialIds: readonly string[]): void;
+}
+
+export interface ExtractionWatcher extends ExtractionObservation {
+  /** Capture before reading statuses; ignore observations superseded while the read waits. */
+  observe(): ExtractionObservation;
   /** Stop for good: the run ended. */
   stop(): void;
 }
@@ -64,12 +69,19 @@ export function startExtractionWatcher(options: ExtractionWatcherOptions): Extra
       );
     });
   const watched = new Set<string>();
+  // Retain the last change even after reporting, so an older wait cannot re-add it.
+  const changedAt = new Map<string, number>();
+  let revision = 0;
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   let stopped = false;
 
-  const report = (ids: readonly string[]) => {
-    const settled = ids.filter((id) => watched.delete(id));
+  const report = (ids: readonly string[], observedAt: number) => {
+    const settled = ids.filter((id) => {
+      if ((changedAt.get(id) ?? 0) > observedAt || !watched.delete(id)) return false;
+      changedAt.set(id, ++revision);
+      return true;
+    });
     if (watched.size === 0 && timer) {
       clearInterval(timer);
       timer = undefined;
@@ -81,8 +93,9 @@ export function startExtractionWatcher(options: ExtractionWatcherOptions): Extra
     if (polling || stopped || watched.size === 0) return;
     polling = true;
     try {
+      const observedAt = revision;
       const settled = await readSettled([...watched]);
-      if (!stopped) report(settled);
+      if (!stopped) report(settled, observedAt);
     } catch (error) {
       // The next interval tries again; a list refetch is only a convenience.
       console.warn('[extraction-watcher] status read failed', error);
@@ -91,22 +104,38 @@ export function startExtractionWatcher(options: ExtractionWatcherOptions): Extra
     }
   };
 
+  const watch = (materialIds: readonly string[], observedAt: number) => {
+    if (stopped) return;
+    for (const id of materialIds) {
+      if ((changedAt.get(id) ?? 0) > observedAt) continue;
+      watched.add(id);
+      changedAt.set(id, ++revision);
+    }
+    if (watched.size > 0 && !timer) {
+      timer = setInterval(() => void poll(), intervalMs);
+      // Never what keeps a process alive.
+      timer.unref?.();
+    }
+  };
+
   return {
-    watch(materialIds) {
-      if (stopped) return;
-      for (const id of materialIds) watched.add(id);
-      if (watched.size > 0 && !timer) {
-        timer = setInterval(() => void poll(), intervalMs);
-        // Never what keeps a process alive.
-        timer.unref?.();
-      }
+    watch: (ids) => watch(ids, revision),
+    settled: (ids) => {
+      if (!stopped) report(ids, revision);
     },
-    settled(materialIds) {
-      if (!stopped) report(materialIds);
+    observe() {
+      const observedAt = revision;
+      return {
+        watch: (ids) => watch(ids, observedAt),
+        settled: (ids) => {
+          if (!stopped) report(ids, observedAt);
+        },
+      };
     },
     stop() {
       stopped = true;
       watched.clear();
+      changedAt.clear();
       if (timer) clearInterval(timer);
       timer = undefined;
     },
