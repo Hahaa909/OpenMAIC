@@ -38,6 +38,7 @@ import {
 } from '@/app/api/materials/folders/route';
 import { GET as libraryRoute } from '@/app/api/materials/library/route';
 import { POST as moveRoute } from '@/app/api/materials/move/route';
+import { registerOwnerMaterial } from '@/lib/persistence/owner-materials';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
 import { ensureOwnerMaterialExtraction } from '@/lib/persistence/owner-material-extraction';
@@ -548,6 +549,34 @@ describe('material library routes and tools (PGlite)', () => {
       `UPDATE owner_material SET extraction = '{"status":"failed"}'::jsonb,
               extraction_error = 'the asset store has no room for this extraction' WHERE id = 'src-a'`,
     );
+    // Upload reservations count even before they appear in the ready listing.
+    await registerOwnerMaterial(
+      h.pool as never,
+      {
+        id: 'uploading',
+        ownerId: ACCOUNT,
+        kind: 'source',
+        bytes: 11,
+        originalName: 'uploading.pdf',
+        mime: 'application/pdf',
+        ossKey: 'pending-upload',
+      },
+      { maxCount: 100, maxTotalBytes: 1_000_000 },
+    );
+    // Pool usage counts logical entries, including pending allocations, rather
+    // than source bytes or deduplicated physical blobs.
+    const put = (owner: string, text: string) =>
+      h.provider.assetStore.put({ key: `owner:${owner}` }, new Blob([text]), {
+        contentType: 'text/plain',
+      });
+    await put(ACCOUNT, '1234567');
+    const course = await put(ACCOUNT, '1234567');
+    await h.pool.query('UPDATE asset_entries SET committed_at = now() WHERE id = $1', [course]);
+    const released = await put(ACCOUNT, 'released-bytes');
+    await h.pool.query('UPDATE asset_entries SET unreferenced_at = now() WHERE id = $1', [
+      released,
+    ]);
+    await put(OTHER, 'foreign-bytes');
     vi.stubEnv('ASSET_QUOTA_BYTES', '0');
 
     const listed = await libraryRoute(request('GET', '/api/materials/library'));
@@ -563,14 +592,14 @@ describe('material library routes and tools (PGlite)', () => {
     });
     expect(JSON.stringify(body)).not.toMatch(/ossKey|assetId|sha256|objects\//);
     expect(body.limits).toMatchObject({
-      usedCount: 2,
-      usedBytes: 8,
+      usedCount: 3,
+      usedBytes: 19,
       assetQuotaBytes: null,
       maxCount: expect.any(Number),
       maxTotalBytes: expect.any(Number),
       documentMaxBytes: expect.any(Number),
       mediaMaxBytes: expect.any(Number),
-      assetUsedBytes: expect.any(Number),
+      assetUsedBytes: 14,
     });
 
     const unfiled = await libraryRoute(request('GET', '/api/materials/library?folderId=unfiled'));

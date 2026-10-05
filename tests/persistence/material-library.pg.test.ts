@@ -7,6 +7,13 @@
  * `document-asset-references.pg.test.ts` for why), dropped afterwards.
  */
 import { Pool } from 'pg';
+import { NextRequest } from 'next/server';
+import { PATCH as renameRoute } from '@/app/api/materials/[id]/route';
+import { POST as createFolderRoute } from '@/app/api/materials/folders/route';
+
+vi.mock('@/lib/server/identity/resolve', async () =>
+  (await import('../helpers/owner-resolution-mock')).ownerResolveModule(() => 'user:alice'),
+);
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resetClaimParticipantsForTests } from '@/lib/persistence/owner-claims';
@@ -284,6 +291,57 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
       admin = undefined;
     }
   });
+
+  it.each(['source row', 'folder creation'] as const)(
+    'answers 503 and rolls back when the %s lock times out after the owner fence',
+    async (kind) => {
+      const h = await boot({
+        OPENMAIC_AGENT_RUNTIME_ENABLED: 'true',
+        OWNER_WRITE_LOCK_WAIT_MS: '250',
+      });
+      await seedSource(h, 'locked-source');
+      const sourceName = async () =>
+        (await h.pool.query("SELECT display_name FROM owner_material WHERE id = 'locked-source'"))
+          .rows[0];
+      const original = await sourceName();
+      const holder = await (h.pool as unknown as Pool).connect();
+      try {
+        await holder.query('BEGIN');
+        if (kind === 'source row') {
+          await holder.query("SELECT id FROM owner_material WHERE id = 'locked-source' FOR UPDATE");
+        } else {
+          await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+            `material-folders:${ACCOUNT}:create`,
+          ]);
+        }
+        const req = new NextRequest(
+          'http://localhost/api/materials/' + (kind === 'source row' ? 'locked-source' : 'folders'),
+          {
+            method: kind === 'source row' ? 'PATCH' : 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: 'Must roll back' }),
+          },
+        );
+        const pending =
+          kind === 'source row'
+            ? renameRoute(req, { params: Promise.resolve({ id: 'locked-source' }) })
+            : createFolderRoute(req);
+        await untilSomeoneWaits();
+        const response = await withinBudget(pending);
+        expect(response.status).toBe(503);
+        expect(response.headers.get('Retry-After')).toBe('2');
+        expect(await response.json()).toMatchObject({ error: { code: 'OWNER_BUSY' } });
+        expect(await sourceName()).toEqual(original);
+        expect(
+          (await h.pool.query("SELECT id FROM material_folders WHERE name = 'Must roll back'"))
+            .rows,
+        ).toEqual([]);
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+    },
+  );
 
   it('keeps watching a retry when an older failed poll returns', async () => {
     await watcherRetryScenario(await boot());

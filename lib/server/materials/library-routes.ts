@@ -13,7 +13,11 @@
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
-import { ownerWriteErrorResponse } from '@/lib/persistence/owner-merges';
+import {
+  isLockContention,
+  OwnerBusyError,
+  ownerWriteErrorResponse,
+} from '@/lib/persistence/owner-merges';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import type { ApiErrorCode } from '@/lib/server/api-response';
 import { ownerNotFound, withOwnerResponseHeaders } from '@/lib/server/agent-runtime/route-response';
@@ -58,7 +62,10 @@ export async function libraryPersistence() {
 
 /** A retired or busy owner's write, answered as every owner write is; otherwise rethrown. */
 export function libraryWriteError(error: unknown, headers: Headers): Response {
-  const answered = ownerWriteErrorResponse(error, headers);
+  const answered = ownerWriteErrorResponse(
+    isLockContention(error) ? new OwnerBusyError(error) : error,
+    headers,
+  );
   if (answered) return answered;
   throw error;
 }

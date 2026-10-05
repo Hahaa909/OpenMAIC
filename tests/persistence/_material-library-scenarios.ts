@@ -1452,6 +1452,8 @@ export async function moveScenario(h: ExtractionHarness): Promise<void> {
   await seedSource(h, 'src-b');
   await seedSource(h, 'src-gone');
   await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+  await seedSource(h, 'src-uploading');
+  await h.pool.query("UPDATE owner_material SET status = 'uploading' WHERE id = 'src-uploading'");
   await seedSource(h, 'src-foreign', { owner: OTHER });
   const move = (ids: string[], folderId: string | null) =>
     moveMaterials(h.provider, { ownerId: ACCOUNT, materialIds: ids, folderId, fence: 'request' });
@@ -1462,9 +1464,10 @@ export async function moveScenario(h: ExtractionHarness): Promise<void> {
   expect(await folderOfMaterial(h, 'src-b')).toBe(target);
   expect(await move(['src-a'], target)).toMatchObject({ status: 'unchanged', movedCount: 0 });
 
-  for (const bad of ['img-a1', 'src-gone', 'src-foreign', 'missing']) {
+  for (const bad of ['img-a1', 'src-gone', 'src-foreign', 'src-uploading', 'missing']) {
     expect(await move(['src-a', bad], null)).toEqual({ status: 'not_movable', materialIds: [bad] });
   }
+  expect(await folderOfMaterial(h, 'src-uploading')).toBeNull();
   // Nothing moved by the refused calls.
   expect(await folderOfMaterial(h, 'src-a')).toBe(target);
   expect(await move(['src-a'], 'no-such-folder')).toEqual({ status: 'folder_not_found' });
