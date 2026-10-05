@@ -39,6 +39,7 @@ import {
 } from '@/app/api/materials/folders/route';
 import { GET as libraryRoute } from '@/app/api/materials/library/route';
 import { POST as moveRoute } from '@/app/api/materials/move/route';
+import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
 import { registerOwnerMaterial } from '@/lib/persistence/owner-materials';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
@@ -777,5 +778,34 @@ describe('material library routes and tools (PGlite)', () => {
         ])
       ).rows,
     ).toEqual([{ deleted_at: null }]);
+  });
+  it('keeps the successful DELETE response when legacy byte deletion fails', async () => {
+    const h = await boot();
+    await seedSource(h, 'delete-legacy-failed');
+    setMaterialByteStoreForTests({
+      put: async () => undefined,
+      get: async () => Buffer.from('old'),
+      delete: async () => {
+        throw new Error('legacy store unavailable');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const response = await deleteMaterialRoute(
+        request('DELETE', '/api/materials/delete-legacy-failed'),
+        params('delete-legacy-failed'),
+      );
+      expect(response.status).toBe(204);
+      expect(warn).toHaveBeenCalled();
+      expect(
+        (
+          await h.pool.query('SELECT oss_key, deleted_at FROM owner_material WHERE id = $1', [
+            'delete-legacy-failed',
+          ])
+        ).rows[0],
+      ).toMatchObject({ oss_key: 'objects/delete-legacy-failed', deleted_at: expect.anything() });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

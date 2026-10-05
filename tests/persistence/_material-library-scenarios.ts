@@ -33,6 +33,7 @@ import {
   publishOwnerMaterialUpload,
   registerOwnerMaterial,
 } from '@/lib/persistence/owner-materials';
+import { migrateOwnerMaterialsToPool } from '@/lib/server/materials/migrate-to-pool';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
 import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 import {
@@ -1817,6 +1818,7 @@ export async function deleteRollbackScenario(h: ExtractionHarness): Promise<void
   await seedPoolSource(h, 'delete-rollback', Buffer.from('original'), 'application/pdf');
   const roots = await rootsOf(h, 'delete-rollback');
   const failing = {
+    pool: h.pool as never,
     withTransaction: ((body: (tx: unknown) => Promise<unknown>) =>
       h.provider.withTransaction((tx) =>
         body({
@@ -1952,4 +1954,117 @@ export async function deleteReadsScenario(h: LibraryHarness): Promise<void> {
     ((await run('list_materials', { scope: 'library' })) as { details: { materials: unknown[] } })
       .details.materials,
   ).toEqual([]);
+}
+
+/** Legacy cleanup waits for commit, survives failure and retries without allocating in the pool. */
+export async function deleteLegacyScenario(h: LibraryHarness): Promise<void> {
+  let fail = false;
+  let inTransaction = false;
+  const tracked = {
+    ...h.provider,
+    withTransaction: (async (body: Parameters<typeof h.provider.withTransaction>[0]) => {
+      inTransaction = true;
+      try {
+        return await h.provider.withTransaction(body);
+      } finally {
+        inTransaction = false;
+      }
+    }) as typeof h.provider.withTransaction,
+  };
+  const keys: string[] = [];
+  setMaterialByteStoreForTests({
+    put: async (key, bytes) => void h.objects.set(key, Buffer.from(bytes as Uint8Array)),
+    get: async (key) => {
+      const bytes = h.objects.get(key);
+      if (!bytes) throw new Error('missing old original');
+      return bytes;
+    },
+    delete: async (key) => {
+      expect(inTransaction).toBe(false);
+      const row = (
+        await h.pool.query<{ deleted_at: unknown }>(
+          'SELECT deleted_at FROM owner_material WHERE oss_key = $1',
+          [key],
+        )
+      ).rows[0];
+      expect(row).toBeDefined();
+      expect(row!.deleted_at).not.toBeNull();
+      keys.push(key);
+      if (fail) throw new Error('legacy delete unavailable');
+      h.objects.delete(key);
+    },
+  });
+  const remove = (id: string, provider = tracked) =>
+    deleteMaterial(provider, { ownerId: ACCOUNT, materialId: id, fence: 'request' });
+  await seedSource(h, 'legacy-ok');
+  h.objects.set('objects/legacy-ok', Buffer.from('old bytes'));
+  expect(await remove('legacy-ok')).toMatchObject({ status: 'deleted' });
+  expect(h.objects.has('objects/legacy-ok')).toBe(false);
+  expect(
+    (await h.pool.query('SELECT oss_key FROM owner_material WHERE id = $1', ['legacy-ok'])).rows,
+  ).toEqual([{ oss_key: '' }]);
+
+  await seedSource(h, 'legacy-rollback');
+  h.objects.set('objects/legacy-rollback', Buffer.from('rollback bytes'));
+  const rollback = {
+    ...h.provider,
+    withTransaction: ((body: Parameters<typeof h.provider.withTransaction>[0]) =>
+      h.provider.withTransaction(async (tx) => {
+        await body(tx);
+        throw new Error('rollback before commit');
+      })) as typeof h.provider.withTransaction,
+  };
+  await expect(remove('legacy-rollback', rollback)).rejects.toThrow('rollback before commit');
+  expect(h.objects.has('objects/legacy-rollback')).toBe(true);
+  expect(keys).not.toContain('objects/legacy-rollback');
+  expect(
+    (await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', ['legacy-rollback']))
+      .rows,
+  ).toEqual([{ deleted_at: null }]);
+  await remove('legacy-rollback');
+
+  await seedSource(h, 'legacy-uncertain');
+  h.objects.set('objects/legacy-uncertain', Buffer.from('uncertain bytes'));
+  const uncertain = {
+    ...h.provider,
+    withTransaction: ((body: Parameters<typeof h.provider.withTransaction>[0]) =>
+      h.provider.withTransaction(body).then(() => {
+        throw new Error('lost commit reply');
+      })) as typeof h.provider.withTransaction,
+  };
+  await expect(remove('legacy-uncertain', uncertain)).rejects.toThrow('lost commit reply');
+  expect(keys).not.toContain('objects/legacy-uncertain');
+  expect(h.objects.has('objects/legacy-uncertain')).toBe(true);
+
+  await seedSource(h, 'legacy-retry');
+  h.objects.set('objects/legacy-retry', Buffer.from('retry bytes'));
+  fail = true;
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    expect(await remove('legacy-retry')).toMatchObject({ status: 'deleted' });
+    expect(warn).toHaveBeenCalled();
+    expect(h.objects.has('objects/legacy-retry')).toBe(true);
+    expect(
+      (await h.pool.query('SELECT oss_key FROM owner_material WHERE id = $1', ['legacy-retry']))
+        .rows,
+    ).toEqual([{ oss_key: 'objects/legacy-retry' }]);
+  } finally {
+    warn.mockRestore();
+  }
+  fail = false;
+  const before = await entryIds(h);
+  expect(await migrateOwnerMaterialsToPool({ pauseMs: 0 })).toMatchObject({
+    scanned: 2,
+    migrated: 0,
+    oldBytesRemoved: 2,
+    failed: 0,
+  });
+  expect(h.objects.has('objects/legacy-retry')).toBe(false);
+  expect(h.objects.has('objects/legacy-uncertain')).toBe(false);
+  expect(
+    (
+      await h.pool.query('SELECT oss_key FROM owner_material WHERE deleted_at IS NOT NULL')
+    ).rows.every((row) => row.oss_key === ''),
+  ).toBe(true);
+  expect(await entryIds(h)).toEqual(before);
 }

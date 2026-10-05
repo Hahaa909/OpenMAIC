@@ -9,6 +9,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import {
+  deleteLegacyScenario,
   deleteChainScenario,
   deleteSharedScenario,
   deleteRefusalScenario,
@@ -210,6 +211,9 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
     });
   });
   describe('source deletion', () => {
+    it('cleans legacy originals only after commit and retries without migration', async () => {
+      await deleteLegacyScenario(await boot());
+    });
     it('deletes the complete published chain and releases both quotas', async () => {
       await deleteChainScenario(await boot());
     });

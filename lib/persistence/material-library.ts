@@ -49,6 +49,7 @@ import {
 
 import { fenceOwnerWrite, forwardOwnerWrite } from './owner-merges';
 import { MATERIAL_ROOT_KIND, withMaterialRoots } from './material-roots';
+import { getMaterialByteStore } from '@/lib/server/materials/bytes';
 
 export type LibraryFence = 'request' | 'background';
 
@@ -418,11 +419,11 @@ export type DeleteMaterialOutcome =
 
 /** Delete a ready source and its derivatives, withdrawing their actual roots atomically. */
 export async function deleteMaterial(
-  persistence: { withTransaction: WithTransaction },
+  persistence: { pool: Queryable; withTransaction: WithTransaction },
   input: { ownerId: string; materialId: string; fence: 'request' },
   now: number = Date.now(),
 ): Promise<DeleteMaterialOutcome> {
-  return withMaterialRoots(
+  const outcome = await withMaterialRoots(
     persistence,
     { ...input, materialIds: [input.materialId] },
     async ({ tx, ownerId, changeRoots }) => {
@@ -471,6 +472,32 @@ export async function deleteMaterial(
       return { status: 'deleted' as const, materialIds };
     },
   );
+  if (outcome.status === 'deleted') {
+    try {
+      // Only a committed tombstone authorizes deleting legacy bytes. Failures
+      // retain the key for the existing backfill's next enabled pass.
+      const committed = await persistence.pool.query<{ oss_key: string }>(
+        `SELECT oss_key FROM owner_material
+          WHERE id = $1 AND deleted_at IS NOT NULL AND oss_key <> ''`,
+        [input.materialId],
+      );
+      const key = committed.rows[0]?.oss_key;
+      if (key) {
+        await getMaterialByteStore().delete(key);
+        await persistence.pool.query(
+          `UPDATE owner_material SET oss_key = ''
+            WHERE id = $1 AND deleted_at IS NOT NULL AND oss_key = $2`,
+          [input.materialId, key],
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[material-delete] old original for material ${input.materialId} left for backfill`,
+        error,
+      );
+    }
+  }
+  return outcome;
 }
 
 /** What the owner uses of the two quotas the library is held to (RFC #1716 §8). */

@@ -35,6 +35,7 @@ import { runClaimedOwnerExtraction } from '@/lib/server/material-extraction/owne
 import { ACCOUNT, seedDerivative } from './_material-library-scenarios';
 import { seedSource, stateOf } from './_owner-extraction-scenarios';
 import {
+  deleteLegacyScenario,
   deleteChainScenario,
   deleteSharedScenario,
   deleteRefusalScenario,
@@ -728,6 +729,9 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     });
   });
   describe('source deletion', () => {
+    it('cleans legacy originals only after commit and retries without migration', async () => {
+      await deleteLegacyScenario(await boot());
+    });
     it('deletes the complete published chain and releases both quotas', async () => {
       await deleteChainScenario(await boot());
     });

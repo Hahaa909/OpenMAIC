@@ -78,6 +78,7 @@ interface CandidateRow extends Record<string, unknown> {
   sha256: string | null;
   oss_key: string;
   asset_id: string | null;
+  deleted_at: unknown;
 }
 
 const DEFAULT_BATCH_SIZE = 20;
@@ -194,18 +195,19 @@ export async function migrateOwnerMaterialsToPool(
     return false;
   };
 
-  /** Step 4: delete the old object only once the committed row points into the pool. */
+  /** Step 4: a committed pool pointer or tombstone authorizes removing the old object. */
   const removeOldBytes = async (id: string): Promise<void> => {
-    const committed = await provider.pool.query<{ asset_id: string | null; oss_key: string }>(
-      'SELECT asset_id, oss_key FROM owner_material WHERE id = $1',
-      [id],
-    );
+    const committed = await provider.pool.query<{
+      asset_id: string | null;
+      oss_key: string;
+      deleted_at: unknown;
+    }>('SELECT asset_id, oss_key, deleted_at FROM owner_material WHERE id = $1', [id]);
     const row = committed.rows[0];
-    if (!row?.asset_id || !row.oss_key) return;
+    if (!row || (!row.asset_id && row.deleted_at === null) || !row.oss_key) return;
     await byteStore.delete(row.oss_key);
     const cleared = await provider.pool.query(
       `UPDATE owner_material SET oss_key = ''
-        WHERE id = $1 AND asset_id IS NOT NULL AND oss_key = $2
+        WHERE id = $1 AND (asset_id IS NOT NULL OR deleted_at IS NOT NULL) AND oss_key = $2
         RETURNING id`,
       [id, row.oss_key],
     );
@@ -215,9 +217,9 @@ export async function migrateOwnerMaterialsToPool(
   let cursor = '';
   for (;;) {
     const batch = await provider.pool.query<CandidateRow>(
-      `SELECT id, owner_id, mime, sha256, oss_key, asset_id
+      `SELECT id, owner_id, mime, sha256, oss_key, asset_id, deleted_at
          FROM owner_material
-        WHERE kind = 'source' AND status = 'ready' AND deleted_at IS NULL
+        WHERE kind = 'source' AND status = 'ready'
           AND oss_key <> '' AND id > $1
         ORDER BY id
         LIMIT $2`,
@@ -228,8 +230,9 @@ export async function migrateOwnerMaterialsToPool(
       cursor = row.id;
       report.scanned += 1;
       try {
-        // A row that already points into the pool goes straight to step 4.
-        if (row.asset_id === null && !(await publish(row))) continue;
+        // A tombstone is never migrated. Like an existing pointer, it goes
+        // straight to committed-state cleanup (step 4).
+        if (row.deleted_at === null && row.asset_id === null && !(await publish(row))) continue;
         await removeOldBytes(row.id);
       } catch (error) {
         report.failed += 1;
