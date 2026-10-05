@@ -172,8 +172,8 @@ $$;
 
 -- Library columns. All nullable: a process that predates them still inserts
 -- rows without them. asset_id is the pool pointer uploads publish and readers
--- take first; only a claim reads or writes folder_id so far
--- (reassignMaterialFolders); nothing reads display_name yet.
+-- take first; folder_id files a material (NULL is Unfiled) and display_name
+-- is the name it was renamed to (./material-library.ts).
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS asset_id TEXT;
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS folder_id TEXT;
 ALTER TABLE owner_material ADD COLUMN IF NOT EXISTS display_name TEXT;
@@ -209,6 +209,13 @@ CREATE INDEX IF NOT EXISTS owner_material_extraction_cache_idx
 CREATE INDEX IF NOT EXISTS owner_material_derived_from_idx
   ON owner_material (derived_from)
   WHERE derived_from IS NOT NULL;
+
+-- A folder's materials: listing and counting by folder, and the check the
+-- folder foreign key's ON DELETE RESTRICT runs when a folder is deleted,
+-- which would otherwise scan every owner's materials.
+CREATE INDEX IF NOT EXISTS owner_material_owner_folder_idx
+  ON owner_material (owner_id, folder_id)
+  WHERE folder_id IS NOT NULL;
 
 -- Flat, owner-scoped material folders. Unfiled is folder_id IS NULL, not a
 -- row. Names are unique per owner by their normalized form, as course folders

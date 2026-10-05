@@ -9,9 +9,16 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import {
+  watcherRetryScenario,
+  watcherStaleWaitScenario,
   attachByIdScenario,
   attachRefusalScenario,
   bootLibraryHarness,
+  foldersScenario,
+  moveScenario,
+  renameMaterialScenario,
+  deleteFolderScenario,
+  organizeAcrossClaimScenario,
   copyOnUseScenario,
   deletedThroughLinkScenario,
   documentImagesQuotaScenario,
@@ -23,6 +30,7 @@ import {
   libraryToolFlowScenario,
   legacyCopyLibraryToolsScenario,
   sessionListingPaginationScenario,
+  ownerListingWithSessionCopyScenario,
   linkAcrossClaimScenario,
   mediaLibraryScopeScenario,
   ownerRunnerScenario,
@@ -70,6 +78,13 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
     vi.unstubAllEnvs();
     await db?.close();
     db = undefined;
+  });
+
+  it('keeps watching a retry when an older failed poll returns', async () => {
+    await watcherRetryScenario(await boot());
+  });
+  it('reports once when a wait returns a stale running snapshot', async () => {
+    await watcherStaleWaitScenario(await boot());
   });
 
   describe('links', () => {
@@ -142,6 +157,28 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
     });
   });
 
+  describe('organizing', () => {
+    it('creates, lists and renames folders, within the per-owner limit', async () => {
+      await foldersScenario(await boot());
+    });
+
+    it('moves sources with their derivatives, all or nothing', async () => {
+      await moveScenario(await boot());
+    });
+
+    it('renames a source, never a derivative', async () => {
+      await renameMaterialScenario(await boot());
+    });
+
+    it('deletes only an empty folder, tombstones aside', async () => {
+      await deleteFolderScenario(await boot());
+    });
+
+    it('refuses a retired owner’s request and follows a claim for a run', async () => {
+      await organizeAcrossClaimScenario(await boot());
+    });
+  });
+
   describe('courses', () => {
     it('copies a material into a course as an entry of its own', async () => {
       await copyOnUseScenario(await boot());
@@ -153,6 +190,9 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
   });
 
   describe('tools', () => {
+    it('keeps session-copy precedence out of the owner page listing', async () => {
+      await ownerListingWithSessionCopyScenario(await boot());
+    });
     it('pages all legacy sources before document derivatives using real storage', async () => {
       await sessionListingPaginationScenario(await boot());
     });

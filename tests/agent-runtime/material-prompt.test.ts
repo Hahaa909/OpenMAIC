@@ -95,9 +95,18 @@ describe('materialsPromptBlock', () => {
       'call `extract_material` with its id, then `wait_for_materials`, then `read_material` with the same id',
     );
     expect(prompt).toContain('`revision`');
-    for (const tool of ['use_material_media', 'search_material']) {
+    for (const tool of [
+      'list_material_folders',
+      'create_material_folder',
+      'rename_material_folder',
+      'move_materials',
+      'rename_material',
+      'use_material_media',
+      'search_material',
+    ]) {
       expect(prompt).toContain(tool);
     }
+    expect(prompt).toContain('you cannot delete');
     expect(prompt).not.toContain('import_pptx');
   });
 

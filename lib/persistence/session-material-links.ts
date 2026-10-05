@@ -219,6 +219,8 @@ export interface OwnerLibraryListOptions {
   query?: string;
   /** Only sources with a successful extraction: the materials search can read. */
   withTextOnly?: boolean;
+  /** Only sources: what a conversation can attach (a derivative comes with its source). */
+  sourcesOnly?: boolean;
   /** Keyset cursor: list only materials after this id in the listing's order. */
   before?: string;
   /** Default 100, at most 200. */
@@ -243,9 +245,38 @@ export async function listSessionOwnerLibrary(
   sessionId: string,
   options: OwnerLibraryListOptions = {},
 ): Promise<OwnerMaterialEntry[]> {
+  return listLibrary(queryable, { sessionId }, options);
+}
+
+/** {@link listSessionOwnerLibrary} for an owner directly: what the library page lists. */
+export async function listOwnerLibrary(
+  queryable: Queryable,
+  ownerId: string,
+  options: OwnerLibraryListOptions = {},
+): Promise<OwnerMaterialEntry[]> {
+  return listLibrary(queryable, { ownerId }, options);
+}
+
+async function listLibrary(
+  queryable: Queryable,
+  of: { sessionId: string } | { ownerId: string },
+  options: OwnerLibraryListOptions,
+): Promise<OwnerMaterialEntry[]> {
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 200);
-  const params: unknown[] = [sessionId];
+  // `owner` is the owner whose library is listed: the session's owner now,
+  // or the owner given.
+  const bySession = 'sessionId' in of;
+  const params: unknown[] = [bySession ? of.sessionId : of.ownerId];
+  const owner = bySession ? 'session.owner_id' : '$1';
   const where: string[] = [];
+  // A copy shadows an id only inside that session's tool scope. The owner's
+  // page has no session context and must list the original owner entry.
+  if (bySession) {
+    where.push(`NOT EXISTS (
+          SELECT 1 FROM agent_session_materials AS copy
+           WHERE copy.session_id = session.id AND copy.id = material.id
+        )`);
+  }
   if (options.folderId === null) {
     where.push('material.folder_id IS NULL');
   } else if (options.folderId !== undefined) {
@@ -264,25 +295,26 @@ export async function listSessionOwnerLibrary(
   if (options.withTextOnly) {
     where.push(`material.kind = 'source' AND material.extraction_result IS NOT NULL`);
   }
+  if (options.sourcesOnly) where.push(`material.kind = 'source'`);
   if (options.before !== undefined) {
     params.push(options.before);
     const p = `$${params.length}`;
     where.push(`(material.created_at, material.id) < (
         SELECT cursor.created_at, cursor.id FROM owner_material AS cursor
-         WHERE cursor.id = ${p} AND cursor.owner_id = session.owner_id)`);
+         WHERE cursor.id = ${p} AND cursor.owner_id = ${owner})`);
   }
   params.push(limit);
   const result = await queryable.query<RawOwnerMaterialEntryRow>(
     `SELECT ${entryColumns('material')}
-       FROM agent_sessions AS session
-       JOIN owner_material AS material ON material.owner_id = session.owner_id
+       FROM ${
+         bySession
+           ? `agent_sessions AS session
+       JOIN owner_material AS material ON material.owner_id = session.owner_id`
+           : 'owner_material AS material'
+       }
        LEFT JOIN owner_material AS source ON source.id = material.derived_from
-      WHERE session.id = $1 AND session.deleted_at IS NULL
+      WHERE ${bySession ? 'session.id = $1 AND session.deleted_at IS NULL' : 'material.owner_id = $1'}
         AND material.status = 'ready' AND material.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_session_materials AS copy
-           WHERE copy.session_id = session.id AND copy.id = material.id
-        )
         AND (material.derived_from IS NULL
           OR (source.owner_id = material.owner_id AND source.status = 'ready'
               AND source.deleted_at IS NULL))
