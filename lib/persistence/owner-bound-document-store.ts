@@ -15,6 +15,8 @@ import type {
   StageValidator,
 } from '@openmaic/storage';
 
+import { sanitizeSceneContent } from '@/lib/server/sanitize-scene-content';
+
 import { claimStageMeta, StageAccessError, tombstoneStageMeta } from './stage-meta';
 
 export interface PoolClientLike {
@@ -44,6 +46,27 @@ interface PendingOperation {
 interface RawOwnershipRow extends Record<string, unknown> {
   owner_id: string;
   deleted_at: Date | string | null;
+}
+
+/**
+ * A document with its slide HTML restricted to the renderer's vocabulary.
+ *
+ * Slide text, shape text, table cells and LaTeX snapshots are HTML that the
+ * classroom renders with `dangerouslySetInnerHTML`, and document reads are
+ * capability-by-id: a course link is enough to load any owner's course. So
+ * every document this store writes or returns passes through the same policy
+ * `/api/classroom` applies. Writes keep new rows clean; reads cover rows
+ * stored before this was enforced. Same scope as that route: the stage and
+ * the scenes, never the outline.
+ */
+function sanitizedDocument<TScene extends SceneLike, TStage extends Stage>(
+  doc: MaicDocument<TScene, TStage>,
+): MaicDocument<TScene, TStage> {
+  return {
+    ...doc,
+    stage: sanitizeSceneContent(doc.stage),
+    scenes: sanitizeSceneContent(doc.scenes),
+  };
 }
 
 function queryableFor(connection: Pick<PoolClientLike, 'query'>): Queryable {
@@ -79,16 +102,20 @@ class OwnerBoundDocumentStore<TScene extends SceneLike, TStage extends Stage>
 
   saveDocument(doc: MaicDocument<TScene, TStage>): Promise<void> {
     return this.tagged({ stageId: doc.stage.id, mode: 'create' }, () =>
-      this.inner.saveDocument(doc),
+      this.inner.saveDocument(sanitizedDocument(doc)),
     );
   }
 
   putStage(stageId: string, stage: TStage): Promise<void> {
-    return this.tagged({ stageId, mode: 'mutate' }, () => this.inner.putStage(stageId, stage));
+    return this.tagged({ stageId, mode: 'mutate' }, () =>
+      this.inner.putStage(stageId, sanitizeSceneContent(stage)),
+    );
   }
 
   putScene(stageId: string, scene: TScene): Promise<void> {
-    return this.tagged({ stageId, mode: 'mutate' }, () => this.inner.putScene(stageId, scene));
+    return this.tagged({ stageId, mode: 'mutate' }, () =>
+      this.inner.putScene(stageId, sanitizeSceneContent(scene)),
+    );
   }
 
   deleteScene(stageId: string, sceneId: string): Promise<void> {
@@ -165,11 +192,13 @@ class OwnerBoundDocumentStore<TScene extends SceneLike, TStage extends Stage>
   }
 
   async loadDocument(stageId: string): Promise<MaicDocument<TScene, TStage> | null> {
-    return this.readGated(stageId, () => this.inner.loadDocument(stageId));
+    const doc = await this.readGated(stageId, () => this.inner.loadDocument(stageId));
+    return doc && sanitizedDocument(doc);
   }
 
   async getScene(stageId: string, sceneId: string): Promise<TScene | null> {
-    return this.readGated(stageId, () => this.inner.getScene(stageId, sceneId));
+    const scene = await this.readGated(stageId, () => this.inner.getScene(stageId, sceneId));
+    return scene && sanitizeSceneContent(scene);
   }
 
   /** The trigger-maintained freshness manifest is a read: capability-by-id. */
