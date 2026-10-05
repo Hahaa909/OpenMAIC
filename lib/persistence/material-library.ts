@@ -28,6 +28,13 @@
  * it, the set of derivatives is complete and stays so until the move commits:
  * none can be published into the old folder behind it.
  *
+ * ## Deleting a source
+ *
+ * A page-only deletion locks the source, then reads and locks its live
+ * derivatives in the next statement. Publications require that source's lock,
+ * so the set is complete and stays fixed until deletion commits. The transaction
+ * withdraws the actual roots and tombstones the source and its derivatives.
+ *
  * ## Deleting a folder
  *
  * Only an empty folder is deleted; one that still holds a live material is

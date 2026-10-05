@@ -285,7 +285,8 @@ export async function deletedThroughLinkScenario(h: ExtractionHarness): Promise<
   await seedDerivative(h, 'img-a1', 'src-a');
   await attach(h, 'ses-1', ['src-a']);
 
-  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-a', fence: 'request' });
+  // Keep the derivative live to exercise the reader's deleted-parent guard.
+  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-a']);
   expect(await listLinkedOwnerMaterials(h.pool as never, 'ses-1')).toEqual([]);
   expect(await getLinkedOwnerMaterial(h.pool as never, 'ses-1', 'src-a')).toBeNull();
   expect(await getLinkedOwnerMaterial(h.pool as never, 'ses-1', 'img-a1')).toBeNull();
@@ -580,7 +581,8 @@ export async function libraryListingScenario(h: ExtractionHarness): Promise<void
   await h.pool.query(`UPDATE owner_material SET folder_id = 'fold-1' WHERE id = 'img-filed'`);
   await seedSource(h, 'src-gone');
   await seedDerivative(h, 'img-gone', 'src-gone');
-  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-gone', fence: 'request' });
+  // Keep the derivative live to exercise the listing's deleted-parent guard.
+  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
   await seedSource(h, 'src-100%_done');
   await seedSource(h, 'src-foreign', { owner: OTHER });
 
