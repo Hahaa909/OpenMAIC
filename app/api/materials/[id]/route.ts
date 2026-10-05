@@ -24,7 +24,7 @@ import { resolveMaterial } from '@/lib/server/agent-runtime/material-resolver';
 import { sessionScopeMaterialView } from '@/lib/server/materials/library-view';
 import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
 import { withRequestOwner } from '@/lib/server/identity/with-owner';
-import { renameMaterial } from '@/lib/persistence/material-library';
+import { deleteMaterial, renameMaterial } from '@/lib/persistence/material-library';
 import {
   jsonObjectBody,
   libraryNotFound,
@@ -78,6 +78,30 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           return libraryRefusal(409, 'derivative', 'Rename the source instead', headers);
         default:
           return ownerJson(outcome, 200, headers);
+      }
+    } catch (error) {
+      return libraryWriteError(error, headers);
+    }
+  });
+}
+
+export async function DELETE(req: NextRequest, { params }: Params) {
+  if (!isAgentRuntimeConfigured()) return new Response('Not found', { status: 404 });
+  const { id } = await params;
+  return withRequestOwner(req, async ({ ownerId }, headers) => {
+    try {
+      const outcome = await deleteMaterial(await libraryPersistence(), {
+        ownerId,
+        materialId: id,
+        fence: 'request',
+      });
+      switch (outcome.status) {
+        case 'not_found':
+          return libraryNotFound(headers);
+        case 'derivative':
+          return libraryRefusal(409, 'derivative', 'Delete the source instead', headers);
+        case 'deleted':
+          return new Response(null, { status: 204, headers });
       }
     } catch (error) {
       return libraryWriteError(error, headers);

@@ -24,6 +24,7 @@ vi.mock('@/lib/server/identity/resolve', async () =>
 );
 
 import {
+  DELETE as deleteMaterialRoute,
   GET as sessionMaterialRoute,
   PATCH as renameMaterialRoute,
 } from '@/app/api/materials/[id]/route';
@@ -723,8 +724,58 @@ describe('material library routes and tools (PGlite)', () => {
       renameFolderRoute(request('PATCH', '/api/materials/folders/f', { name: 'X' }), params('f')),
       deleteFolderRoute(request('DELETE', '/api/materials/folders/f'), params('f')),
       renameMaterialRoute(request('PATCH', '/api/materials/m', { name: 'X' }), params('m')),
+      deleteMaterialRoute(request('DELETE', '/api/materials/m'), params('m')),
       libraryRoute(request('GET', '/api/materials/library')),
     ]);
-    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404]);
+    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404, 404]);
+  });
+  it('deletes only a ready source for the request owner, with an empty 204', async () => {
+    const h = await boot();
+    await seedSource(h, 'delete-source');
+    await seedSession(h, 'ses-1');
+    await attachOwnerMaterialsToSession(h.provider, {
+      sessionId: 'ses-1',
+      ownerId: ACCOUNT,
+      materialIds: ['delete-source'],
+    });
+    await seedDerivative(h, 'delete-image', 'delete-source');
+    await seedSource(h, 'delete-foreign', { owner: OTHER });
+    const remove = (id: string) =>
+      deleteMaterialRoute(request('DELETE', `/api/materials/${id}`), params(id));
+    const derivative = await remove('delete-image');
+    expect(derivative.status).toBe(409);
+    expect(await derivative.json()).toMatchObject({ reason: 'derivative' });
+    for (const id of ['missing', 'delete-foreign']) expect((await remove(id)).status).toBe(404);
+    const response = await remove('delete-source');
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe('');
+    expect((await remove('delete-source')).status).toBe(404);
+    expect(
+      (
+        await sessionMaterialRoute(
+          request('GET', '/api/materials/delete-source?sessionId=ses-1'),
+          params('delete-source'),
+        )
+      ).status,
+    ).toBe(404);
+  });
+
+  it('refuses source deletion by a retired request owner', async () => {
+    const h = await boot();
+    await seedSource(h, 'delete-retired', { owner: ANON });
+    await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+    mocks.ownerId = ANON;
+    const response = await deleteMaterialRoute(
+      request('DELETE', '/api/materials/delete-retired'),
+      params('delete-retired'),
+    );
+    expect(response.status).toBe(403);
+    expect(
+      (
+        await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', [
+          'delete-retired',
+        ])
+      ).rows,
+    ).toEqual([{ deleted_at: null }]);
   });
 });
