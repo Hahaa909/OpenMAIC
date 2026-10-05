@@ -137,11 +137,15 @@ export interface ExtractedSourceImage {
   title: string;
   pageNumber?: number;
   timeMs?: number;
+  /** What the extracted text calls this image (`openmaic-derivative:<key>`), if it names it. */
+  key?: string;
 }
 
 /** What one extraction produced, before any of it is stored. */
 export interface SourceExtractionOutcome {
   text: string;
+  /** Positions written by the document-image parser, before publication. */
+  imageRefs?: Array<{ start: number; end: number; key: string }>;
   images: ExtractedSourceImage[];
   /** The provider that actually produced the result (after any fallback). */
   extractor: { id: string; version: string };
