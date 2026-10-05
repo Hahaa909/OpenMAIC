@@ -313,7 +313,7 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
   it('deletes nothing when the re-read of the committed row fails', async () => {
     await boot();
     const bytes = await legacySource('mat-a');
-    pool.failDirect = /SELECT asset_id, oss_key FROM owner_material WHERE id = \$1/;
+    pool.failDirect = /SELECT asset_id, oss_key, deleted_at FROM owner_material WHERE id = \$1/;
 
     expect(await run()).toMatchObject({ scanned: 1, migrated: 1, oldBytesRemoved: 0, failed: 1 });
     expect(deletes).toEqual([]);
@@ -350,9 +350,7 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     // A pre-byte-store row: ready, but no object and no pointer.
     await legacySource('mat-empty', { object: false });
     await h.pool.query(`UPDATE owner_material SET oss_key = '' WHERE id = 'mat-empty'`);
-    // A deleted source, and a reservation still uploading.
-    await legacySource('mat-deleted');
-    await h.pool.query(`UPDATE owner_material SET deleted_at = 1 WHERE id = 'mat-deleted'`);
+    // A reservation still uploading.
     await registerOwnerMaterial(
       h.pool as unknown as ConnectableQueryable,
       { id: 'mat-uploading', ownerId: ANON, kind: 'source', bytes: 1, ossKey: 'objects/u' },
@@ -362,6 +360,19 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     expect(await run()).toEqual(zero);
     expect(await rowOf('mat-empty')).toMatchObject({ asset_id: null, oss_key: '' });
     expect(deletes).toEqual([]);
+  });
+
+  it('removes the old object of a deleted source without migrating it', async () => {
+    await boot();
+    // A deletion whose own cleanup of the old object did not happen.
+    await legacySource('mat-deleted');
+    await h.pool.query(`UPDATE owner_material SET deleted_at = 1 WHERE id = 'mat-deleted'`);
+
+    expect(await run()).toEqual({ ...zero, scanned: 1, oldBytesRemoved: 1 });
+    expect(await rowOf('mat-deleted')).toMatchObject({ asset_id: null, oss_key: '' });
+    expect(deletes).toEqual(['objects/mat-deleted']);
+    expect(objects.has('objects/mat-deleted')).toBe(false);
+    expect(await rootsOf('mat-deleted')).toEqual([]);
   });
 
   it('gives up on a row another backfill published first, keeps that one pointer, and removes its own allocation', async () => {

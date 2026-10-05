@@ -23,6 +23,10 @@
  * crash) still has its `oss_key`, so the next pass picks it up again and goes
  * straight to step 4; the delete is idempotent.
  *
+ * A deleted source is never migrated. If its old object outlived the
+ * deletion's own cleanup, the pass goes straight to step 4 for it too: the
+ * committed tombstone, like a committed pointer, is what allows the delete.
+ *
  * The pass never reads a row twice: the cursor only moves forward, and a row
  * that fails is counted and left for the next pass. Several instances may run
  * it at once: the row lock and the empty-pointer check settle each row.
