@@ -46,6 +46,8 @@ type Mode = 'launch' | 'new' | 'follow';
 const courseOptions = [{ id: 'stage-1', name: 'Classroom' }];
 let posts: Array<{ url: string; body: Record<string, unknown> }> = [];
 let dispose: (() => Promise<void>) | undefined;
+/** What the workspace does once a draft's session exists: show that session. */
+let afterDraftStart: ((sessionId: string) => void) | undefined;
 
 const wait = (milliseconds: number) =>
   act(async () => {
@@ -63,6 +65,7 @@ beforeEach(() => {
     },
   );
   posts = [];
+  afterDraftStart = undefined;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -132,6 +135,7 @@ async function mount(mode: Mode, hasCourses = true): Promise<HTMLElement> {
               stageId: 'stage-1',
               ...message,
             } as never);
+            afterDraftStart?.(started.sessionId);
             return { accepted: true, ...started };
           },
         }
@@ -217,23 +221,35 @@ describe.each(['launch', 'follow'] as const)('the %s composer without classrooms
 });
 
 describe('material picks while sending', () => {
-  it.each([false, true])(
-    'preserves later picks when the request completes (session switch: %s)',
-    async (switchSession) => {
+  /**
+   * `same`: the conversation stays. `switch`: the user moves to another
+   * conversation while the send is pending. `draft`: a draft's first message
+   * creates its session, and the pane moves to it. In every case the sent pick
+   * leaves the composer and only the later pick rides the next message.
+   */
+  it.each(['same', 'switch', 'draft'] as const)(
+    'keeps only later picks for the next message (%s)',
+    async (scenario) => {
       const originalFetch = globalThis.fetch;
       let release!: (response: Response) => void;
       const pending = new Promise<Response>((resolve) => {
         release = resolve;
       });
+      // The first send's request is held: the session creation for a draft,
+      // the message itself otherwise.
+      const heldUrl = scenario === 'draft' ? '/api/agent/sessions' : '/messages';
+      let held = false;
       let secondListing = false;
       vi.stubGlobal(
         'fetch',
         vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-          if (String(input).endsWith('/messages') && init?.method === 'POST') {
-            posts.push({ url: String(input), body: JSON.parse(String(init.body)) });
+          const url = String(input);
+          if (!held && init?.method === 'POST' && url.endsWith(heldUrl)) {
+            held = true;
+            posts.push({ url, body: JSON.parse(String(init.body)) });
             return pending;
           }
-          if (secondListing && String(input).startsWith('/api/materials/library')) {
+          if (secondListing && url.startsWith('/api/materials/library')) {
             return Response.json({
               materials: [
                 {
@@ -249,7 +265,13 @@ describe('material picks while sending', () => {
           return originalFetch(input, init);
         }),
       );
-      const container = await mount('follow');
+      if (scenario === 'draft') {
+        afterDraftStart = (sessionId) => {
+          useWorkbenchStore.getState().attach(sessionId, 'stage-1');
+          useWorkbenchStore.setState({ replaying: false, status: 'succeeded' });
+        };
+      }
+      const container = await mount(scenario === 'draft' ? 'new' : 'follow');
       await act(async () => mentionButton(container, 'follow')!.click());
       await wait(230);
       await act(async () =>
@@ -261,9 +283,9 @@ describe('material picks while sending', () => {
       await act(async () =>
         container.querySelector<HTMLButtonElement>('[data-testid="workbench-send"]')!.click(),
       );
-      expect(posts.at(-1)?.body.materialIds).toEqual(['src-doc']);
+      if (scenario !== 'draft') expect(posts.at(-1)?.body.materialIds).toEqual(['src-doc']);
       secondListing = true;
-      if (switchSession) {
+      if (scenario === 'switch') {
         await act(async () => {
           useWorkbenchStore.getState().attach('ses-second', 'stage-1');
           useWorkbenchStore.setState({ replaying: false, status: 'succeeded' });
@@ -278,11 +300,41 @@ describe('material picks while sending', () => {
       );
       expect(container.textContent).toContain('next.pdf');
       await act(async () =>
-        release(Response.json({ elementRefsAccepted: true, courseRefsAccepted: true })),
+        release(
+          scenario === 'draft'
+            ? Response.json({
+                id: 'ses-new',
+                stageId: 'stage-1',
+                status: 'succeeded',
+                prompt: 'First message',
+              })
+            : Response.json({ elementRefsAccepted: true, courseRefsAccepted: true }),
+        ),
       );
+      await wait(10);
+      if (scenario === 'draft') {
+        // The first message went to the new session with the first pick only.
+        expect(
+          posts.find((post) => post.url === '/api/agent/sessions/ses-new/messages')?.body,
+        ).toMatchObject({ materialIds: ['src-doc'] });
+      }
       expect(container.textContent).toContain('next.pdf');
-      if (!switchSession) expect(container.textContent).not.toContain('document.pdf');
-      else expect(container.textContent).toContain('document.pdf');
+      expect(container.textContent).not.toContain('document.pdf');
+
+      // The next message carries only the later pick, wherever it goes. The
+      // run the first message started moves the status, which ends the
+      // optimistic STOP and gives the send button back.
+      await act(async () => useWorkbenchStore.setState({ status: 'running' }));
+      await act(async () => useWorkbenchStore.setState({ status: 'succeeded' }));
+      await type(container, 'Second message');
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[data-testid="workbench-send"]')!.click(),
+      );
+      const target = { same: 'ses-follow', switch: 'ses-second', draft: 'ses-new' }[scenario];
+      const second = posts.at(-1);
+      expect(second?.url).toBe(`/api/agent/sessions/${target}/messages`);
+      expect(second?.body.text).toBe('Second message');
+      expect(second?.body.materialIds).toEqual(['src-next']);
     },
   );
 });
