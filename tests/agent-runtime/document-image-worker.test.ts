@@ -16,8 +16,13 @@ const index = imagePathIndex([{ key: 'img-1', path: 'fig.png' }]);
 describe('document-image production parser', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('does not mistake a same-paragraph inequality for a tag in write or either read path', async () => {
-    const input = 'If $a<b$ then ![same](images/fig.png) holds > 0.';
+  it.each([
+    'If $a<b$ then ![same](images/fig.png) holds > 0.',
+    // A tag name, whitespace, then words: not attribute names, so not a tag.
+    'where n<k and ![a](images/fig.png) for k>0',
+    'x<y then ![a](images/fig.png) and z>w',
+    '<b ![a](images/fig.png) >',
+  ])('does not mistake prose for a tag in write or either read path: %s', async (input) => {
     const written = await parser.runDocumentImageWorker({
       kind: 'rewrite',
       index,
@@ -33,7 +38,7 @@ describe('document-image production parser', () => {
       await resolveDerivativeRefsAsync(
         written.text,
         [{ key: 'img-1', id: 'own-image' }],
-        'same-paragraph-published',
+        `same-paragraph-published:${input}`,
         written.refs,
       ),
     ).toBe(expected);
@@ -42,7 +47,7 @@ describe('document-image production parser', () => {
       await resolveDerivativeRefsAsync(
         input.replace('images/fig.png', 'openmaic-derivative:img-1'),
         [{ key: 'img-1', id: 'own-image' }],
-        'same-paragraph-legacy',
+        `same-paragraph-legacy:${input}`,
       ),
     ).toBe(expected);
   });
