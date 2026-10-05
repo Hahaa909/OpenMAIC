@@ -9,6 +9,13 @@ import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, it, vi } from 'vitest';
 
 import {
+  deleteLegacyScenario,
+  deleteChainScenario,
+  deleteSharedScenario,
+  deleteRefusalScenario,
+  deleteRollbackScenario,
+  deleteExtractionScenario,
+  deleteReadsScenario,
   watcherRetryScenario,
   watcherStaleWaitScenario,
   attachByIdScenario,
@@ -201,6 +208,29 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
     });
     it('extracts, waits for, reads and searches a library source by its own id', async () => {
       await libraryToolFlowScenario(await boot());
+    });
+  });
+  describe('source deletion', () => {
+    it('cleans legacy originals only after commit and retries without migration', async () => {
+      await deleteLegacyScenario(await boot());
+    });
+    it('deletes the complete published chain and releases both quotas', async () => {
+      await deleteChainScenario(await boot());
+    });
+    it('retains cache recipients and donors in both directions', async () => {
+      await deleteSharedScenario(await boot());
+    });
+    it('refuses derivatives, inaccessible sources and retired owners', async () => {
+      await deleteRefusalScenario(await boot());
+    });
+    it('rolls deletion back when withdrawing roots fails', async () => {
+      await deleteRollbackScenario(await boot());
+    });
+    it('cancels pending and running extraction through tombstones', async () => {
+      await deleteExtractionScenario(await boot());
+    });
+    it('hides deleted sources from reads and listings, retaining old copies', async () => {
+      await deleteReadsScenario(await boot());
     });
   });
 });

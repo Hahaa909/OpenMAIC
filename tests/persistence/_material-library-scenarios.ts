@@ -7,7 +7,7 @@
  * Built on the owner-extraction harness: the real persistence provider on an
  * empty database, sources seeded the way uploads are.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { ensureAgentSessionMaterialSchema } from '@openmaic/storage/material/pg';
 import sharp from 'sharp';
@@ -16,6 +16,8 @@ import { expect, vi } from 'vitest';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import {
   createMaterialFolder,
+  deleteMaterial,
+  ownerLibraryUsage,
   deleteEmptyMaterialFolder,
   listMaterialFolders,
   moveMaterials,
@@ -26,12 +28,12 @@ import { FOLDER_COUNT_LIMIT } from '@/lib/utils/folder-name-validation';
 import { validateAppScene, validateAppStage } from '@/lib/document-store/validators';
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { createOwnerBoundDocumentStore } from '@/lib/persistence/owner-bound-document-store';
-import { withMaterialRoots } from '@/lib/persistence/material-roots';
 import {
   allocateOwnerMaterialBytes,
   publishOwnerMaterialUpload,
   registerOwnerMaterial,
 } from '@/lib/persistence/owner-materials';
+import { migrateOwnerMaterialsToPool } from '@/lib/server/materials/migrate-to-pool';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
 import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 import {
@@ -48,6 +50,7 @@ import {
 } from '@/lib/server/material-extraction/owner-extraction';
 import {
   claimNextOwnerMaterialExtraction,
+  heartbeatOwnerMaterialExtraction,
   type OwnerExtractionClaim,
 } from '@/lib/persistence/owner-material-extraction';
 import {
@@ -251,7 +254,11 @@ export async function attachRefusalScenario(h: ExtractionHarness): Promise<void>
   await seedSession(h, 'ses-other', OTHER);
   await seedSource(h, 'src-a');
   await seedSource(h, 'src-deleted');
-  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-deleted']);
+  await deleteMaterial(h.provider, {
+    ownerId: ACCOUNT,
+    materialId: 'src-deleted',
+    fence: 'request',
+  });
   await seedSource(h, 'src-uploading');
   await h.pool.query(`UPDATE owner_material SET status = 'uploading' WHERE id = $1`, [
     'src-uploading',
@@ -278,6 +285,7 @@ export async function deletedThroughLinkScenario(h: ExtractionHarness): Promise<
   await seedDerivative(h, 'img-a1', 'src-a');
   await attach(h, 'ses-1', ['src-a']);
 
+  // Keep the derivative live to exercise the reader's deleted-parent guard.
   await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-a']);
   expect(await listLinkedOwnerMaterials(h.pool as never, 'ses-1')).toEqual([]);
   expect(await getLinkedOwnerMaterial(h.pool as never, 'ses-1', 'src-a')).toBeNull();
@@ -395,7 +403,7 @@ export async function textAcrossClaimScenario(h: ExtractionHarness): Promise<voi
   };
 
   await claimOwner(ANON, ACCOUNT, { provider: h.provider });
-  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-gone', fence: 'request' });
 
   const read = await readOwnerMaterialText(stale);
   expect(read?.text).toContain('# Lesson');
@@ -573,6 +581,7 @@ export async function libraryListingScenario(h: ExtractionHarness): Promise<void
   await h.pool.query(`UPDATE owner_material SET folder_id = 'fold-1' WHERE id = 'img-filed'`);
   await seedSource(h, 'src-gone');
   await seedDerivative(h, 'img-gone', 'src-gone');
+  // Keep the derivative live to exercise the listing's deleted-parent guard.
   await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
   await seedSource(h, 'src-100%_done');
   await seedSource(h, 'src-foreign', { owner: OTHER });
@@ -882,13 +891,7 @@ export async function copyOnUseScenario(h: ExtractionHarness): Promise<void> {
   // The copy no page names stays pending until it expires.
   expect((await entryOf(h, second)).committed_at).toBeNull();
 
-  // What deleting the material does to its bytes: its root is withdrawn.
-  await withMaterialRoots(
-    h.provider,
-    { ownerId: ACCOUNT, fence: 'request', materialIds: ['src-img'] },
-    ({ changeRoots }) =>
-      changeRoots({ remove: [{ materialId: 'src-img', assetIds: [libraryEntry] }] }),
-  );
+  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-img', fence: 'request' });
   expect((await entryOf(h, libraryEntry)).unreferenced_at).not.toBeNull();
   const course = await entryOf(h, first);
   expect(course.committed_at).not.toBeNull();
@@ -998,7 +1001,11 @@ export async function releaseRefusedOutputsScenario(h: ExtractionHarness): Promi
   const deletedRun = persistenceWith(h, async (transaction) => {
     if (transaction === 1) await claimOwner(ANON, ACCOUNT, { provider: h.provider });
     if (transaction === 2) {
-      await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['vid-deleted']);
+      await deleteMaterial(h.provider, {
+        ownerId: ACCOUNT,
+        materialId: 'vid-deleted',
+        fence: 'request',
+      });
     }
   });
   expect(
@@ -1084,9 +1091,11 @@ export async function releaseEdgesScenario(h: ExtractionHarness): Promise<void> 
       h,
       async (n) => {
         if (n === 2) {
-          await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', [
-            'vid-release-fails',
-          ]);
+          await deleteMaterial(h.provider, {
+            ownerId: ACCOUNT,
+            materialId: 'vid-release-fails',
+            fence: 'request',
+          });
         }
       },
       (n) => (n === 4 ? 'before' : undefined),
@@ -1451,7 +1460,7 @@ export async function moveScenario(h: ExtractionHarness): Promise<void> {
   await seedDerivative(h, 'img-a1', 'src-a');
   await seedSource(h, 'src-b');
   await seedSource(h, 'src-gone');
-  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-gone', fence: 'request' });
   await seedSource(h, 'src-uploading');
   await h.pool.query("UPDATE owner_material SET status = 'uploading' WHERE id = 'src-uploading'");
   await seedSource(h, 'src-foreign', { owner: OTHER });
@@ -1524,7 +1533,7 @@ export async function deleteFolderScenario(h: ExtractionHarness): Promise<void> 
     folderId: id,
     fence: 'request',
   });
-  await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-old']);
+  await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: 'src-old', fence: 'request' });
   const remove = (owner = ACCOUNT) =>
     deleteEmptyMaterialFolder(h.provider, { ownerId: owner, folderId: id, fence: 'request' });
 
@@ -1678,4 +1687,386 @@ export async function watcherStaleWaitScenario(h: ExtractionHarness): Promise<vo
     watcher.stop();
     await waiting;
   }
+}
+
+/** Source deletion includes original, text and both published images, with exact quota accounting. */
+export async function deleteChainScenario(h: ExtractionHarness): Promise<void> {
+  const original = Buffer.from('12345');
+  await seedPoolSource(h, 'delete-chain', original, 'application/pdf');
+  h.sources.set('delete-chain', original);
+  h.documentExtract.mockImplementation((async () => mineruLikeArtifact()) as never);
+  await ensure(h, 'delete-chain');
+  await runNextOwnerExtraction(h.deps());
+  const before = await stateOf(h, 'delete-chain');
+  const result = before.extraction_result!;
+  expect(result.derivatives).toHaveLength(2);
+  const ids = ['delete-chain', ...result.derivatives.map((d) => d.id)];
+  const assets = (await rootsOf(h, 'delete-chain')).concat(
+    result.derivatives.map((d) => d.assetId),
+  );
+  expect(assets).toHaveLength(4);
+  const principal = assetPrincipalForOwner(ACCOUNT);
+  const outputs = await Promise.all(
+    assets.map((id) => h.provider.assetStore.resolve(principal, id)),
+  );
+  const total = outputs.reduce((sum, output) => sum + output!.bytes.byteLength, 0);
+  expect(await ownerLibraryUsage(h.pool as never, ACCOUNT, principal.key)).toEqual({
+    usedCount: 1,
+    usedBytes: 5,
+    assetUsedBytes: total,
+  });
+  expect(
+    await deleteMaterial(
+      h.provider,
+      { ownerId: ACCOUNT, materialId: 'delete-chain', fence: 'request' },
+      123,
+    ),
+  ).toEqual({
+    status: 'deleted',
+    materialIds: [ids[0], ...ids.slice(1).sort()],
+  });
+  const rows = await h.pool.query<{ id: string; deleted_at: string }>(
+    'SELECT id, deleted_at FROM owner_material WHERE id = ANY($1::text[]) ORDER BY id',
+    [ids],
+  );
+  expect(rows.rows).toHaveLength(3);
+  expect(rows.rows.every((row) => Number(row.deleted_at) === 123)).toBe(true);
+  for (const id of ids) expect(await rootsOf(h, id)).toEqual([]);
+  for (const asset of assets) expect((await entryOf(h, asset)).unreferenced_at).not.toBeNull();
+  expect(await stateOf(h, 'delete-chain')).toEqual(before);
+  expect(await ownerLibraryUsage(h.pool as never, ACCOUNT, principal.key)).toEqual({
+    usedCount: 0,
+    usedBytes: 0,
+    assetUsedBytes: 0,
+  });
+}
+
+/** Cache roots belong to each recipient; deletion works in either direction. */
+export async function deleteSharedScenario(h: ExtractionHarness): Promise<void> {
+  h.documentExtract.mockImplementation((async () => mineruLikeArtifact()) as never);
+  for (const first of ['donor', 'recipient']) {
+    const donor = `donor-${first}`;
+    const recipient = `recipient-${first}`;
+    await seedSource(h, donor, { bytes: Buffer.from(first) });
+    await ensure(h, donor);
+    await runNextOwnerExtraction(h.deps());
+    await seedSource(h, recipient, { bytes: Buffer.from(first) });
+    await ensure(h, recipient);
+    await runNextOwnerExtraction(h.deps());
+    const donorResult = (await stateOf(h, donor)).extraction_result!;
+    const recipientResult = (await stateOf(h, recipient)).extraction_result!;
+    expect(recipientResult.reusedFrom).toBe(donor);
+    expect(recipientResult.text.assetId).toBe(donorResult.text.assetId);
+    const removed = first === 'donor' ? donor : recipient;
+    const retained = first === 'donor' ? recipient : donor;
+    const result = (await stateOf(h, retained)).extraction_result!;
+    const roots = await rootsOf(h, retained);
+    await deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: removed, fence: 'request' });
+    expect(await rootsOf(h, removed)).toEqual([]);
+    expect(await rootsOf(h, retained)).toEqual(roots);
+    expect(
+      await readOwnerMaterialText({ id: retained, ownerId: ACCOUNT, extractionResult: result }),
+    ).not.toBeNull();
+    for (const derivative of result.derivatives) {
+      expect(await rootsOf(h, derivative.id)).toEqual([derivative.assetId]);
+      expect(
+        await h.provider.assetStore.resolve(assetPrincipalForOwner(ACCOUNT), derivative.assetId),
+      ).not.toBeNull();
+    }
+  }
+}
+
+/** Refusals write nothing; a repeated deletion cannot withdraw another root. */
+export async function deleteRefusalScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'delete-refused');
+  await seedDerivative(h, 'delete-derivative', 'delete-refused');
+  await seedSource(h, 'delete-foreign', { owner: OTHER });
+  await registerOwnerMaterial(
+    h.pool as never,
+    {
+      id: 'delete-uploading',
+      ownerId: ACCOUNT,
+      kind: 'source',
+      bytes: 3,
+      originalName: 'upload.pdf',
+      mime: 'application/pdf',
+      ossKey: '',
+    },
+    { maxCount: 100, maxTotalBytes: 1_000_000 },
+  );
+  const remove = (id: string) =>
+    deleteMaterial(h.provider, { ownerId: ACCOUNT, materialId: id, fence: 'request' });
+  expect(await remove('delete-derivative')).toEqual({ status: 'derivative' });
+  for (const id of ['delete-foreign', 'missing', 'delete-uploading']) {
+    expect(await remove(id)).toEqual({ status: 'not_found' });
+  }
+  expect(await remove('delete-refused')).toMatchObject({ status: 'deleted' });
+  const rows = (await h.pool.query('SELECT * FROM asset_entries ORDER BY id')).rows;
+  expect(await remove('delete-refused')).toEqual({ status: 'not_found' });
+  expect((await h.pool.query('SELECT * FROM asset_entries ORDER BY id')).rows).toEqual(rows);
+  await seedSource(h, 'delete-retired', { owner: ANON });
+  await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+  await expect(
+    deleteMaterial(h.provider, { ownerId: ANON, materialId: 'delete-retired', fence: 'request' }),
+  ).rejects.toThrow();
+  expect(
+    (await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', ['delete-retired']))
+      .rows,
+  ).toEqual([{ deleted_at: null }]);
+}
+
+/** A root failure rolls the complete deletion back. */
+export async function deleteRollbackScenario(h: ExtractionHarness): Promise<void> {
+  await seedPoolSource(h, 'delete-rollback', Buffer.from('original'), 'application/pdf');
+  const roots = await rootsOf(h, 'delete-rollback');
+  const failing = {
+    pool: h.pool as never,
+    withTransaction: ((body: (tx: unknown) => Promise<unknown>) =>
+      h.provider.withTransaction((tx) =>
+        body({
+          query: (text: string, params?: unknown[]) => {
+            if (/DELETE FROM asset_root_refs/.test(text)) throw new Error('injected root failure');
+            return tx.query(text, params);
+          },
+        }),
+      )) as typeof h.provider.withTransaction,
+  };
+  await expect(
+    deleteMaterial(failing, { ownerId: ACCOUNT, materialId: 'delete-rollback', fence: 'request' }),
+  ).rejects.toThrow('injected root failure');
+  expect(await rootsOf(h, 'delete-rollback')).toEqual(roots);
+  expect(
+    (await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', ['delete-rollback']))
+      .rows,
+  ).toEqual([{ deleted_at: null }]);
+  expect((await entryOf(h, roots[0]!)).unreferenced_at).toBeNull();
+}
+
+/** Tombstones cancel pending and running work; refused output allocations are released. */
+export async function deleteExtractionScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'delete-pending');
+  await ensure(h, 'delete-pending');
+  await deleteMaterial(h.provider, {
+    ownerId: ACCOUNT,
+    materialId: 'delete-pending',
+    fence: 'request',
+  });
+  expect(
+    await claimNextOwnerMaterialExtraction(h.pool as never, {
+      leaseTtlMs: 60_000,
+      now: h.clock.now,
+      createToken: randomUUID,
+    }),
+  ).toBeNull();
+  const claim = await claimedVideo(h, 'delete-running');
+  const before = await entryIds(h);
+  const deleting = persistenceWith(h, async (n) => {
+    if (n === 2) {
+      await deleteMaterial(h.provider, {
+        ownerId: ACCOUNT,
+        materialId: 'delete-running',
+        fence: 'request',
+      });
+      expect(await heartbeatOwnerMaterialExtraction(h.pool as never, claim, h.clock.now)).toBe(
+        false,
+      );
+    }
+  });
+  expect(await runClaimedOwnerExtraction(claim, h.deps({ persistence: deleting }))).toBe(
+    'not-authorized',
+  );
+  expect(await entryIds(h)).toEqual(before);
+  expect(await rootsOf(h, 'delete-running')).toEqual([]);
+  expect((await stateOf(h, 'delete-running')).extraction_token).toBe(claim.token);
+}
+
+/** Linked reads and all library projections hide tombstones; independent session copies survive. */
+export async function deleteReadsScenario(h: LibraryHarness): Promise<void> {
+  await seedSession(h, 'delete-session');
+  await seedSource(h, 'delete-readable', { folderId: 'delete-folder' });
+  await seedDerivative(h, 'delete-image', 'delete-readable');
+  await attachOwnerMaterialsToSession(h.provider, {
+    sessionId: 'delete-session',
+    ownerId: ACCOUNT,
+    materialIds: ['delete-readable'],
+  });
+  await seedCopy(h, 'delete-session', 'delete-copy', null);
+  h.objects.set('materials/delete-session/delete-copy/raw', Buffer.from('old copy'));
+  await h.pool.query(
+    `INSERT INTO agent_session_entries (session_id, seq, entry_id, type, data, ts, attempt) VALUES ('delete-session', 1, 'kept-message', 'message', '{"text":"already read material text"}', now(), 0)`,
+  );
+  const messages = (
+    await h.pool.query('SELECT * FROM agent_session_entries WHERE session_id = $1', [
+      'delete-session',
+    ])
+  ).rows;
+  const copies = (
+    await h.pool.query('SELECT * FROM agent_session_materials WHERE session_id = $1', [
+      'delete-session',
+    ])
+  ).rows;
+  await deleteMaterial(h.provider, {
+    ownerId: ACCOUNT,
+    materialId: 'delete-readable',
+    fence: 'request',
+  });
+  for (const id of ['delete-readable', 'delete-image'])
+    expect(await resolveMaterial('delete-session', id)).toBeNull();
+  expect(await listOwnerLibrary(h.pool as never, ACCOUNT)).toEqual([]);
+  expect(await listOwnerLibrary(h.pool as never, ACCOUNT, { sourcesOnly: true })).toEqual([]);
+  expect(await listSessionOwnerLibrary(h.pool as never, 'delete-session')).toEqual([]);
+  expect(
+    await attachedMaterialIds(h.pool as never, 'delete-session', [
+      'delete-readable',
+      'delete-image',
+    ]),
+  ).toEqual(new Set());
+  expect((await listMaterialFolders(h.pool as never, ACCOUNT))[0]!.materialCount).toBe(0);
+  const copy = (await resolveMaterial('delete-session', 'delete-copy'))!;
+  expect(await readResolvedMaterialRaw('delete-session', copy)).toMatchObject({
+    bytes: Buffer.from('old copy'),
+  });
+  expect(
+    (
+      await h.pool.query('SELECT * FROM agent_session_materials WHERE session_id = $1', [
+        'delete-session',
+      ])
+    ).rows,
+  ).toEqual(copies);
+  const tools = buildMaterialTools({ sessionId: 'delete-session' });
+  const run = (name: string, args: Record<string, unknown>) =>
+    tools.find((tool) => tool.name === name)!.execute('call', args as never);
+  const read = await run('read_material', { materialId: 'delete-readable', scope: 'library' });
+  expect(read).toMatchObject({ isError: true });
+  expect(
+    (
+      (await run('search_material', { query: 'Lesson', scope: 'library' })) as {
+        details: { hits: unknown[] };
+      }
+    ).details.hits,
+  ).toEqual([]);
+  expect(
+    (
+      await h.pool.query('SELECT * FROM agent_session_entries WHERE session_id = $1', [
+        'delete-session',
+      ])
+    ).rows,
+  ).toEqual(messages);
+  expect(
+    ((await run('list_materials', { scope: 'library' })) as { details: { materials: unknown[] } })
+      .details.materials,
+  ).toEqual([]);
+}
+
+/** Legacy cleanup waits for commit, survives failure and retries without allocating in the pool. */
+export async function deleteLegacyScenario(h: LibraryHarness): Promise<void> {
+  let fail = false;
+  let inTransaction = false;
+  const tracked = {
+    ...h.provider,
+    withTransaction: (async (body: Parameters<typeof h.provider.withTransaction>[0]) => {
+      inTransaction = true;
+      try {
+        return await h.provider.withTransaction(body);
+      } finally {
+        inTransaction = false;
+      }
+    }) as typeof h.provider.withTransaction,
+  };
+  const keys: string[] = [];
+  setMaterialByteStoreForTests({
+    put: async (key, bytes) => void h.objects.set(key, Buffer.from(bytes as Uint8Array)),
+    get: async (key) => {
+      const bytes = h.objects.get(key);
+      if (!bytes) throw new Error('missing old original');
+      return bytes;
+    },
+    delete: async (key) => {
+      expect(inTransaction).toBe(false);
+      const row = (
+        await h.pool.query<{ deleted_at: unknown }>(
+          'SELECT deleted_at FROM owner_material WHERE oss_key = $1',
+          [key],
+        )
+      ).rows[0];
+      expect(row).toBeDefined();
+      expect(row!.deleted_at).not.toBeNull();
+      keys.push(key);
+      if (fail) throw new Error('legacy delete unavailable');
+      h.objects.delete(key);
+    },
+  });
+  const remove = (id: string, provider = tracked) =>
+    deleteMaterial(provider, { ownerId: ACCOUNT, materialId: id, fence: 'request' });
+  await seedSource(h, 'legacy-ok');
+  h.objects.set('objects/legacy-ok', Buffer.from('old bytes'));
+  expect(await remove('legacy-ok')).toMatchObject({ status: 'deleted' });
+  expect(h.objects.has('objects/legacy-ok')).toBe(false);
+  expect(
+    (await h.pool.query('SELECT oss_key FROM owner_material WHERE id = $1', ['legacy-ok'])).rows,
+  ).toEqual([{ oss_key: '' }]);
+
+  await seedSource(h, 'legacy-rollback');
+  h.objects.set('objects/legacy-rollback', Buffer.from('rollback bytes'));
+  const rollback = {
+    ...h.provider,
+    withTransaction: ((body: Parameters<typeof h.provider.withTransaction>[0]) =>
+      h.provider.withTransaction(async (tx) => {
+        await body(tx);
+        throw new Error('rollback before commit');
+      })) as typeof h.provider.withTransaction,
+  };
+  await expect(remove('legacy-rollback', rollback)).rejects.toThrow('rollback before commit');
+  expect(h.objects.has('objects/legacy-rollback')).toBe(true);
+  expect(keys).not.toContain('objects/legacy-rollback');
+  expect(
+    (await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', ['legacy-rollback']))
+      .rows,
+  ).toEqual([{ deleted_at: null }]);
+  await remove('legacy-rollback');
+
+  await seedSource(h, 'legacy-uncertain');
+  h.objects.set('objects/legacy-uncertain', Buffer.from('uncertain bytes'));
+  const uncertain = {
+    ...h.provider,
+    withTransaction: ((body: Parameters<typeof h.provider.withTransaction>[0]) =>
+      h.provider.withTransaction(body).then(() => {
+        throw new Error('lost commit reply');
+      })) as typeof h.provider.withTransaction,
+  };
+  await expect(remove('legacy-uncertain', uncertain)).rejects.toThrow('lost commit reply');
+  expect(keys).not.toContain('objects/legacy-uncertain');
+  expect(h.objects.has('objects/legacy-uncertain')).toBe(true);
+
+  await seedSource(h, 'legacy-retry');
+  h.objects.set('objects/legacy-retry', Buffer.from('retry bytes'));
+  fail = true;
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    expect(await remove('legacy-retry')).toMatchObject({ status: 'deleted' });
+    expect(warn).toHaveBeenCalled();
+    expect(h.objects.has('objects/legacy-retry')).toBe(true);
+    expect(
+      (await h.pool.query('SELECT oss_key FROM owner_material WHERE id = $1', ['legacy-retry']))
+        .rows,
+    ).toEqual([{ oss_key: 'objects/legacy-retry' }]);
+  } finally {
+    warn.mockRestore();
+  }
+  fail = false;
+  const before = await entryIds(h);
+  expect(await migrateOwnerMaterialsToPool({ pauseMs: 0 })).toMatchObject({
+    scanned: 2,
+    migrated: 0,
+    oldBytesRemoved: 2,
+    failed: 0,
+  });
+  expect(h.objects.has('objects/legacy-retry')).toBe(false);
+  expect(h.objects.has('objects/legacy-uncertain')).toBe(false);
+  expect(
+    (
+      await h.pool.query('SELECT oss_key FROM owner_material WHERE deleted_at IS NOT NULL')
+    ).rows.every((row) => row.oss_key === ''),
+  ).toBe(true);
+  expect(await entryIds(h)).toEqual(before);
 }

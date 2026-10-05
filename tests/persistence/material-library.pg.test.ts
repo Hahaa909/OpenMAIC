@@ -6,6 +6,8 @@
  * Each test works in a schema of its own (see
  * `document-asset-references.pg.test.ts` for why), dropped afterwards.
  */
+import { randomUUID } from 'node:crypto';
+
 import { Pool } from 'pg';
 import { NextRequest } from 'next/server';
 import { PATCH as renameRoute } from '@/app/api/materials/[id]/route';
@@ -22,6 +24,7 @@ import {
   renameMaterialFolder,
   deleteEmptyMaterialFolder,
   moveMaterials,
+  deleteMaterial,
 } from '@/lib/persistence/material-library';
 import {
   claimNextOwnerMaterialExtraction,
@@ -32,6 +35,13 @@ import { runClaimedOwnerExtraction } from '@/lib/server/material-extraction/owne
 import { ACCOUNT, seedDerivative } from './_material-library-scenarios';
 import { seedSource, stateOf } from './_owner-extraction-scenarios';
 import {
+  deleteLegacyScenario,
+  deleteChainScenario,
+  deleteSharedScenario,
+  deleteRefusalScenario,
+  deleteRollbackScenario,
+  deleteExtractionScenario,
+  deleteReadsScenario,
   watcherRetryScenario,
   watcherStaleWaitScenario,
   attachByIdScenario,
@@ -106,7 +116,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   function pausingBefore(
     h: ExtractionHarness,
     pattern: RegExp,
-    before: () => Promise<void>,
+    before: (tx: { query(text: string, params?: unknown[]): Promise<unknown> }) => Promise<void>,
   ): { withTransaction: ExtractionHarness['provider']['withTransaction'] } {
     type Tx = { query(text: string, params?: unknown[]): Promise<unknown> };
     let fired = false;
@@ -114,7 +124,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
       query: async (text, params) => {
         if (!fired && pattern.test(text)) {
           fired = true;
-          await before();
+          await before(tx);
         }
         return tx.query(text, params);
       },
@@ -172,6 +182,208 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     return made.folder.id;
   }
 
+  /** Start a waiter and verify that its exact backend waits on this holder. */
+  async function waitingOn(
+    h: ExtractionHarness,
+    holderTx: { query(text: string, params?: unknown[]): Promise<unknown> },
+    run: (provider: ExtractionHarness['provider']) => Promise<unknown>,
+  ): Promise<Promise<unknown>[]> {
+    const holder = (
+      (await holderTx.query('SELECT pg_backend_pid() AS pid')) as { rows: { pid: number }[] }
+    ).rows[0]!.pid;
+    let observed!: (pid: number) => void;
+    const waiterPid = new Promise<number>((resolve) => {
+      observed = resolve;
+    });
+    const waiter = pausingBefore(h, /^SELECT id FROM owner_material WHERE id = ANY/, async (tx) => {
+      observed(
+        ((await tx.query('SELECT pg_backend_pid() AS pid')) as { rows: { pid: number }[] }).rows[0]!
+          .pid,
+      );
+    });
+    const pending = run({ ...h.provider, ...waiter });
+    // Observe rejection immediately, while retaining it for the assertion.
+    pending.catch(() => undefined);
+    const pid = await withinBudget(waiterPid);
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const found = await admin!.query<{ blocked: boolean }>(
+        'SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked',
+        [pid, holder],
+      );
+      if (found.rows[0]?.blocked) return [pending];
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('the deletion race waiter never queued behind its holder');
+  }
+
+  describe('source deletion races', () => {
+    it('deletes derivatives committed by a publisher it waited for', async () => {
+      const h = await boot();
+      const claim = await claimedVideo(h, 'delete-publish-first');
+      let deletion: Promise<unknown> | undefined;
+      const publishing = pausingBefore(h, /^\s*INSERT INTO owner_material/, async (tx) => {
+        [deletion] = await waitingOn(h, tx, (provider) =>
+          deleteMaterial(provider, {
+            ownerId: ACCOUNT,
+            materialId: claim.materialId,
+            fence: 'request',
+          }),
+        );
+      });
+      expect(
+        await withinBudget(
+          runClaimedOwnerExtraction(
+            claim,
+            h.deps({ persistence: { ...h.provider, ...publishing } }),
+          ),
+        ),
+      ).toBe('published');
+      expect(await withinBudget(deletion!)).toMatchObject({ status: 'deleted' });
+      const derivative = (await stateOf(h, claim.materialId)).extraction_result!.derivatives[0]!;
+      expect(
+        (await h.pool.query('SELECT deleted_at FROM owner_material WHERE id = $1', [derivative.id]))
+          .rows[0],
+      ).not.toEqual({ deleted_at: null });
+      expect(
+        await h.pool.query('SELECT * FROM asset_root_refs WHERE root_id = ANY($1::text[])', [
+          [claim.materialId, derivative.id],
+        ]),
+      ).toMatchObject({ rows: [] });
+    });
+
+    it('refuses a publisher waiting behind deletion and releases its outputs', async () => {
+      const h = await boot();
+      const claim = await claimedVideo(h, 'delete-first');
+      let publication: Promise<unknown> | undefined;
+      const deleting = pausingBefore(h, /^UPDATE owner_material SET deleted_at/, async (tx) => {
+        [publication] = await waitingOn(h, tx, (provider) =>
+          runClaimedOwnerExtraction(claim, h.deps({ persistence: provider })),
+        );
+      });
+      expect(
+        await withinBudget(
+          deleteMaterial(
+            { ...h.provider, ...deleting },
+            { ownerId: ACCOUNT, materialId: claim.materialId, fence: 'request' },
+          ),
+        ),
+      ).toMatchObject({ status: 'deleted' });
+      expect(await withinBudget(publication!)).toBe('not-authorized');
+      expect(
+        (
+          await h.pool.query(
+            'SELECT * FROM owner_material WHERE derived_from = $1 AND deleted_at IS NULL',
+            [claim.materialId],
+          )
+        ).rows,
+      ).toEqual([]);
+      expect((await h.pool.query('SELECT * FROM asset_root_refs')).rows).toEqual([]);
+      expect((await h.pool.query('SELECT * FROM asset_entries')).rows).toEqual([]);
+    });
+
+    it.each(['reuse', 'delete'] as const)(
+      'keeps cache reuse safe when %s holds the donor first',
+      async (first) => {
+        const h = await boot();
+        const donor = await claimedVideo(h, 'delete-cache-donor');
+        expect(await runClaimedOwnerExtraction(donor, h.deps())).toBe('published');
+        await seedSource(h, 'delete-cache-recipient', {
+          mime: 'video/mp4',
+          bytes: h.sources.get(donor.materialId),
+        });
+        await ensureOwnerMaterialExtraction(
+          h.provider.withTransaction,
+          ACCOUNT,
+          'delete-cache-recipient',
+        );
+        const recipient = (await claimNextOwnerMaterialExtraction(h.pool as never, {
+          leaseTtlMs: 60_000,
+          now: h.clock.now,
+          createToken: randomUUID,
+        }))!;
+        let second: Promise<unknown> | undefined;
+        if (first === 'reuse') {
+          const reusing = pausingBefore(h, /^\s*INSERT INTO owner_material/, async (tx) => {
+            [second] = await waitingOn(h, tx, (provider) =>
+              deleteMaterial(provider, {
+                ownerId: ACCOUNT,
+                materialId: donor.materialId,
+                fence: 'request',
+              }),
+            );
+          });
+          expect(
+            await withinBudget(
+              runClaimedOwnerExtraction(
+                recipient,
+                h.deps({ persistence: { ...h.provider, ...reusing } }),
+              ),
+            ),
+          ).toBe('reused');
+          expect(await withinBudget(second!)).toMatchObject({ status: 'deleted' });
+          expect((await stateOf(h, recipient.materialId)).extraction_result!.reusedFrom).toBe(
+            donor.materialId,
+          );
+          expect(h.mediaExtract).toHaveBeenCalledTimes(1);
+        } else {
+          const deleting = pausingBefore(h, /^UPDATE owner_material SET deleted_at/, async (tx) => {
+            [second] = await waitingOn(h, tx, (provider) =>
+              runClaimedOwnerExtraction(recipient, h.deps({ persistence: provider })),
+            );
+          });
+          expect(
+            await withinBudget(
+              deleteMaterial(
+                { ...h.provider, ...deleting },
+                { ownerId: ACCOUNT, materialId: donor.materialId, fence: 'request' },
+              ),
+            ),
+          ).toMatchObject({ status: 'deleted' });
+          expect(await withinBudget(second!)).toBe('published');
+          expect(
+            (await stateOf(h, recipient.materialId)).extraction_result!.reusedFrom,
+          ).toBeUndefined();
+          expect(h.mediaExtract).toHaveBeenCalledTimes(2);
+        }
+        const donorResult = (await stateOf(h, donor.materialId)).extraction_result!;
+        for (const id of [donor.materialId, ...donorResult.derivatives.map((d) => d.id)]) {
+          expect(
+            (await h.pool.query('SELECT * FROM asset_root_refs WHERE root_id = $1', [id])).rows,
+          ).toEqual([]);
+        }
+        const result = (await stateOf(h, recipient.materialId)).extraction_result!;
+        for (const id of [result.text.assetId, ...result.derivatives.map((d) => d.assetId)]) {
+          expect(
+            await h.provider.assetStore.resolve({ key: `owner:${ACCOUNT}` }, id),
+          ).not.toBeNull();
+        }
+      },
+    );
+
+    it('serializes concurrent deletions into deleted and not_found', async () => {
+      const h = await boot();
+      await seedSource(h, 'delete-twice');
+      let second: Promise<unknown> | undefined;
+      const deleting = pausingBefore(h, /^UPDATE owner_material SET deleted_at/, async (tx) => {
+        [second] = await waitingOn(h, tx, (provider) =>
+          deleteMaterial(provider, {
+            ownerId: ACCOUNT,
+            materialId: 'delete-twice',
+            fence: 'request',
+          }),
+        );
+      });
+      expect(
+        await withinBudget(
+          deleteMaterial(
+            { ...h.provider, ...deleting },
+            { ownerId: ACCOUNT, materialId: 'delete-twice', fence: 'request' },
+          ),
+        ),
+      ).toEqual({ status: 'deleted', materialIds: ['delete-twice'] });
+      expect(await withinBudget(second!)).toEqual({ status: 'not_found' });
+    });
+  });
   describe('races', () => {
     it('a move holding the source makes a publication waiting on it file its derivative in the new folder', async () => {
       const h = await boot();
@@ -295,11 +507,13 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   it.each(['source row', 'folder creation'] as const)(
     'answers 503 and rolls back when the %s lock times out after the owner fence',
     async (kind) => {
-      const h = await boot({
-        OPENMAIC_AGENT_RUNTIME_ENABLED: 'true',
-        OWNER_WRITE_LOCK_WAIT_MS: '250',
-      });
+      const h = await boot({ OPENMAIC_AGENT_RUNTIME_ENABLED: 'true' });
       await seedSource(h, 'locked-source');
+      // Shorten the wait only for the request under test. The identity lock is
+      // an advisory lock shared by the whole database, and other PG suites
+      // running in parallel take the same owner's; seeding under 250 ms could
+      // time out on them instead of on the lock this test holds.
+      vi.stubEnv('OWNER_WRITE_LOCK_WAIT_MS', '250');
       const sourceName = async () =>
         (await h.pool.query("SELECT display_name FROM owner_material WHERE id = 'locked-source'"))
           .rows[0];
@@ -514,6 +728,29 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     });
     it('extracts, waits for, reads and searches a library source by its own id', async () => {
       await libraryToolFlowScenario(await boot());
+    });
+  });
+  describe('source deletion', () => {
+    it('cleans legacy originals only after commit and retries without migration', async () => {
+      await deleteLegacyScenario(await boot());
+    });
+    it('deletes the complete published chain and releases both quotas', async () => {
+      await deleteChainScenario(await boot());
+    });
+    it('retains cache recipients and donors in both directions', async () => {
+      await deleteSharedScenario(await boot());
+    });
+    it('refuses derivatives, inaccessible sources and retired owners', async () => {
+      await deleteRefusalScenario(await boot());
+    });
+    it('rolls deletion back when withdrawing roots fails', async () => {
+      await deleteRollbackScenario(await boot());
+    });
+    it('cancels pending and running extraction through tombstones', async () => {
+      await deleteExtractionScenario(await boot());
+    });
+    it('hides deleted sources from reads and listings, retaining old copies', async () => {
+      await deleteReadsScenario(await boot());
     });
   });
 });

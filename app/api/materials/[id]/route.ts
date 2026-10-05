@@ -14,6 +14,15 @@
  * `derivative` (it is named after its source); a missing or another owner's
  * material 404. A thin adapter over `lib/persistence/material-library.ts`,
  * which the agent's `rename_material` calls too.
+ *
+ * DELETE /api/materials/[id] deletes the request owner's ready source and
+ * its derivatives atomically (204, no body). Missing, foreign, uploading
+ * and deleted rows answer 404; a derivative answers 409 `derivative`. The
+ * request fence refuses retired owners (403), and busy writes answer 503
+ * with Retry-After. Links become unreadable; conversation text, old session
+ * copies and independent course media remain. Legacy originals are cleaned
+ * only after commit, with failures left for the existing enabled backfill.
+ * Page-only: no agent deletion tool and no library event.
  */
 import type { NextRequest } from 'next/server';
 
@@ -24,7 +33,7 @@ import { resolveMaterial } from '@/lib/server/agent-runtime/material-resolver';
 import { sessionScopeMaterialView } from '@/lib/server/materials/library-view';
 import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
 import { withRequestOwner } from '@/lib/server/identity/with-owner';
-import { renameMaterial } from '@/lib/persistence/material-library';
+import { deleteMaterial, renameMaterial } from '@/lib/persistence/material-library';
 import {
   jsonObjectBody,
   libraryNotFound,
@@ -78,6 +87,30 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           return libraryRefusal(409, 'derivative', 'Rename the source instead', headers);
         default:
           return ownerJson(outcome, 200, headers);
+      }
+    } catch (error) {
+      return libraryWriteError(error, headers);
+    }
+  });
+}
+
+export async function DELETE(req: NextRequest, { params }: Params) {
+  if (!isAgentRuntimeConfigured()) return new Response('Not found', { status: 404 });
+  const { id } = await params;
+  return withRequestOwner(req, async ({ ownerId }, headers) => {
+    try {
+      const outcome = await deleteMaterial(await libraryPersistence(), {
+        ownerId,
+        materialId: id,
+        fence: 'request',
+      });
+      switch (outcome.status) {
+        case 'not_found':
+          return libraryNotFound(headers);
+        case 'derivative':
+          return libraryRefusal(409, 'derivative', 'Delete the source instead', headers);
+        case 'deleted':
+          return new Response(null, { status: 204, headers });
       }
     } catch (error) {
       return libraryWriteError(error, headers);

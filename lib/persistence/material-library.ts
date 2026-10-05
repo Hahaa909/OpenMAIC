@@ -28,6 +28,13 @@
  * it, the set of derivatives is complete and stays so until the move commits:
  * none can be published into the old folder behind it.
  *
+ * ## Deleting a source
+ *
+ * A page-only deletion locks the source, then reads and locks its live
+ * derivatives in the next statement. Publications require that source's lock,
+ * so the set is complete and stays fixed until deletion commits. The transaction
+ * withdraws the actual roots and tombstones the source and its derivatives.
+ *
  * ## Deleting a folder
  *
  * Only an empty folder is deleted; one that still holds a live material is
@@ -48,6 +55,8 @@ import {
 } from '@/lib/utils/folder-name-validation';
 
 import { fenceOwnerWrite, forwardOwnerWrite } from './owner-merges';
+import { MATERIAL_ROOT_KIND, withMaterialRoots } from './material-roots';
+import { getMaterialByteStore } from '@/lib/server/materials/bytes';
 
 export type LibraryFence = 'request' | 'background';
 
@@ -408,6 +417,94 @@ export async function renameMaterial(
     ]);
     return { status: 'renamed' as const, materialId: input.materialId, name };
   });
+}
+
+export type DeleteMaterialOutcome =
+  | { status: 'deleted'; materialIds: string[] }
+  | { status: 'not_found' }
+  | { status: 'derivative' };
+
+/** Delete a ready source and its derivatives, withdrawing their actual roots atomically. */
+export async function deleteMaterial(
+  persistence: { pool: Queryable; withTransaction: WithTransaction },
+  input: { ownerId: string; materialId: string; fence: 'request' },
+  now: number = Date.now(),
+): Promise<DeleteMaterialOutcome> {
+  const outcome = await withMaterialRoots(
+    persistence,
+    { ...input, materialIds: [input.materialId] },
+    async ({ tx, ownerId, changeRoots }) => {
+      const current = await tx.query<{
+        owner_id: string;
+        derived_from: string | null;
+        status: string;
+        deleted_at: unknown;
+      }>('SELECT owner_id, derived_from, status, deleted_at FROM owner_material WHERE id = $1', [
+        input.materialId,
+      ]);
+      const row = current.rows[0];
+      if (!row || row.owner_id !== ownerId || row.status !== 'ready' || row.deleted_at !== null) {
+        return { status: 'not_found' as const };
+      }
+      if (row.derived_from !== null) return { status: 'derivative' as const };
+      // A separate statement after acquiring the source lock sees derivatives
+      // committed by a publication we waited for. No publisher can add more
+      // while this transaction holds the source.
+      const derivatives = await tx.query<{ id: string }>(
+        `SELECT id FROM owner_material WHERE derived_from = $1 AND deleted_at IS NULL
+          ORDER BY id FOR UPDATE`,
+        [input.materialId],
+      );
+      const materialIds = [input.materialId, ...derivatives.rows.map((item) => item.id)];
+      const roots = await tx.query<{ root_id: string; asset_id: string }>(
+        `SELECT root_id, asset_id FROM asset_root_refs
+          WHERE root_kind = $1 AND root_id = ANY($2::text[]) ORDER BY root_id, asset_id`,
+        [MATERIAL_ROOT_KIND, materialIds],
+      );
+      const byRoot = new Map<string, string[]>();
+      for (const root of roots.rows) {
+        const assets = byRoot.get(root.root_id) ?? [];
+        assets.push(root.asset_id);
+        byRoot.set(root.root_id, assets);
+      }
+      if (byRoot.size > 0) {
+        await changeRoots({
+          remove: [...byRoot].map(([materialId, assetIds]) => ({ materialId, assetIds })),
+        });
+      }
+      await tx.query('UPDATE owner_material SET deleted_at = $2 WHERE id = ANY($1::text[])', [
+        materialIds,
+        now,
+      ]);
+      return { status: 'deleted' as const, materialIds };
+    },
+  );
+  if (outcome.status === 'deleted') {
+    try {
+      // Only a committed tombstone authorizes deleting legacy bytes. Failures
+      // retain the key for the existing backfill's next enabled pass.
+      const committed = await persistence.pool.query<{ oss_key: string }>(
+        `SELECT oss_key FROM owner_material
+          WHERE id = $1 AND deleted_at IS NOT NULL AND oss_key <> ''`,
+        [input.materialId],
+      );
+      const key = committed.rows[0]?.oss_key;
+      if (key) {
+        await getMaterialByteStore().delete(key);
+        await persistence.pool.query(
+          `UPDATE owner_material SET oss_key = ''
+            WHERE id = $1 AND deleted_at IS NOT NULL AND oss_key = $2`,
+          [input.materialId, key],
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[material-delete] old original for material ${input.materialId} left for backfill`,
+        error,
+      );
+    }
+  }
+  return outcome;
 }
 
 /** What the owner uses of the two quotas the library is held to (RFC #1716 §8). */
