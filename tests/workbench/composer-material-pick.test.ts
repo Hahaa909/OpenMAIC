@@ -216,6 +216,77 @@ describe.each(['launch', 'follow'] as const)('the %s composer without classrooms
   });
 });
 
+describe('material picks while sending', () => {
+  it.each([false, true])(
+    'preserves later picks when the request completes (session switch: %s)',
+    async (switchSession) => {
+      const originalFetch = globalThis.fetch;
+      let release!: (response: Response) => void;
+      const pending = new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+      let secondListing = false;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).endsWith('/messages') && init?.method === 'POST') {
+            posts.push({ url: String(input), body: JSON.parse(String(init.body)) });
+            return pending;
+          }
+          if (secondListing && String(input).startsWith('/api/materials/library')) {
+            return Response.json({
+              materials: [
+                {
+                  materialId: 'src-next',
+                  name: 'next.pdf',
+                  bytes: 3,
+                  mime: 'application/pdf',
+                  extraction: { status: 'done' },
+                },
+              ],
+            });
+          }
+          return originalFetch(input, init);
+        }),
+      );
+      const container = await mount('follow');
+      await act(async () => mentionButton(container, 'follow')!.click());
+      await wait(230);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[data-testid="workbench-material-option-src-doc"]')!
+          .click(),
+      );
+      await type(container, 'First message');
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[data-testid="workbench-send"]')!.click(),
+      );
+      expect(posts.at(-1)?.body.materialIds).toEqual(['src-doc']);
+      secondListing = true;
+      if (switchSession) {
+        await act(async () => {
+          useWorkbenchStore.getState().attach('ses-second', 'stage-1');
+          useWorkbenchStore.setState({ replaying: false, status: 'succeeded' });
+        });
+      }
+      await type(container, '@next');
+      await wait(230);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[data-testid="workbench-material-option-src-next"]')!
+          .click(),
+      );
+      expect(container.textContent).toContain('next.pdf');
+      await act(async () =>
+        release(Response.json({ elementRefsAccepted: true, courseRefsAccepted: true })),
+      );
+      expect(container.textContent).toContain('next.pdf');
+      if (!switchSession) expect(container.textContent).not.toContain('document.pdf');
+      else expect(container.textContent).toContain('document.pdf');
+    },
+  );
+});
+
 describe('the @ menu', () => {
   it('names every extraction state, so not-extracted and extracted read differently', async () => {
     const container = document.createElement('div');

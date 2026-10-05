@@ -6,7 +6,7 @@
  * as one list, and the listing refetched on a material change of the run.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createElement } from 'react';
+import { createElement, StrictMode } from 'react';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -122,6 +122,39 @@ describe('material mention candidates', () => {
 });
 
 describe('staging a picked material', () => {
+  it('settles a send under StrictMode without losing later slot reservations', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ enabled: true })),
+    );
+    const sink: { current: ComposerMaterials | null } = { current: null };
+    const record = recorder(sink);
+    function Harness() {
+      record(useComposerMaterials());
+      return null;
+    }
+    const mounted = mount();
+    await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+    await act(async () => {
+      await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+    });
+    const material = (id: string): WorkbenchMaterial => ({ materialId: id, name: id, bytes: 1 });
+    await act(async () => sink.current!.addExisting(material('sent')));
+    const sent = sink.current!.materials;
+    await act(async () => {
+      sink.current!.addExisting(material('late-a'));
+      sink.current!.removeSent(sent);
+      sink.current!.addExisting(material('late-b'));
+    });
+    expect(sink.current!.materials.map((m) => m.materialId)).toEqual(['late-a', 'late-b']);
+    for (let index = 0; index < MAX_COMPOSER_MATERIALS; index += 1) {
+      await act(async () => sink.current!.addExisting(material(`next-${index}`)));
+    }
+    expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+    expect(sink.current!.materials.at(-1)?.materialId).toBe(`next-${MAX_COMPOSER_MATERIALS - 3}`);
+    await mounted.dispose();
+  });
+
   it('stages once, attaches nothing, and keeps the per-message cap', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/api/agent/runtime')) return Response.json({ enabled: true });
@@ -161,8 +194,24 @@ describe('staging a picked material', () => {
       sink.current!.addExisting(material('late'));
     });
     expect(sink.current!.materials.at(-1)?.materialId).toBe('late');
+    // A send settles its snapshot, preserving a removed-and-repicked id and
+    // releasing exactly the accepted slots, even if settlement is replayed.
+    const sent = sink.current!.materials;
+    await act(async () => sink.current!.remove('late'));
+    await act(async () => sink.current!.addExisting(material('late')));
+    await act(async () => sink.current!.removeSent(sent));
+    await act(async () => sink.current!.removeSent(sent));
+    expect(sink.current!.materials.map((m) => m.materialId)).toEqual(['late']);
+    for (let index = 0; index < MAX_COMPOSER_MATERIALS + 1; index += 1) {
+      await act(async () => sink.current!.addExisting(material(`after-${index}`)));
+    }
+    expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
     // Nothing but the runtime probe was fetched: staging is not attaching.
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(['/api/agent/runtime']);
+    expect(
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url !== '/api/agent/runtime'),
+    ).toEqual([]);
     await mounted.dispose();
   });
 });

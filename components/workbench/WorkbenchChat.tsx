@@ -251,6 +251,8 @@ export function WorkbenchChat({
   const [pendingStop, setPendingStop] = useState(false);
   // Durable material assets can be attached mid-conversation too.
   const materials = useComposerMaterials();
+  const materialComposerOwner = useRef(composerOwnerId);
+  materialComposerOwner.current = composerOwnerId;
   // Slide elements the user pointed at on the canvas (the edit dock's lasso).
   // The staging lives in its own store because the picker is on the other side
   // of the workspace; this surface only reads it and clears it on send.
@@ -739,7 +741,9 @@ export function WorkbenchChat({
     setMentionOpen(false);
     const result = await submit(text, selectedMaterials, selectedRefs, selectedCourses);
     if (result.accepted) {
-      materials.clear();
+      if (materialComposerOwner.current === composerOwnerId) {
+        materials.removeSent(selectedMaterials);
+      }
       // Remove only this request's snapshot. Picks added while POST was pending
       // belong to the next message and must survive; an owner change meanwhile
       // also fences this completion from session B's draft. On the draft path the

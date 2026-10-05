@@ -285,6 +285,8 @@ export interface ComposerMaterials {
   addExisting: (material: WorkbenchMaterial) => void;
   remove: (materialId: string) => void;
   removeFailed: (id: string) => void;
+  /** Remove only the staged objects accepted by this send. Later picks survive. */
+  removeSent: (sent: readonly WorkbenchMaterial[]) => void;
   clear: () => void;
   /** True while any upload is in flight — submits should wait for it. */
   busy: boolean;
@@ -438,6 +440,22 @@ export function useComposerMaterials(
         return items.filter((item) => item.materialId !== materialId);
       }),
     removeFailed: (id) => setFailed((items) => items.filter((item) => item.id !== id)),
+    removeSent: (sent) => {
+      const snapshot = new Set(sent);
+      const released = new Set<WorkbenchMaterial>();
+      setMaterials((items) =>
+        items.filter((item) => {
+          if (!snapshot.has(item)) return true;
+          // Release each slot once if React replays the updater, without
+          // overwriting reservations made by a later pick or upload.
+          if (!released.has(item)) {
+            released.add(item);
+            slotLedger.current.removeCompleted();
+          }
+          return false;
+        }),
+      );
+    },
     clear: () => {
       // Uploads are not cancelled by clear. Keep their reservations so a late
       // success remains counted when its pill appears after this reset.
