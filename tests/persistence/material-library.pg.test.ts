@@ -507,11 +507,13 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   it.each(['source row', 'folder creation'] as const)(
     'answers 503 and rolls back when the %s lock times out after the owner fence',
     async (kind) => {
-      const h = await boot({
-        OPENMAIC_AGENT_RUNTIME_ENABLED: 'true',
-        OWNER_WRITE_LOCK_WAIT_MS: '250',
-      });
+      const h = await boot({ OPENMAIC_AGENT_RUNTIME_ENABLED: 'true' });
       await seedSource(h, 'locked-source');
+      // Shorten the wait only for the request under test. The identity lock is
+      // an advisory lock shared by the whole database, and other PG suites
+      // running in parallel take the same owner's; seeding under 250 ms could
+      // time out on them instead of on the lock this test holds.
+      vi.stubEnv('OWNER_WRITE_LOCK_WAIT_MS', '250');
       const sourceName = async () =>
         (await h.pool.query("SELECT display_name FROM owner_material WHERE id = 'locked-source'"))
           .rows[0];
