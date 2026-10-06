@@ -267,7 +267,14 @@ describe('document-image production parser', () => {
 
   it('evicts legacy positions at the unchanged production cache entry limit', async () => {
     const text = '![x](openmaic-derivative:img-1)';
-    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    // Exercise the production cache without starting 18 real parser workers.
+    const plan = {
+      markdown: [{ start: 0, end: text.length, target: 'openmaic-derivative:img-1', alt: 'x' }],
+      html: [],
+    };
+    const worker = vi
+      .spyOn(parser, 'runDocumentImageWorker')
+      .mockImplementation(vi.fn().mockResolvedValue(plan));
     await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'first' }], 'worker-eviction-old');
     for (let n = 0; n < 16; n++) {
       await resolveDerivativeRefsAsync(

@@ -40,6 +40,8 @@ function rewriteImageDestinations(markdown: string, rewriteTarget: RewriteImageT
   return prefix + applyImagePlan(input, imagePlan(input), rewriteTarget);
 }
 
+// This retained synchronous cache is test-only. Production cache coverage lives
+// in tests/agent-runtime/document-image-worker.test.ts via resolveDerivativeRefsAsync.
 // A cache of derived reference positions, not owner text or derivative ids.
 // Callers supply an immutable text-entry/revision identity after resolving its
 // bytes. Every reader still applies its own result's mapping, including reuse.
