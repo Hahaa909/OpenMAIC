@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { EventEmitter } from 'node:events';
 import { Worker } from 'node:worker_threads';
-import { runDocumentImageWorker } from '@/lib/server/material-extraction/document-image-parser';
+import {
+  DocumentImageParseError,
+  runDocumentImageWorker,
+} from '@/lib/server/material-extraction/document-image-parser';
 
 const state = vi.hoisted(() => ({
   workers: [] as Array<EventEmitter & { terminate: ReturnType<typeof vi.fn> }>,
@@ -220,4 +223,17 @@ it('rejects an already canceled request without starting a worker', async () => 
     runDocumentImageWorker({ kind: 'plan', text: 'text' }, 'already-abort', controller.signal),
   ).rejects.toThrow('aborted');
   expect(state.workers.length).toBe(start);
+});
+
+it('identifies a real worker timeout as a parse failure', async () => {
+  vi.useFakeTimers();
+  const job = runDocumentImageWorker({ kind: 'plan', text: 'timeout' });
+  const rejected = expect(job).rejects.toBeInstanceOf(DocumentImageParseError);
+  await vi.advanceTimersByTimeAsync(30_000);
+  await rejected;
+  // Preserve the pre-existing classification for this exact timeout message.
+  await expect(job).rejects.toMatchObject({
+    retryable: false,
+    cause: { message: 'Document image parse exceeded 30s' },
+  });
 });

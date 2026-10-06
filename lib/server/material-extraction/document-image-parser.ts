@@ -1,6 +1,7 @@
 /** Isolate Markdown/HTML parsing from the shared server event loop. */
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { isTransientExtractionError, MaterialExtractionError } from './errors';
 import type { ImagePlan, ImageReference } from './document-image-apply.mjs';
 import type { ImagePathIndex } from './document-images';
 
@@ -12,6 +13,18 @@ type RewriteJob = {
 };
 type RewriteResult = { text: string; refs: ImageReference[] };
 type Result = ImagePlan | RewriteResult;
+
+/** A parser failure must end this extraction rather than try another provider. */
+export class DocumentImageParseError extends MaterialExtractionError {
+  constructor(cause: unknown) {
+    super(
+      `Document image parse failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      isTransientExtractionError(cause),
+      { cause },
+    );
+    this.name = 'DocumentImageParseError';
+  }
+}
 
 const MAX_PARSER_WORKERS = 2;
 // Measured against the A/B/C fixtures in the hardening evidence, including
@@ -54,7 +67,7 @@ function enqueue(job: PlanJob | RewriteJob): ParseTask {
         );
       } catch (error) {
         running--;
-        reject(error);
+        reject(new DocumentImageParseError(error));
         drain();
         return;
       }
@@ -67,13 +80,13 @@ function enqueue(job: PlanJob | RewriteJob): ParseTask {
         void worker.terminate().then(
           () => {
             running--;
-            if (error) reject(error);
+            if (error) reject(new DocumentImageParseError(error));
             else resolve(result!);
             drain();
           },
           (terminationError) => {
             running--;
-            reject(terminationError);
+            reject(new DocumentImageParseError(terminationError));
             drain();
           },
         );

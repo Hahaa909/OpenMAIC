@@ -17,6 +17,7 @@ import { AssetRootTargetError, changeAssetRoots } from '@openmaic/storage/asset/
 import type { ConnectableQueryable } from '@openmaic/storage/server/reference';
 import { ensureUserSkillSchema } from '@openmaic/storage/skill/pg';
 import { expect, vi } from 'vitest';
+import * as imageParser from '@/lib/server/material-extraction/document-image-parser';
 
 import type { DocumentExtractorProvider, MediaExtractorProvider } from '@/lib/document';
 import { resolveConfiguredAssetByteStore } from '@/lib/persistence/asset-byte-store';
@@ -1316,5 +1317,44 @@ export async function lostDuringLookupScenario(h: ExtractionHarness): Promise<vo
   expect(h.mediaExtract).not.toHaveBeenCalled();
   for (const id of ['doc-lookup', 'vid-lookup']) {
     expect(await stateOf(h, id)).toMatchObject({ status: 'running', extraction_result: null });
+  }
+}
+
+/** Parser errors stop provider fallback and retain the existing claim budget. */
+export async function parserFailureScenario(h: ExtractionHarness): Promise<void> {
+  await seedSource(h, 'parser-timeout');
+  await ensure(h, 'parser-timeout');
+  const fallback = vi.fn(h.documentExtract.getMockImplementation()!);
+  const providers = () => [
+    documentProvider(h.documentExtract),
+    { ...documentProvider(fallback), id: 'fallback-doc' as never },
+  ];
+  // Preserve the origin's existing transient classification, rather than
+  // adding a retry mechanism for parser failures.
+  const timeout = Object.assign(new Error('worker timed out'), { code: 'ETIMEDOUT' });
+  const parser = vi
+    .spyOn(imageParser, 'runDocumentImageWorker')
+    .mockRejectedValue(new imageParser.DocumentImageParseError(timeout));
+  try {
+    for (let n = 1; n <= MAX_OWNER_EXTRACTION_CLAIMS; n++) {
+      expect(await runNextOwnerExtraction(h.deps({ providers }))).toBe(true);
+      const state = await stateOf(h, 'parser-timeout');
+      expect(state.status).toBe(n < MAX_OWNER_EXTRACTION_CLAIMS ? 'pending' : 'failed');
+      expect(state.extraction_result).toBeNull();
+      expect(
+        (
+          await h.pool.query<{ extraction_error: string }>(
+            'SELECT extraction_error FROM owner_material WHERE id = $1',
+            ['parser-timeout'],
+          )
+        ).rows[0].extraction_error,
+      ).toContain('Document image parse failed: worker timed out');
+    }
+    expect(await runNextOwnerExtraction(h.deps({ providers }))).toBe(false);
+    expect(h.documentExtract).toHaveBeenCalledTimes(MAX_OWNER_EXTRACTION_CLAIMS);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(await rootsOf(h, 'parser-timeout')).toEqual([]);
+  } finally {
+    parser.mockRestore();
   }
 }
