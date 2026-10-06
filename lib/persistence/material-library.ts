@@ -160,6 +160,19 @@ export async function listMaterialFolders(
   return result.rows.map(folderOf);
 }
 
+/** Folder names for material listings, without per-folder usage counts. */
+export async function listMaterialFolderNames(
+  queryable: Queryable,
+  ownerId: string,
+): Promise<Array<Pick<MaterialFolder, 'id' | 'name'>>> {
+  const result = await queryable.query<{ id: string; name: string }>(
+    `SELECT id, name FROM material_folders
+      WHERE owner_id = $1 ORDER BY normalized_name, id`,
+    [ownerId],
+  );
+  return result.rows;
+}
+
 export type FolderNameRefusal = { status: 'invalid_name'; reason: FolderNameValidationError };
 
 export type CreateMaterialFolderOutcome =

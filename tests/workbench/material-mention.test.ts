@@ -319,7 +319,9 @@ describe('listing for the menu', () => {
     await mounted.render(createElement(Harness, { open: true, query: 'cell' }));
     await settle();
     expect(sink.current).toHaveLength(1);
-    expect(urls).toEqual(['/api/materials/library?sources=1&limit=20&query=cell&sessionId=ses-1']);
+    expect(urls).toEqual([
+      '/api/materials/library?sources=1&limit=20&limits=0&query=cell&sessionId=ses-1',
+    ]);
     expect(sink.current![0]).toMatchObject({ attached: true, staged: true });
 
     // A material change of this run refetches.

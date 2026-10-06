@@ -40,6 +40,8 @@ import {
 import { GET as libraryRoute } from '@/app/api/materials/library/route';
 import { POST as moveRoute } from '@/app/api/materials/move/route';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
+import * as libraryView from '@/lib/server/materials/library-view';
+import * as materialLibrary from '@/lib/persistence/material-library';
 import { registerOwnerMaterial } from '@/lib/persistence/owner-materials';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { attachOwnerMaterialsToSession } from '@/lib/persistence/session-material-links';
@@ -625,6 +627,62 @@ describe('material library routes and tools (PGlite)', () => {
       ((await quota.json()) as { limits: { assetQuotaBytes: number } }).limits.assetQuotaBytes,
     ).toBe(5000);
     expect((await libraryRoute(request('GET', '/api/materials/library?limit=0'))).status).toBe(400);
+  });
+
+  it('skips usage only for exact limits=0 and queries folder names without counts', async () => {
+    const h = await boot();
+    await seedSource(h, 'lookup-source');
+    const made = await createFolderRoute(
+      request('POST', '/api/materials/folders', { name: 'Lookup' }),
+    );
+    const { folder } = (await made.json()) as { folder: { id: string } };
+    await moveRoute(
+      request('POST', '/api/materials/move', {
+        materialIds: ['lookup-source'],
+        folderId: folder.id,
+      }),
+    );
+    const limits = vi.spyOn(libraryView, 'libraryLimits');
+    const usage = vi.spyOn(materialLibrary, 'ownerLibraryUsage');
+    const queries = vi.spyOn(h.pool, 'query');
+    try {
+      const normal = await libraryRoute(request('GET', '/api/materials/library'));
+      const normalBody = await normal.json();
+      expect(normalBody).toHaveProperty('limits');
+      expect(normalBody.materials).toMatchObject([{ folderName: 'Lookup' }]);
+      expect(limits).toHaveBeenCalledTimes(1);
+      expect(usage).toHaveBeenCalledTimes(1);
+      for (const value of ['0', '1', '00', '', 'false', '%200']) {
+        limits.mockClear();
+        usage.mockClear();
+        queries.mockClear();
+        const response = await libraryRoute(
+          request('GET', `/api/materials/library?limits=${value}`),
+        );
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        if (value === '0') {
+          const { limits: _limits, ...withoutLimits } = normalBody;
+          expect(body).toEqual(withoutLimits);
+          expect(limits.mock.calls.length).toBe(0);
+          expect(usage.mock.calls.length).toBe(0);
+        } else {
+          expect(body).toEqual(normalBody);
+          expect(limits).toHaveBeenCalledTimes(1);
+          expect(usage).toHaveBeenCalledTimes(1);
+        }
+        const folderQueries = queries.mock.calls
+          .map(([sql]) => sql)
+          .filter((sql) => /FROM material_folders\b/i.test(sql));
+        expect(folderQueries).toHaveLength(1);
+        expect(folderQueries[0]).not.toMatch(/COUNT|owner_material/i);
+        expect(folderQueries[0]).toMatch(/SELECT id, name FROM material_folders/i);
+      }
+    } finally {
+      limits.mockRestore();
+      usage.mockRestore();
+      queries.mockRestore();
+    }
   });
 
   it('counts in the tool row only the sources that actually moved', async () => {
