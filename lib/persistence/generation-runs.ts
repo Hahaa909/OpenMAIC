@@ -31,6 +31,11 @@
  * silent (the asset store refused them, or the voice is not the tts slot's),
  * and `media_summary`, the counts of its images and videos (`total`,
  * `failed`), written by the compaction from the media checkpoints it removes.
+ *
+ * Version 5 adds `host_attributes`: the string attributes a host's
+ * `authorizeStart` hook attached to the run when it admitted it
+ * (`lib/server/generation-run-hooks`), handed back to the host's hooks on
+ * every execution of the run. Null for a run started without them.
  */
 import type { Queryable } from '@openmaic/storage/document/pg';
 import { applySchemaMigrations, type SchemaMigrationSet } from '@openmaic/storage/pg-migrations';
@@ -114,6 +119,10 @@ CREATE INDEX IF NOT EXISTS generation_runs_outline_auto_confirm_idx
   ON generation_runs (outline_auto_confirm_at)
   WHERE state = 'awaiting_outline_confirmation' AND outline_auto_confirm_at IS NOT NULL`;
 
+// What a host attached to the run when it admitted it; never shown to the owner.
+const HOST_ATTRIBUTES = `
+ALTER TABLE generation_runs ADD COLUMN IF NOT EXISTS host_attributes JSONB`;
+
 export const GENERATION_RUN_MIGRATIONS: SchemaMigrationSet = {
   store: 'generation-runs',
   migrations: [
@@ -121,6 +130,7 @@ export const GENERATION_RUN_MIGRATIONS: SchemaMigrationSet = {
     { version: 2, name: 'media_pending', up: MEDIA_PENDING },
     { version: 3, name: 'run_report', up: RUN_REPORT },
     { version: 4, name: 'outline_auto_confirm', up: OUTLINE_AUTO_CONFIRM },
+    { version: 5, name: 'host_attributes', up: HOST_ATTRIBUTES },
   ],
 };
 

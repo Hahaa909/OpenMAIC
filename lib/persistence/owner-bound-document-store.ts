@@ -18,6 +18,7 @@ import type {
 } from '@openmaic/storage';
 import { DocumentWriteRefusedError } from '@openmaic/storage';
 
+import type { EndedGenerationRun } from '@/lib/server/generation/run/store';
 import type { OwnerPrincipal } from '@/lib/server/identity/types';
 import { getPersistenceHooks } from '@/lib/server/persistence-hooks/registry';
 import type {
@@ -383,6 +384,8 @@ class OwnerBoundDocumentStore<TScene extends SceneLike, TStage extends Stage>
    * live and still naming them; the rollback is what makes that unreachable.
    */
   async deleteDocument(stageId: string): Promise<void> {
+    // The runs the deletion ended, reported to the host once it committed.
+    let ended: EndedGenerationRun[] = [];
     await this.tagged({ stageId, mode: 'delete' }, () =>
       this.runTransaction(async (queryable) => {
         // By the time this body runs, `runTransaction` has already taken the
@@ -393,7 +396,7 @@ class OwnerBoundDocumentStore<TScene extends SceneLike, TStage extends Stage>
         // transaction, whatever state its run is in.
         const { endGenerationRunsOfDeletedCourseIn } =
           await import('@/lib/server/generation/run/store');
-        await endGenerationRunsOfDeletedCourseIn(queryable, stageId);
+        ended = await endGenerationRunsOfDeletedCourseIn(queryable, stageId);
         await queryable.query('UPDATE document_stages SET folder_id = NULL WHERE id = $1', [
           stageId,
         ]);
@@ -432,6 +435,10 @@ class OwnerBoundDocumentStore<TScene extends SceneLike, TStage extends Stage>
         }
       }),
     );
+    if (ended.length > 0) {
+      const { reportEndedGenerationRuns } = await import('@/lib/server/generation/run/store');
+      reportEndedGenerationRuns(ended);
+    }
   }
 
   async loadDocument(stageId: string): Promise<MaicDocument<TScene, TStage> | null> {

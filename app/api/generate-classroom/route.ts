@@ -6,7 +6,8 @@
  *     job; 400 for a body it cannot generate from, or when a model the run
  *     needs (outline, actions, content for some scene type) is not
  *     configured or cannot be built; 429 `ACTIVE_RUN_LIMIT` when the owner
- *     already has the configured number of runs in progress.
+ *     already has the configured number of runs in progress; a host's
+ *     `authorizeStart` hook may refuse it last, with its own status and code.
  */
 import { type NextRequest } from 'next/server';
 import { apiSuccess } from '@/lib/server/api-response';
@@ -31,7 +32,8 @@ export async function POST(req: NextRequest) {
   // owner that uploaded them. The owner is resolved before anything else so
   // every response, including a 400, carries its cookies (see
   // `withRequestOwner`).
-  return withRequestOwner(req, async ({ ownerId }, responseHeaders) => {
+  return withRequestOwner(req, async (principal, responseHeaders) => {
+    const { ownerId } = principal;
     const body = await readJsonBody(req, MAX_START_BODY_BYTES);
     if (!body.ok) {
       return ownerApiError('INVALID_REQUEST', body.status, body.message, responseHeaders);
@@ -44,7 +46,11 @@ export async function POST(req: NextRequest) {
       const refused = await requiredModelRefusal(ownerId);
       if (refused) return ownerApiError(refused.code, 400, refused.message, responseHeaders);
 
-      const run = await startGenerationRun(ownerId, input);
+      const run = await startGenerationRun(ownerId, input, {
+        principal,
+        request: req,
+        origin: 'generate-classroom',
+      });
       return withOwnerResponseHeaders(
         apiSuccess(classroomJobView(run, {}, buildRequestOrigin(req)), 202),
         responseHeaders,
@@ -52,7 +58,14 @@ export async function POST(req: NextRequest) {
     } catch (error) {
       const refusal = startRefusal(error);
       if (refusal) {
-        return ownerApiError(refusal.code, refusal.status, refusal.message, responseHeaders);
+        const response = ownerApiError(
+          refusal.code,
+          refusal.status,
+          refusal.message,
+          responseHeaders,
+        );
+        for (const [key, value] of refusal.headers ?? []) response.headers.append(key, value);
+        return response;
       }
       log.error(
         `Classroom generation job creation failed [requirement="${input.requirement.substring(0, 60)}..."]:`,

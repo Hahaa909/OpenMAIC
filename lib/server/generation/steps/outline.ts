@@ -37,6 +37,7 @@ import type {
   ImageMapping,
 } from '@/lib/types/generation';
 import { resolveServerGenerationCapabilities } from '@/lib/server/generation-capabilities';
+import { isNonRetryableHostFailure } from '@/lib/server/generation-run-hooks/runtime';
 import { sortDocumentImagesForVision } from '@/lib/document/bundle';
 import { resolveVocationalActive } from '@/lib/config/feature-flags';
 
@@ -694,6 +695,10 @@ async function streamOutlines(
         }
       }
 
+      // A host failure no retry helps fails the step as it is, even after
+      // some outlines streamed: they are not the outline the model meant.
+      if (streamError !== undefined && isNonRetryableHostFailure(streamError)) throw streamError;
+
       // Validate: got outlines?
       if (parsedOutlines.length > 0) {
         if (!courseTitle) {
@@ -758,6 +763,7 @@ async function streamOutlines(
       // The caller went away (AbortError from the propagated signal):
       // stop immediately, don't burn retries re-running generation.
       if (signal?.aborted) throw new StepAbortedError();
+      if (isNonRetryableHostFailure(error)) throw error;
       lastError = error instanceof Error ? error.message : String(error);
       log.warn(
         `Outlines stream error detail (attempt ${attempt}/${MAX_STREAM_RETRIES + 1}): ${lastError}`,
