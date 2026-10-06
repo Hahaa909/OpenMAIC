@@ -33,7 +33,7 @@ import {
   publishOwnerMaterialUpload,
   registerOwnerMaterial,
 } from '@/lib/persistence/owner-materials';
-import { migrateOwnerMaterialsToPool } from '@/lib/server/materials/migrate-to-pool';
+import { removeDeletedOriginals } from '@/lib/server/materials/migrate-to-pool';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
 import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 import {
@@ -2055,9 +2055,8 @@ export async function deleteLegacyScenario(h: LibraryHarness): Promise<void> {
   }
   fail = false;
   const before = await entryIds(h);
-  expect(await migrateOwnerMaterialsToPool({ pauseMs: 0 })).toMatchObject({
+  expect(await removeDeletedOriginals({ pauseMs: 0 })).toEqual({
     scanned: 2,
-    migrated: 0,
     oldBytesRemoved: 2,
     failed: 0,
   });

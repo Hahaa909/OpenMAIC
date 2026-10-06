@@ -23,9 +23,12 @@
  * crash) still has its `oss_key`, so the next pass picks it up again and goes
  * straight to step 4; the delete is idempotent.
  *
- * A deleted source is never migrated. If its old object outlived the
- * deletion's own cleanup, the pass goes straight to step 4 for it too: the
- * committed tombstone, like a committed pointer, is what allows the delete.
+ * A deleted source is never migrated, and this pass does not look at it.
+ * Its old object is removed right after the deletion commits; when that
+ * fails, {@link removeDeletedOriginals} retries it on every start, flag or
+ * not. That needs no flag because no reader is left for the object of a
+ * deleted row, and step 4 is the same: the committed tombstone, like a
+ * committed pointer, is what allows the delete.
  *
  * The pass never reads a row twice: the cursor only moves forward, and a row
  * that fails is counted and left for the next pass. Several instances may run
@@ -82,7 +85,6 @@ interface CandidateRow extends Record<string, unknown> {
   sha256: string | null;
   oss_key: string;
   asset_id: string | null;
-  deleted_at: unknown;
 }
 
 const DEFAULT_BATCH_SIZE = 20;
@@ -99,6 +101,35 @@ function emptyReport(): OwnerMaterialMigrationReport {
     skippedLost: 0,
     failed: 0,
   };
+}
+
+type MaterialPersistence = Awaited<ReturnType<typeof getServerPersistenceProvider>>;
+
+/**
+ * Step 4: delete the old object of `id` only when its committed row has a
+ * pool pointer or a tombstone, then clear `oss_key` if it is still that
+ * object. `true` when this call cleared it.
+ */
+async function removeCommittedOldObject(
+  provider: MaterialPersistence,
+  byteStore: ReturnType<typeof getMaterialByteStore>,
+  id: string,
+): Promise<boolean> {
+  const committed = await provider.pool.query<{
+    asset_id: string | null;
+    oss_key: string;
+    deleted_at: unknown;
+  }>('SELECT asset_id, oss_key, deleted_at FROM owner_material WHERE id = $1', [id]);
+  const row = committed.rows[0];
+  if (!row || (!row.asset_id && row.deleted_at === null) || !row.oss_key) return false;
+  await byteStore.delete(row.oss_key);
+  const cleared = await provider.pool.query(
+    `UPDATE owner_material SET oss_key = ''
+      WHERE id = $1 AND (asset_id IS NOT NULL OR deleted_at IS NOT NULL) AND oss_key = $2
+      RETURNING id`,
+    [id, row.oss_key],
+  );
+  return cleared.rows.length > 0;
 }
 
 /** Run one bounded pass over every pre-pool source; see the module docstring. */
@@ -199,31 +230,12 @@ export async function migrateOwnerMaterialsToPool(
     return false;
   };
 
-  /** Step 4: a committed pool pointer or tombstone authorizes removing the old object. */
-  const removeOldBytes = async (id: string): Promise<void> => {
-    const committed = await provider.pool.query<{
-      asset_id: string | null;
-      oss_key: string;
-      deleted_at: unknown;
-    }>('SELECT asset_id, oss_key, deleted_at FROM owner_material WHERE id = $1', [id]);
-    const row = committed.rows[0];
-    if (!row || (!row.asset_id && row.deleted_at === null) || !row.oss_key) return;
-    await byteStore.delete(row.oss_key);
-    const cleared = await provider.pool.query(
-      `UPDATE owner_material SET oss_key = ''
-        WHERE id = $1 AND (asset_id IS NOT NULL OR deleted_at IS NOT NULL) AND oss_key = $2
-        RETURNING id`,
-      [id, row.oss_key],
-    );
-    if (cleared.rows.length > 0) report.oldBytesRemoved += 1;
-  };
-
   let cursor = '';
   for (;;) {
     const batch = await provider.pool.query<CandidateRow>(
-      `SELECT id, owner_id, mime, sha256, oss_key, asset_id, deleted_at
+      `SELECT id, owner_id, mime, sha256, oss_key, asset_id
          FROM owner_material
-        WHERE kind = 'source' AND status = 'ready'
+        WHERE kind = 'source' AND status = 'ready' AND deleted_at IS NULL
           AND oss_key <> '' AND id > $1
         ORDER BY id
         LIMIT $2`,
@@ -234,16 +246,75 @@ export async function migrateOwnerMaterialsToPool(
       cursor = row.id;
       report.scanned += 1;
       try {
-        // A tombstone is never migrated. Like an existing pointer, it goes
-        // straight to committed-state cleanup (step 4).
-        if (row.deleted_at === null && row.asset_id === null && !(await publish(row))) continue;
-        await removeOldBytes(row.id);
+        // A row that already points into the pool goes straight to step 4.
+        if (row.asset_id === null && !(await publish(row))) continue;
+        if (await removeCommittedOldObject(provider, byteStore, row.id)) {
+          report.oldBytesRemoved += 1;
+        }
       } catch (error) {
         report.failed += 1;
         console.warn(`[material-backfill] material ${row.id} left for the next pass`, error);
       }
     }
     console.info('[material-backfill] batch done', { ...report });
+    if (batch.rows.length < batchSize) break;
+    if (pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+  }
+  return report;
+}
+
+export interface DeletedOriginalsReport {
+  /** Deleted sources still naming an old object. */
+  scanned: number;
+  /** Old objects deleted and their `oss_key` cleared. */
+  oldBytesRemoved: number;
+  /** Any failure; the row keeps its `oss_key` for the next pass. */
+  failed: number;
+}
+
+/**
+ * Retry the cleanup a source deletion does right after it commits: one
+ * bounded pass over deleted sources that still name an old object, deleting
+ * each by step 4. It migrates nothing and writes no root. Runs on every start
+ * (`instrumentation.ts`), without the backfill's flag: see the module
+ * docstring.
+ */
+export async function removeDeletedOriginals(
+  options: OwnerMaterialMigrationOptions = {},
+): Promise<DeletedOriginalsReport> {
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const pauseMs = options.pauseMs ?? DEFAULT_PAUSE_MS;
+  const provider = await getServerPersistenceProvider(process.env.DATABASE_URL ?? '');
+  const byteStore = getMaterialByteStore();
+  const report: DeletedOriginalsReport = { scanned: 0, oldBytesRemoved: 0, failed: 0 };
+
+  let cursor = '';
+  for (;;) {
+    const batch = await provider.pool.query<{ id: string }>(
+      `SELECT id
+         FROM owner_material
+        WHERE kind = 'source' AND status = 'ready' AND deleted_at IS NOT NULL
+          AND oss_key <> '' AND id > $1
+        ORDER BY id
+        LIMIT $2`,
+      [cursor, batchSize],
+    );
+    if (batch.rows.length === 0) break;
+    for (const row of batch.rows) {
+      cursor = row.id;
+      report.scanned += 1;
+      try {
+        if (await removeCommittedOldObject(provider, byteStore, row.id)) {
+          report.oldBytesRemoved += 1;
+        }
+      } catch (error) {
+        report.failed += 1;
+        console.warn(
+          `[material-delete] old original for material ${row.id} left for the next pass`,
+          error,
+        );
+      }
+    }
     if (batch.rows.length < batchSize) break;
     if (pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
   }

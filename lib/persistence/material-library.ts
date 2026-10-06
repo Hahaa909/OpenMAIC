@@ -482,7 +482,8 @@ export async function deleteMaterial(
   if (outcome.status === 'deleted') {
     try {
       // Only a committed tombstone authorizes deleting legacy bytes. Failures
-      // retain the key for the existing backfill's next enabled pass.
+      // retain the key for the cleanup pass of the next start
+      // (`removeDeletedOriginals`).
       const committed = await persistence.pool.query<{ oss_key: string }>(
         `SELECT oss_key FROM owner_material
           WHERE id = $1 AND deleted_at IS NOT NULL AND oss_key <> ''`,
@@ -499,7 +500,7 @@ export async function deleteMaterial(
       }
     } catch (error) {
       console.warn(
-        `[material-delete] old original for material ${input.materialId} left for backfill`,
+        `[material-delete] old original for material ${input.materialId} left for the next cleanup pass`,
         error,
       );
     }
