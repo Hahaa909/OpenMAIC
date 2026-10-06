@@ -12,9 +12,8 @@ import { extractMinerUResult } from '@/lib/pdf/mineru-parser';
 import {
   imagePathIndex,
   ownerDocumentOutcome,
-  resolveDerivativeRefs,
-  rewriteImageReferences,
 } from '@/lib/server/material-extraction/document-images';
+import { resolveDerivativeRefs, rewriteImageReferences } from '../helpers/document-image-sync';
 
 const index = imagePathIndex([
   { key: 'img-1', path: 'fig 1.jpg' },

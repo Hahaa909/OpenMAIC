@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import * as parser from '@/lib/server/material-extraction/document-image-parser';
@@ -15,6 +17,21 @@ const index = imagePathIndex([{ key: 'img-1', path: 'fig.png' }]);
 
 describe('document-image production parser', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('keeps the main-thread image modules free of parser imports', () => {
+    for (const file of [
+      'document-images.ts',
+      'document-image-parser.ts',
+      'document-image-apply.mjs',
+      'document-image-paths.mjs',
+    ]) {
+      const source = readFileSync(resolve('lib/server/material-extraction', file), 'utf8');
+      // The worker path is a string passed to Worker, never a static import.
+      expect(source).not.toMatch(
+        /(?:from\s*|import\s*\()\s*['"][^'"]*(?:document-image-plan|parse5|mdast-util-from-markdown)/,
+      );
+    }
+  });
 
   it.each([
     'If $a<b$ then ![same](images/fig.png) holds > 0.',
@@ -149,6 +166,23 @@ describe('document-image production parser', () => {
     }
     expect(worker).toHaveBeenCalledTimes(1);
     expect(vi.mocked(fromMarkdown)).not.toHaveBeenCalled();
+  });
+
+  it('evicts legacy positions at the unchanged production cache entry limit', async () => {
+    const text = '![x](openmaic-derivative:img-1)';
+    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'first' }], 'worker-eviction-old');
+    for (let n = 0; n < 16; n++) {
+      await resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'other' }],
+        `worker-eviction-${n}`,
+      );
+    }
+    expect(
+      await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'last' }], 'worker-eviction-old'),
+    ).toBe('![x](material:last)');
+    expect(worker).toHaveBeenCalledTimes(18);
   });
 
   it('keeps the main event loop responsive during write and legacy cold-read parsing', async () => {

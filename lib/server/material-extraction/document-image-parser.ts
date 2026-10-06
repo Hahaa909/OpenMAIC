@@ -1,7 +1,7 @@
 /** Isolate Markdown/HTML parsing from the shared server event loop. */
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import type { ImagePlan, ImageReference } from './document-image-plan.mjs';
+import type { ImagePlan, ImageReference } from './document-image-apply.mjs';
 import type { ImagePathIndex } from './document-images';
 
 type PlanJob = { kind: 'plan'; text: string };

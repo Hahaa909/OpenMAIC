@@ -6,11 +6,8 @@ vi.mock('mdast-util-from-markdown', async (importOriginal) => {
   return { ...original, fromMarkdown: vi.fn(original.fromMarkdown) };
 });
 
-import {
-  imagePathIndex,
-  resolveDerivativeRefs,
-  rewriteImageReferences,
-} from '@/lib/server/material-extraction/document-images';
+import { imagePathIndex } from '@/lib/server/material-extraction/document-images';
+import { resolveDerivativeRefs, rewriteImageReferences } from '../helpers/document-image-sync';
 
 const index = imagePathIndex([{ key: 'img-1', path: 'fig.png' }]);
 const derivatives = [{ key: 'img-1', id: 'own-image' }];
