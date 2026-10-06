@@ -23,6 +23,7 @@ import {
 } from '@/lib/persistence/material-library';
 import { canonicalizeStoredOwner } from '@/lib/persistence/owner-merges';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
+import { getSessionMaterialQueryable } from './session-materials';
 
 const LIST_FOLDERS_SCHEMA = Type.Object({
   query: Type.Optional(
@@ -77,6 +78,8 @@ export type MaterialLibraryChange = { library: 'materials' } & (
 export interface MaterialLibraryToolDependencies {
   /** The run's owner as recorded on its session; claims are followed. */
   ownerId: string;
+  /** The conversation whose legacy copies may shadow an owner source. */
+  sessionId: string;
   onLibraryChanged?: (change: MaterialLibraryChange) => void;
 }
 
@@ -105,6 +108,30 @@ export function buildMaterialLibraryTools(
   deps: MaterialLibraryToolDependencies,
 ): AgentTool<never, never>[] {
   const write = { ownerId: deps.ownerId, fence: 'background' as const };
+
+  async function resultWithSessionCopies(details: Record<string, unknown>, materialIds: string[]) {
+    const text = JSON.stringify(details, null, 2);
+    try {
+      const rows = await (
+        await getSessionMaterialQueryable()
+      ).query<{ id: string }>(
+        'SELECT id FROM agent_session_materials WHERE session_id = $1 AND id = ANY($2::text[])',
+        [deps.sessionId, materialIds],
+      );
+      const copies = new Set(rows.rows.map((row) => row.id));
+      const sessionCopyIds = [...new Set(materialIds)].filter((id) => copies.has(id));
+      if (sessionCopyIds.length) {
+        return result(
+          { ...details, sessionCopyIds },
+          `${text}\nThis conversation reads its own earlier copy of ${sessionCopyIds.join(', ')}; the copy keeps its previous name and folder.`,
+        );
+      }
+    } catch {
+      // The write already committed. A failed notice must not turn it into a failure.
+      console.warn('[MaterialLibraryTools] Session-copy notice unavailable');
+    }
+    return result(details, text);
+  }
 
   const listFolders: AgentTool<typeof LIST_FOLDERS_SCHEMA> = {
     name: 'list_material_folders',
@@ -254,7 +281,9 @@ export function buildMaterialLibraryTools(
             folderId: outcome.folderId,
             movedCount: outcome.movedCount,
           };
-          return result(details, JSON.stringify(details, null, 2));
+          return outcome.status === 'moved'
+            ? resultWithSessionCopies(details, outcome.materialIds)
+            : result(details, JSON.stringify(details, null, 2));
         }
       }
     },
@@ -293,7 +322,9 @@ export function buildMaterialLibraryTools(
               materialId: outcome.materialId,
             });
           }
-          return result({ ...outcome }, JSON.stringify(outcome, null, 2));
+          return outcome.status === 'renamed'
+            ? resultWithSessionCopies({ ...outcome }, [outcome.materialId])
+            : result({ ...outcome }, JSON.stringify(outcome, null, 2));
       }
     },
   };

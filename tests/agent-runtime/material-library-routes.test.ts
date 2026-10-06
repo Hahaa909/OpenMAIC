@@ -264,7 +264,7 @@ describe('material library routes and tools (PGlite)', () => {
     );
     expect(late.status).toBe(403);
 
-    const tools = buildMaterialLibraryTools({ ownerId: ANON });
+    const tools = buildMaterialLibraryTools({ ownerId: ANON, sessionId: 'ses-run' });
     const run = (name: string, args: Record<string, unknown>) =>
       tools.find((tool) => tool.name === name)!.execute('call', args as never) as Promise<{
         details: Record<string, unknown>;
@@ -293,11 +293,146 @@ describe('material library routes and tools (PGlite)', () => {
     expect(refused).toMatchObject({ isError: true, details: { status: 'not_movable' } });
   });
 
+  it.each(['same id', 'absent', 'other session', 'different id'] as const)(
+    'reports legacy session copies only for this conversation and same id: %s',
+    async (copy) => {
+      const h = await boot();
+      await seedSource(h, 'shadow-source');
+      await seedSession(h, 'ses-run');
+      await seedSession(h, 'ses-other');
+      if (copy !== 'absent') {
+        await seedCopy(
+          h,
+          copy === 'other session' ? 'ses-other' : 'ses-run',
+          copy === 'different id' ? 'different-copy' : 'shadow-source',
+          'shadow-source',
+        );
+      }
+      const before = await h.pool.query(
+        'SELECT * FROM agent_session_materials ORDER BY session_id, id',
+      );
+      const tools = buildMaterialLibraryTools({ ownerId: ACCOUNT, sessionId: 'ses-run' });
+      const run = (name: string, args: Record<string, unknown>) =>
+        tools.find((tool) => tool.name === name)!.execute('call', args as never);
+      const folder = await createFolderRoute(
+        request('POST', '/api/materials/folders', { name: 'Copy target' }),
+      );
+      const { folder: target } = (await folder.json()) as { folder: { id: string } };
+      const expectedResults = [
+        { status: 'renamed', materialId: 'shadow-source', name: 'Library name' },
+        { status: 'moved', materialIds: ['shadow-source'], folderId: target.id, movedCount: 1 },
+      ];
+      const actual = [
+        await run('rename_material', { materialId: 'shadow-source', name: 'Library name' }),
+        await run('move_materials', { materialIds: ['shadow-source'], folderId: target.id }),
+      ];
+      actual.forEach((value, index) => {
+        const details = expectedResults[index]!;
+        const text = JSON.stringify(details, null, 2);
+        expect(value).toEqual({
+          details: copy === 'same id' ? { ...details, sessionCopyIds: ['shadow-source'] } : details,
+          content: [
+            {
+              type: 'text',
+              text:
+                copy === 'same id'
+                  ? `${text}\nThis conversation reads its own earlier copy of shadow-source; the copy keeps its previous name and folder.`
+                  : text,
+            },
+          ],
+        });
+      });
+      expect(
+        (
+          await h.pool.query('SELECT display_name, folder_id FROM owner_material WHERE id = $1', [
+            'shadow-source',
+          ])
+        ).rows[0],
+      ).toMatchObject({
+        display_name: 'Library name',
+        folder_id: target.id,
+      });
+      expect(
+        (await h.pool.query('SELECT * FROM agent_session_materials ORDER BY session_id, id')).rows,
+      ).toEqual(before.rows);
+    },
+  );
+
+  it.each(['rename_material', 'move_materials'] as const)(
+    'keeps committed %s successful when the session-copy notice query fails',
+    async (name) => {
+      const h = await boot();
+      await seedSource(h, 'notice-failure');
+      await seedSession(h, 'ses-run');
+      await seedCopy(h, 'ses-run', 'notice-failure', 'notice-failure');
+      const folder = await createFolderRoute(
+        request('POST', '/api/materials/folders', { name: 'Failure target' }),
+      );
+      const { folder: target } = (await folder.json()) as { folder: { id: string } };
+      const tools = buildMaterialLibraryTools({ ownerId: ACCOUNT, sessionId: 'ses-run' });
+      const originalQuery = h.pool.query.bind(h.pool);
+      const query = vi.spyOn(h.pool, 'query').mockImplementation(async (sql, params) => {
+        if (sql.startsWith('SELECT id FROM agent_session_materials WHERE session_id')) {
+          throw new Error('notice query unavailable');
+        }
+        return originalQuery(sql, params);
+      });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const args =
+          name === 'rename_material'
+            ? { materialId: 'notice-failure', name: 'Committed' }
+            : { materialIds: ['notice-failure'], folderId: target.id };
+        const expected =
+          name === 'rename_material'
+            ? { status: 'renamed', materialId: 'notice-failure', name: 'Committed' }
+            : {
+                status: 'moved',
+                materialIds: ['notice-failure'],
+                folderId: target.id,
+                movedCount: 1,
+              };
+        const value = await tools
+          .find((tool) => tool.name === name)!
+          .execute('call', args as never);
+        expect(value).toEqual({
+          details: expected,
+          content: [{ type: 'text', text: JSON.stringify(expected, null, 2) }],
+        });
+        expect(warning).toHaveBeenCalledWith(
+          '[MaterialLibraryTools] Session-copy notice unavailable',
+        );
+        expect(
+          (
+            await originalQuery(
+              'SELECT display_name, folder_id FROM owner_material WHERE id = $1',
+              ['notice-failure'],
+            )
+          ).rows[0],
+        ).toMatchObject(
+          name === 'rename_material' ? { display_name: 'Committed' } : { folder_id: target.id },
+        );
+        expect(
+          (
+            await originalQuery<{ title: string }>(
+              'SELECT title FROM agent_session_materials WHERE id = $1',
+              ['notice-failure'],
+            )
+          ).rows,
+        ).toEqual([{ title: 'copy.pdf' }]);
+      } finally {
+        query.mockRestore();
+        warning.mockRestore();
+      }
+    },
+  );
+
   it('tells the client only about changes the run actually made', async () => {
     const h = await boot();
     await seedSource(h, 'src-a');
     const changes: unknown[] = [];
     const tools = buildMaterialLibraryTools({
+      sessionId: 'ses-run',
       ownerId: ACCOUNT,
       onLibraryChanged: (change) => changes.push(change),
     });
@@ -690,7 +825,7 @@ describe('material library routes and tools (PGlite)', () => {
     await seedSource(h, 'src-in');
     await seedSource(h, 'src-out');
     await seedDerivative(h, 'img-out', 'src-out');
-    const tools = buildMaterialLibraryTools({ ownerId: ACCOUNT });
+    const tools = buildMaterialLibraryTools({ ownerId: ACCOUNT, sessionId: 'ses-run' });
     const run = (name: string, args: Record<string, unknown>) =>
       tools.find((tool) => tool.name === name)!.execute('call', args as never) as Promise<{
         details: Record<string, unknown>;
