@@ -22,8 +22,10 @@
  * ## Moving a source moves its derivatives
  *
  * Derivatives are filed with their source and are never moved on their own.
- * A move locks the sources (one ascending statement), then updates the
- * sources and every row derived from them. A publication inserts a source's
+ * A move locks the sources (one ascending statement, which skips every
+ * derivative named: `derived_from` never changes, so a derivative is never
+ * locked and is refused as not movable), then updates the sources and every
+ * row derived from them. A publication inserts a source's
  * derivatives only while it holds that source's lock, so once the move holds
  * it, the set of derivatives is complete and stays so until the move commits:
  * none can be published into the old folder behind it.
@@ -34,6 +36,12 @@
  * derivatives in the next statement. Publications require that source's lock,
  * so the set is complete and stays fixed until deletion commits. The transaction
  * withdraws the actual roots and tombstones the source and its derivatives.
+ *
+ * Every writer takes a source before any of its derivatives: publications,
+ * moves (which never lock a derivative they are given) and deletion. A rename
+ * locks only the row it names, and attach locks sources only, so no writer
+ * holds a derivative while it waits for its source, and deletion cannot wait
+ * in a cycle with any of them.
  *
  * ## Deleting a folder
  *
@@ -335,19 +343,15 @@ export async function moveMaterials(
       folder_id: string | null;
     }>(
       `SELECT id, owner_id, derived_from, status, deleted_at, folder_id FROM owner_material
-        WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`,
+        WHERE id = ANY($1::text[]) AND derived_from IS NULL ORDER BY id FOR UPDATE`,
       [ids],
     );
+    // A derivative named here is never locked (lock order, module docstring),
+    // so it is refused as missing.
     const byId = new Map(locked.rows.map((row) => [row.id, row]));
     const refused = ids.filter((id) => {
       const row = byId.get(id);
-      return (
-        !row ||
-        row.owner_id !== ownerId ||
-        row.deleted_at !== null ||
-        row.status !== 'ready' ||
-        row.derived_from !== null
-      );
+      return !row || row.owner_id !== ownerId || row.deleted_at !== null || row.status !== 'ready';
     });
     if (refused.length > 0) return { status: 'not_movable' as const, materialIds: refused };
     // The sources and every row derived from them, read after the sources'
