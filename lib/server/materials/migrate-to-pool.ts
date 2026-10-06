@@ -23,12 +23,19 @@
  * crash) still has its `oss_key`, so the next pass picks it up again and goes
  * straight to step 4; the delete is idempotent.
  *
- * A deleted source is never migrated, and this pass does not look at it.
+ * A deleted source is never migrated, and this pass does not select it.
  * Its old object is removed right after the deletion commits; when that
  * fails, {@link removeDeletedOriginals} retries it on every start, flag or
- * not. That needs no flag because no reader is left for the object of a
- * deleted row, and step 4 is the same: the committed tombstone, like a
- * committed pointer, is what allows the delete.
+ * not. The flag protects originals still in use. A tombstone stops every new
+ * resolution of its row, so the retry only finishes a deletion that already
+ * committed: a read admitted before the deletion may fail, as it may when the
+ * deletion's own cleanup succeeds. Step 4 is the same for both: the committed
+ * tombstone, like a committed pointer, is what allows the delete.
+ *
+ * The two scans select disjoint rows, but a live row this pass already holds
+ * can be deleted before its step 4, which then runs beside the deletion's
+ * cleanup and {@link removeDeletedOriginals}. All of them go by the committed
+ * row and delete the same object (idempotent), and only one clears `oss_key`.
  *
  * The pass never reads a row twice: the cursor only moves forward, and a row
  * that fails is counted and left for the next pass. Several instances may run

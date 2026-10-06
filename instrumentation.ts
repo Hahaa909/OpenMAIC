@@ -99,7 +99,8 @@ export async function register(): Promise<void> {
           .catch((error) => console.error('[material-backfill] pass failed', error));
       }
       // Old originals of deleted sources whose cleanup after deletion failed.
-      // No reader is left for them, so this needs no flag.
+      // No new read reaches a deleted row, and this only retries a cleanup
+      // the deletion already authorized, so it needs no flag.
       void materialPasses
         .then(({ removeDeletedOriginals }) => removeDeletedOriginals())
         .then((report) => console.info('[material-delete] cleanup pass finished', report))
