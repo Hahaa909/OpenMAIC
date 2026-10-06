@@ -247,6 +247,7 @@ export async function resolveDerivativeRefsAsync(
   if (refs !== undefined) {
     let end = 0;
     const parts: string[] = [];
+    let valid = true;
     for (const ref of refs) {
       if (
         !Number.isInteger(ref.start) ||
@@ -255,7 +256,8 @@ export async function resolveDerivativeRefsAsync(
         ref.end > text.length ||
         text.slice(ref.start, ref.end) !== DERIVATIVE_REF_PREFIX + ref.key
       ) {
-        throw new Error('Invalid published document image position');
+        valid = false;
+        break;
       }
       parts.push(
         text.slice(end, ref.start),
@@ -263,8 +265,11 @@ export async function resolveDerivativeRefsAsync(
       );
       end = ref.end;
     }
-    parts.push(text.slice(end));
-    return parts.join('');
+    if (valid) {
+      parts.push(text.slice(end));
+      return parts.join('');
+    }
+    console.warn('[document-images] Invalid published image positions; parsing current bytes');
   }
   const prefix = text.startsWith('\uFEFF') ? '\uFEFF' : '';
   const input = prefix ? text.slice(1) : text;

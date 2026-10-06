@@ -168,6 +168,52 @@ describe('document-image production parser', () => {
     expect(vi.mocked(fromMarkdown)).not.toHaveBeenCalled();
   });
 
+  it.each(['offset', 'bytes', 'order'])(
+    'falls back from invalid %s positions without caching reader ids',
+    async (corruption) => {
+      const written = await parser.runDocumentImageWorker({
+        kind: 'rewrite',
+        index,
+        blocks: [
+          {
+            type: 'markdown',
+            text: '![one](images/fig.png)\n\n![two](images/fig.png)\n\n`openmaic-derivative:img-1`',
+          },
+        ],
+      });
+      const text = corruption === 'bytes' ? 'Changed bytes.\n\n' + written.text : written.text;
+      const refs =
+        corruption === 'offset'
+          ? [{ ...written.refs[0], start: written.refs[0].start + 1 }, written.refs[1]]
+          : corruption === 'order'
+            ? [...written.refs].reverse()
+            : written.refs;
+      const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const key = JSON.stringify(['reader', 'text', 'result', `fallback-${corruption}:1`]);
+      for (const id of ['first', 'second']) {
+        const read = await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id }], key, refs);
+        expect(read).toBe(
+          text.replaceAll(/(?<=\]\()openmaic-derivative:img-1(?=\))/g, `material:${id}`),
+        );
+        expect(read).toContain('`openmaic-derivative:img-1`');
+      }
+      expect(worker).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        '[document-images] Invalid published image positions; parsing current bytes',
+      );
+      expect(warning.mock.calls.flat().join(' ')).not.toContain('Changed bytes');
+      // A changed byte revision must not reuse the earlier plan.
+      await resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'third' }],
+        JSON.stringify(['reader', 'text', 'result', `fallback-${corruption}:2`]),
+        refs,
+      );
+      expect(worker).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('evicts legacy positions at the unchanged production cache entry limit', async () => {
     const text = '![x](openmaic-derivative:img-1)';
     const worker = vi.spyOn(parser, 'runDocumentImageWorker');
