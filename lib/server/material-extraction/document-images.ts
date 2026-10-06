@@ -42,6 +42,14 @@ import {
   type RewriteImageTarget,
 } from './document-image-plan.mjs';
 import { runDocumentImageWorker } from './document-image-parser';
+import {
+  isProviderPath,
+  normalizePath,
+  basename,
+  keyOf,
+  type ImagePathIndex,
+} from './document-image-paths.mjs';
+export type { ImagePathIndex } from './document-image-paths.mjs';
 
 import { MAX_DERIVED_IMAGES, prepareDerivedImage } from '@/lib/document/extractors/images';
 import type { DocumentArtifact, DocumentExtractorProvider } from '@/lib/document/types';
@@ -57,25 +65,6 @@ import {
 export const DERIVATIVE_REF_PREFIX = 'openmaic-derivative:';
 /** The link target a reader sees for one: the derivative's own material id. */
 export const MATERIAL_REF_PREFIX = 'material:';
-
-/** A target the provider resolved against its own files: no scheme, not absolute. */
-function isProviderPath(target: string): boolean {
-  return !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith('/');
-}
-
-function normalizePath(target: string): string {
-  let path = target.replace(/^\.\//, '');
-  try {
-    path = decodeURI(path);
-  } catch {
-    // Keep it as written.
-  }
-  return path;
-}
-
-function basename(path: string): string {
-  return path.split('/').pop() ?? path;
-}
 
 /** One kept image: the derivative to store and the key the text names it by. */
 interface KeptImage {
@@ -131,10 +120,6 @@ async function keptImages(
  * it first, then -- only when exactly one kept image has that file name -- its
  * bare file name, so one image's alias can never take another's path.
  */
-export interface ImagePathIndex {
-  exact: ReadonlyMap<string, string>;
-  byBasename: ReadonlyMap<string, string>;
-}
 
 export function imagePathIndex(
   images: ReadonlyArray<{ key: string; path?: string }>,
@@ -161,11 +146,6 @@ export function imagePathIndex(
     if (keys.size === 1) byBasename.set(name, [...keys][0]!);
   }
   return { exact, byBasename };
-}
-
-function keyOf(index: ImagePathIndex, target: string): string | undefined {
-  const path = normalizePath(target);
-  return index.exact.get(path) ?? index.byBasename.get(basename(path));
 }
 
 /**

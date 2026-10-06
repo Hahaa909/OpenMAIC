@@ -79,6 +79,27 @@ describe('document-image production parser', () => {
     }
   });
 
+  it.each([
+    ['![x](./images/fig%201.png)', '![x](openmaic-derivative:img-1)'],
+    ['![x](elsewhere/fig%201.png)', '![x](openmaic-derivative:img-1)'],
+    ['![x](remote/dup.png)', String.raw`\[image: x\]`],
+    ['![x](images/dup.png)', '![x](openmaic-derivative:img-2)'],
+    ['![x](https://example.test/fig.png)', '![x](https://example.test/fig.png)'],
+    ['![x](/images/fig.png)', '![x](/images/fig.png)'],
+  ])('matches provider paths in the worker: %s', async (input, expected) => {
+    const paths = imagePathIndex([
+      { key: 'img-1', path: 'fig 1.png' },
+      { key: 'img-2', path: 'images/dup.png' },
+      { key: 'img-3', path: 'other/dup.png' },
+    ]);
+    const written = await parser.runDocumentImageWorker({
+      kind: 'rewrite',
+      index: paths,
+      blocks: [{ type: 'markdown', text: input }],
+    });
+    expect(written.text).toBe(expected);
+  });
+
   it('publishes exact positions across trimmed blocks, BOM, definitions, HTML and code', async () => {
     const written = await parser.runDocumentImageWorker({
       kind: 'rewrite',
