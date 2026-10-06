@@ -352,6 +352,9 @@ export function useComposerMaterials(
   const [materials, setMaterials] = useState<WorkbenchMaterial[]>(() => [...initial.current!]);
   const [uploading, setUploading] = useState<MaterialUploadEntry[]>([]);
   const [failed, setFailed] = useState<MaterialUploadEntry[]>([]);
+  // Include picks queued before the next render, retaining the current object
+  // so a completed send cannot remove a later pick with the same id.
+  const stagedObjects = useRef(new Set(initial.current));
   const seq = useRef(0);
   const slotLedger = useRef(new MaterialSlotLedger(initial.current.length));
   const identityGate = useRef(createMaterialUploadIdentityGate());
@@ -387,6 +390,7 @@ export function useComposerMaterials(
       let succeeded = false;
       try {
         const staged = await retryMaterialUpload(() => uploadWorkbenchMaterial(file));
+        stagedObjects.current.add(staged);
         setMaterials((current) => [...current, staged]);
         succeeded = true;
         return true;
@@ -411,12 +415,13 @@ export function useComposerMaterials(
 
   const addExisting = (material: WorkbenchMaterial) => {
     if (!enabled) return;
-    if (materials.some((item) => item.materialId === material.materialId)) return;
+    if ([...stagedObjects.current].some((item) => item.materialId === material.materialId)) return;
     if (!slotLedger.current.canAccept(1)) {
       toast.error(t('workbench.material.maxSelected', { count: MAX_COMPOSER_MATERIALS }));
       return;
     }
     slotLedger.current.reserve(1);
+    stagedObjects.current.add(material);
     slotLedger.current.settle(true);
     setMaterials((current) =>
       current.some((item) => item.materialId === material.materialId)
@@ -432,33 +437,30 @@ export function useComposerMaterials(
     failed,
     addFiles,
     addExisting,
-    remove: (materialId) =>
-      setMaterials((items) => {
-        if (items.some((item) => item.materialId === materialId)) {
+    remove: (materialId) => {
+      for (const item of stagedObjects.current) {
+        if (item.materialId === materialId) {
+          stagedObjects.current.delete(item);
           slotLedger.current.removeCompleted();
         }
-        return items.filter((item) => item.materialId !== materialId);
-      }),
+      }
+      setMaterials((items) => items.filter((item) => item.materialId !== materialId));
+    },
     removeFailed: (id) => setFailed((items) => items.filter((item) => item.id !== id)),
     removeSent: (sent) => {
       const snapshot = new Set(sent);
-      const released = new Set<WorkbenchMaterial>();
-      setMaterials((items) =>
-        items.filter((item) => {
-          if (!snapshot.has(item)) return true;
-          // Release each slot once if React replays the updater, without
-          // overwriting reservations made by a later pick or upload.
-          if (!released.has(item)) {
-            released.add(item);
-            slotLedger.current.removeCompleted();
-          }
-          return false;
-        }),
-      );
+      for (const item of snapshot) {
+        if (stagedObjects.current.delete(item)) {
+          slotLedger.current.removeCompleted();
+        }
+      }
+      // The updater is pure: StrictMode replay cannot release a slot twice.
+      setMaterials((items) => items.filter((item) => !snapshot.has(item)));
     },
     clear: () => {
       // Uploads are not cancelled by clear. Keep their reservations so a late
       // success remains counted when its pill appears after this reset.
+      stagedObjects.current.clear();
       slotLedger.current.clearCompleted();
       setMaterials([]);
       setFailed([]);
