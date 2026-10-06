@@ -27,9 +27,12 @@ import { startOwnerMaterialExtractions } from '@/lib/persistence/owner-materials
 import { withSchemaBootstrapLock } from '@/lib/persistence/schema-bootstrap-lock';
 import { getServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import { notifyDurableAgentEvent } from '@/lib/server/agent-runtime/event-notify-bus';
+import { reportGenerationRunEvent } from '@/lib/server/generation-run-hooks/runtime';
+import type { GenerationRunAttributes } from '@/lib/server/generation-run-hooks/types';
 import type { SceneOutline } from '@/lib/types/generation';
 
 import { generationRunConfig } from './config';
+import { reportCommittedRunEvents } from './hook-events';
 import {
   FINAL_RUN_MEDIA_FAILURE_CODES,
   isRetryableRunMedia,
@@ -120,6 +123,8 @@ export interface StoredRun extends GenerationRunSnapshot {
   leaseHeartbeatAt: number | null;
   leaseGeneration: number;
   takeovers: number;
+  /** What the host's `authorizeStart` attached to the run (never part of its snapshot). */
+  hostAttributes?: GenerationRunAttributes | null;
 }
 
 interface RunRow extends Record<string, unknown> {
@@ -144,6 +149,7 @@ interface RunRow extends Record<string, unknown> {
   narration_unvoiced: number;
   media_summary: RunMediaSummary | null;
   outline_auto_confirm_at: Date | string | null;
+  host_attributes: GenerationRunAttributes | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -151,7 +157,7 @@ interface RunRow extends Record<string, unknown> {
 const RUN_COLUMNS = `id, owner_id, input, state, step, outline, outline_revision, agents, stage_id,
   scenes_total, scenes_completed, error, seq, lease_worker_id, lease_heartbeat_at,
   lease_generation, takeovers, media_pending, narration_unvoiced, media_summary,
-  outline_auto_confirm_at, created_at, updated_at`;
+  outline_auto_confirm_at, host_attributes, created_at, updated_at`;
 
 function isoTimestamp(value: Date | string): string {
   return (value instanceof Date ? value : new Date(value)).toISOString();
@@ -182,6 +188,7 @@ function storedRun(row: RunRow): StoredRun {
     leaseHeartbeatAt: row.lease_heartbeat_at === null ? null : Number(row.lease_heartbeat_at),
     leaseGeneration: row.lease_generation,
     takeovers: row.takeovers,
+    hostAttributes: row.host_attributes,
   };
 }
 
@@ -506,6 +513,12 @@ export interface CreateRunOptions {
   maxActiveRunsPerOwner: number;
   /** Runs one owner may have waiting for outline confirmation at once. */
   maxWaitingRunsPerOwner: number;
+  /**
+   * The host's admission of the run, asked after the limits passed and
+   * before the row is written, on the create transaction: answers the
+   * attributes to store with the run, or throws to refuse it.
+   */
+  authorize?: (tx: Queryable, runId: string) => Promise<GenerationRunAttributes | undefined>;
 }
 
 /** The owner already has as many runs waiting for outline confirmation as allowed. */
@@ -570,7 +583,7 @@ export async function createGenerationRun(
   options: CreateRunOptions,
 ): Promise<StoredRun> {
   const { withTransaction } = await provider();
-  return withTransaction(async (tx) => {
+  const run = await withTransaction(async (tx) => {
     const owner = await enforceActiveRunLimitIn(tx, ownerId, options.maxActiveRunsPerOwner);
     const waiting = await tx.query<{ n: string | number }>(
       `SELECT count(*) AS n FROM generation_runs
@@ -581,10 +594,16 @@ export async function createGenerationRun(
       throw new WaitingRunLimitError(options.maxWaitingRunsPerOwner);
     }
     const id = generateRunId();
+    const attributes = options.authorize ? await options.authorize(tx, id) : undefined;
     await tx.query(
-      `INSERT INTO generation_runs (id, owner_id, input, state)
-       VALUES ($1, $2, $3::jsonb, 'preparing')`,
-      [id, ownerId, encodeJson(input, 'run input')],
+      `INSERT INTO generation_runs (id, owner_id, input, state, host_attributes)
+       VALUES ($1, $2, $3::jsonb, 'preparing', $4::jsonb)`,
+      [
+        id,
+        ownerId,
+        encodeJson(input, 'run input'),
+        attributes === undefined ? null : encodeJson(attributes, 'run attributes'),
+      ],
     );
     await insertEvents(tx, id, [{ type: 'state', data: { state: 'preparing', step: null } }]);
     await notifyOwner(tx, ownerId);
@@ -593,6 +612,16 @@ export async function createGenerationRun(
     ]);
     return storedRun(row.rows[0]!);
   });
+  reportGenerationRunEvent(
+    {
+      type: 'started',
+      runId: run.id,
+      ownerId: run.ownerId,
+      attributes: run.hostAttributes ?? {},
+    },
+    () => currentOwnerOf(run.ownerId),
+  );
+  return run;
 }
 
 /**
@@ -798,6 +827,8 @@ export async function claimNextGenerationRun(
     params,
   );
   for (const candidate of candidates.rows) {
+    // A run the claim paused instead (its step kept killing workers).
+    let paused: { run: StoredRun; events: NewGenerationRunEvent[] } | undefined;
     const claimed = await withTransaction(async (tx): Promise<ClaimedRun | null> => {
       const locked = await tx.query<RunRow>(
         `SELECT ${RUN_COLUMNS} FROM generation_runs
@@ -835,17 +866,19 @@ export async function claimNextGenerationRun(
           errorCode: 'INTERNAL_ERROR',
           ...(previous.step ? {} : { resumeState: previous.state as ExecutableRunState }),
         };
-        await applyPatch(
+        const pausedRow = await applyPatch(
           tx,
           previous.id,
           { state: 'paused', step: previous.step, error: failure, releaseLease: true },
           { resetTakeovers: true },
         );
-        await insertEvents(tx, previous.id, [
+        const events: NewGenerationRunEvent[] = [
           { type: 'step_failed', data: { ...failure } },
           { type: 'state', data: { state: 'paused', step: failure.step } },
-        ]);
+        ];
+        await insertEvents(tx, previous.id, events);
         await notifyOwner(tx, previous.owner_id);
+        paused = { run: storedRun(pausedRow), events };
         return null;
       }
       const updated = await tx.query<RunRow>(
@@ -863,6 +896,7 @@ export async function claimNextGenerationRun(
         takeover,
       };
     });
+    if (paused) reportCommittedRunEvents(paused.run, paused.events, currentOwnerOf);
     if (claimed) return claimed;
   }
   return null;
@@ -877,7 +911,7 @@ async function failMediaWorkIn(
   tx: Queryable,
   runId: string,
   message: string,
-  { includeStored }: { includeStored: boolean },
+  { includeStored, errorCode }: { includeStored: boolean; errorCode?: string },
 ): Promise<void> {
   const statuses = ['queued', 'generating', 'submitted', ...(includeStored ? ['stored'] : [])];
   const pending = await tx.query<{ step_id: string; output: GenerationRunMediaCheckpoint }>(
@@ -893,6 +927,7 @@ async function failMediaWorkIn(
       mediaType: output.mediaType,
       status: 'failed',
       message,
+      ...(errorCode ? { errorCode } : {}),
     };
     await upsertStep(tx, runId, { id: stepId, output: failed });
     events.push({
@@ -902,6 +937,7 @@ async function failMediaWorkIn(
         mediaType: output.mediaType,
         status: 'failed',
         message,
+        ...(errorCode ? { errorCode } : {}),
         retryable: true,
       },
     });
@@ -948,6 +984,63 @@ export async function releaseGenerationRunLease(
       WHERE id = $1 AND lease_worker_id = $2 AND lease_generation = $3`,
     [lease.runId, lease.workerId, lease.generation, undoTakeover],
   );
+}
+
+/**
+ * Refuse the execution a worker claimed (the host's `wrapExecution` did not
+ * run it), giving the run up: an executable run pauses at its step with
+ * `failure`, so the owner's Retry resumes it; a paused or completed run
+ * claimed for its media fails that media, with a Retry, and stays as it was.
+ * Answers how the run was left, or `interrupted` when the lease was already
+ * lost.
+ */
+export async function refuseGenerationRunExecution(
+  lease: RunLease,
+  failure: { message: string; errorCode: string; statusCode?: number },
+): Promise<'paused' | 'completed' | 'interrupted'> {
+  const { withTransaction } = await provider();
+  let report: { run: StoredRun; events: NewGenerationRunEvent[] } | undefined;
+  let outcome: 'paused' | 'completed';
+  try {
+    outcome = await withTransaction(async (tx) => {
+      const locked = await lockLeased(tx, lease);
+      if (!(EXECUTABLE_RUN_STATES as readonly string[]).includes(locked.state)) {
+        await failMediaWorkIn(tx, locked.id, failure.message, {
+          includeStored: locked.state === 'completed',
+          errorCode: failure.errorCode,
+        });
+        await applyPatch(tx, locked.id, { releaseLease: true }, { resetTakeovers: true });
+        await notifyOwner(tx, locked.owner_id);
+        return locked.state === 'completed' ? 'completed' : 'paused';
+      }
+      const error: GenerationRunFailure = {
+        step: locked.step,
+        message: failure.message,
+        errorCode: failure.errorCode,
+        ...(failure.statusCode !== undefined ? { statusCode: failure.statusCode } : {}),
+        ...(locked.step ? {} : { resumeState: locked.state as ExecutableRunState }),
+      };
+      const paused = await applyPatch(
+        tx,
+        locked.id,
+        { state: 'paused', step: locked.step, error, releaseLease: true },
+        { resetTakeovers: true },
+      );
+      const events: NewGenerationRunEvent[] = [
+        { type: 'step_failed', data: { ...error } },
+        { type: 'state', data: { state: 'paused', step: locked.step } },
+      ];
+      await insertEvents(tx, locked.id, events);
+      await notifyOwner(tx, locked.owner_id);
+      report = { run: storedRun(paused), events };
+      return 'paused';
+    });
+  } catch (error) {
+    if (isGenerationRunLeaseLostError(error)) return 'interrupted';
+    throw error;
+  }
+  if (report) reportCommittedRunEvents(report.run, report.events, currentOwnerOf);
+  return outcome;
 }
 
 /** The checkpoints of every completed step, by step id. */
@@ -1124,11 +1217,11 @@ export async function readGenerationRunMedia(
 export async function endGenerationRunsOfDeletedCourseIn(
   tx: Queryable,
   stageId: string,
-): Promise<void> {
+): Promise<EndedGenerationRun[]> {
   const provisioned = await tx.query<{ present: string | null }>(
     "SELECT to_regclass('generation_runs')::text AS present",
   );
-  if (!provisioned.rows[0]?.present) return;
+  if (!provisioned.rows[0]?.present) return [];
   const runs = await tx.query<{ id: string; owner_id: string }>(
     `SELECT id, owner_id FROM generation_runs
       WHERE stage_id = $1
@@ -1136,9 +1229,12 @@ export async function endGenerationRunsOfDeletedCourseIn(
       ORDER BY id FOR UPDATE`,
     [stageId],
   );
+  const ended: EndedGenerationRun[] = [];
   for (const run of runs.rows) {
-    await endRunIn(tx, run.id, run.owner_id, { stageId });
+    const { run: endedRun, events } = await endRunIn(tx, run.id, run.owner_id, { stageId });
+    ended.push({ run: endedRun, events });
   }
+  return ended;
 }
 
 /**
@@ -1180,30 +1276,42 @@ export async function releaseRunMaterialsIn(tx: Queryable, runId: string): Promi
   return released.rows.length;
 }
 
+/** A run a transaction ended: what to tell the host once it committed. */
+export interface EndedGenerationRun {
+  run: StoredRun;
+  events: NewGenerationRunEvent[];
+}
+
+/** Tell the host about runs a committed transaction ended. */
+export function reportEndedGenerationRuns(ended: readonly EndedGenerationRun[]): void {
+  for (const { run, events } of ended) reportCommittedRunEvents(run, events, currentOwnerOf);
+}
+
 /** End a run (its course is gone or was never made), fencing whoever held it. */
 async function endRunIn(
   tx: Queryable,
   runId: string,
   ownerId: string,
   data: { stageId: string | null },
-): Promise<number> {
-  await tx.query(
+): Promise<{ seq: number } & EndedGenerationRun> {
+  const updated = await tx.query<RunRow>(
     `UPDATE generation_runs
         SET state = 'ended', step = NULL, error = NULL, media_pending = false,
             lease_worker_id = NULL, lease_heartbeat_at = NULL,
             lease_generation = lease_generation + 1, updated_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 RETURNING ${RUN_COLUMNS}`,
     [runId],
   );
-  const seq = await insertEvents(tx, runId, [
+  const events: NewGenerationRunEvent[] = [
     { type: 'ended', data },
     { type: 'state', data: { state: 'ended', step: null } },
-  ]);
+  ];
+  const seq = await insertEvents(tx, runId, events);
   // What the run kept alive and no course names is released now.
   await setRunPendingAssetDeadlineIn(tx, 'r.id = $1', [runId], 'now()');
   await releaseRunMaterialsIn(tx, runId);
   await notifyOwner(tx, ownerId);
-  return seq;
+  return { seq, run: storedRun(updated.rows[0]!), events };
 }
 
 /**
@@ -1623,7 +1731,8 @@ export async function discardGenerationRun(
   ownerId: string,
 ): Promise<CommandResult | null> {
   const { withTransaction } = await provider();
-  return withTransaction(async (tx) => {
+  let ended: EndedGenerationRun | undefined;
+  const result = await withTransaction(async (tx): Promise<CommandResult | null> => {
     const locked = await tx.query<RunRow>(
       `SELECT ${RUN_COLUMNS} FROM generation_runs WHERE id = $1 AND ${OWNED_BY('$2')} FOR UPDATE`,
       [runId, ownerId],
@@ -1640,7 +1749,10 @@ export async function discardGenerationRun(
     if (run.state === 'completed') {
       throw new RunCommandConflictError('state', 'The run is completed');
     }
-    const seq = await endRunIn(tx, run.id, run.owner_id, { stageId: null });
+    const { seq, ...end } = await endRunIn(tx, run.id, run.owner_id, { stageId: null });
+    ended = end;
     return { state: 'ended', seq };
   });
+  if (ended) reportEndedGenerationRuns([ended]);
+  return result;
 }
