@@ -1637,6 +1637,24 @@ export async function organizeAcrossClaimScenario(h: ExtractionHarness): Promise
   );
 }
 
+/** SQL NULL is not settled; tombstones and absent sources still are. */
+export async function watcherNullExtractionScenario(h: ExtractionHarness): Promise<void> {
+  const ids = ['null', 'idle', 'pending', 'running', 'done', 'failed', 'deleted'];
+  for (const id of ids) await seedSource(h, `watch-${id}`);
+  await h.pool.query(`UPDATE owner_material SET extraction = NULL
+    WHERE id IN ('watch-null', 'watch-deleted')`);
+  for (const status of ['pending', 'running', 'done', 'failed']) {
+    await h.pool.query('UPDATE owner_material SET extraction = $2::jsonb WHERE id = $1', [
+      `watch-${status}`,
+      JSON.stringify({ status }),
+    ]);
+  }
+  await h.pool.query("UPDATE owner_material SET deleted_at = 1 WHERE id = 'watch-deleted'");
+  expect(
+    await readSettledSources(h.pool as never, [...ids.map((id) => `watch-${id}`), 'missing']),
+  ).toEqual(['watch-done', 'watch-failed', 'watch-deleted', 'missing']);
+}
+
 /** An old failed poll must not consume the watch registered by a new retry. */
 export async function watcherRetryScenario(h: ExtractionHarness): Promise<void> {
   await seedSession(h, 'watch-session');

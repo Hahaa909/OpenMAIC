@@ -17,6 +17,7 @@ import {
   deleteExtractionScenario,
   deleteReadsScenario,
   watcherRetryScenario,
+  watcherNullExtractionScenario,
   watcherStaleWaitScenario,
   attachByIdScenario,
   attachRefusalScenario,
@@ -90,6 +91,9 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
 
   it('keeps watching a retry when an older failed poll returns', async () => {
     await watcherRetryScenario(await boot());
+  });
+  it('does not settle a NULL extraction, but settles tombstones and missing sources', async () => {
+    await watcherNullExtractionScenario(await boot());
   });
   it('reports once when a wait returns a stale running snapshot', async () => {
     await watcherStaleWaitScenario(await boot());
