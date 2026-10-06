@@ -23,6 +23,7 @@ import {
   attachRefusalScenario,
   bootLibraryHarness,
   foldersScenario,
+  folderCountsScenario,
   moveScenario,
   renameMaterialScenario,
   deleteFolderScenario,
@@ -179,6 +180,10 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
   describe('organizing', () => {
     it('creates, lists and renames folders, within the per-owner limit', async () => {
       await foldersScenario(await boot());
+    });
+
+    it('counts live ready sources in all existing-folder answers', async () => {
+      await folderCountsScenario(await boot());
     });
 
     it('moves sources with their derivatives, all or nothing', async () => {

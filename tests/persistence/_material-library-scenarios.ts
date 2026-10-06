@@ -1499,6 +1499,51 @@ export async function foldersScenario(h: ExtractionHarness): Promise<void> {
   expect(await create('cell BIOLOGY')).toMatchObject({ status: 'ok', created: false });
 }
 
+/** Existing-folder answers use the listing's live-ready-source count. */
+export async function folderCountsScenario(h: ExtractionHarness): Promise<void> {
+  const create = () =>
+    createMaterialFolder(h.provider, {
+      ownerId: ACCOUNT,
+      name: 'Counts',
+      fence: 'request',
+    });
+  const made = await create();
+  expect(made).toMatchObject({ status: 'ok', created: true, folder: { materialCount: 0 } });
+  if (made.status !== 'ok') throw new Error('expected a folder');
+  const folderId = made.folder.id;
+  for (const id of ['count-a', 'count-b', 'count-deleted', 'count-uploading']) {
+    await seedSource(h, id, { folderId });
+  }
+  await seedDerivative(h, 'count-image', 'count-a');
+  await h.pool.query('UPDATE owner_material SET folder_id = $1 WHERE id = $2', [
+    folderId,
+    'count-image',
+  ]);
+  await h.pool.query("UPDATE owner_material SET deleted_at = 1 WHERE id = 'count-deleted'");
+  await h.pool.query("UPDATE owner_material SET status = 'uploading' WHERE id = 'count-uploading'");
+  expect(await listMaterialFolders(h.pool as never, ACCOUNT)).toMatchObject([{ materialCount: 2 }]);
+  expect(await create()).toMatchObject({
+    status: 'ok',
+    created: false,
+    folder: { materialCount: 2 },
+  });
+  const rename = (name: string) =>
+    renameMaterialFolder(h.provider, {
+      ownerId: ACCOUNT,
+      folderId,
+      name,
+      fence: 'request',
+    });
+  expect(await rename('Counts')).toMatchObject({
+    status: 'unchanged',
+    folder: { materialCount: 2 },
+  });
+  expect(await rename('Renamed counts')).toMatchObject({
+    status: 'renamed',
+    folder: { materialCount: 2 },
+  });
+}
+
 /**
  * Moving: into a folder and back to Unfiled, derivatives with their source,
  * all or nothing, never a derivative, a deleted or another owner's material,
