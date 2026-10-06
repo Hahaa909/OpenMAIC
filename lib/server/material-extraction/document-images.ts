@@ -275,7 +275,7 @@ export async function resolveDerivativeRefsAsync(
   const input = prefix ? text.slice(1) : text;
   let plan = cachedImagePlan(cacheKey);
   if (!plan) {
-    plan = await runDocumentImageWorker({ kind: 'plan', text: input });
+    plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey);
     cacheImagePlan(plan, cacheKey);
   }
   return (

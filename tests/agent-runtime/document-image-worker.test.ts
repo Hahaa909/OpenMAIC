@@ -214,6 +214,23 @@ describe('document-image production parser', () => {
     },
   );
 
+  it('merges simultaneous production reads but projects each caller s derivative ids', async () => {
+    const text = '![x](openmaic-derivative:img-1)';
+    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, n) =>
+        resolveDerivativeRefsAsync(
+          text,
+          [{ key: 'img-1', id: `reader-${n}` }],
+          'concurrent-production-key',
+        ),
+      ),
+    );
+    expect(results).toEqual(Array.from({ length: 8 }, (_, n) => `![x](material:reader-${n})`));
+    // Callers share the scheduler entry identified by their exact cache key.
+    expect(worker).toHaveBeenCalledWith({ kind: 'plan', text }, 'concurrent-production-key');
+  });
+
   it('evicts legacy positions at the unchanged production cache entry limit', async () => {
     const text = '![x](openmaic-derivative:img-1)';
     const worker = vi.spyOn(parser, 'runDocumentImageWorker');

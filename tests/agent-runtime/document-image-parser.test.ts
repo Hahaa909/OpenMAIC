@@ -4,6 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { runDocumentImageWorker } from '@/lib/server/material-extraction/document-image-parser';
 
 const state = vi.hoisted(() => ({
+  workers: [] as Array<EventEmitter & { terminate: ReturnType<typeof vi.fn> }>,
   worker: undefined as (EventEmitter & { terminate: ReturnType<typeof vi.fn> }) | undefined,
 }));
 vi.mock('node:worker_threads', async () => {
@@ -13,6 +14,7 @@ vi.mock('node:worker_threads', async () => {
       const worker = new EventEmitter() as EventEmitter & { terminate: ReturnType<typeof vi.fn> };
       worker.terminate = vi.fn(async () => 0);
       state.worker = worker;
+      state.workers.push(worker);
       return worker;
     }),
   };
@@ -74,4 +76,83 @@ it('waits for termination before handing the result to its caller', async () => 
   terminate();
   await expect(job).resolves.toEqual({ markdown: [], html: [] });
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it('sets a measured heap limit and caps mixed plan/rewrite jobs at two workers', async () => {
+  const start = state.workers.length;
+  const jobs = [
+    runDocumentImageWorker({ kind: 'plan', text: 'first' }),
+    runDocumentImageWorker({
+      kind: 'rewrite',
+      blocks: [],
+      index: { exact: new Map(), byBasename: new Map() },
+    }),
+    runDocumentImageWorker({ kind: 'plan', text: 'third' }),
+    runDocumentImageWorker({ kind: 'plan', text: 'fourth' }),
+  ];
+  expect(state.workers.length - start).toBe(2);
+  expect(vi.mocked(Worker).mock.calls.at(-1)?.[1]?.resourceLimits).toEqual({
+    maxOldGenerationSizeMb: 512,
+  });
+  for (let n = 0; n < 4; n++) {
+    state.workers[start + n].emit('message', { result: { markdown: [], html: [] } });
+    await jobs[n];
+    expect(state.workers.length - start).toBe(Math.min(4, n + 3));
+  }
+});
+
+it('does not count queue time against the worker timeout', async () => {
+  vi.useFakeTimers();
+  const start = state.workers.length;
+  const first = runDocumentImageWorker({ kind: 'plan', text: 'first' });
+  const second = runDocumentImageWorker({ kind: 'plan', text: 'second' });
+  const queued = runDocumentImageWorker({ kind: 'plan', text: 'queued' });
+  await vi.advanceTimersByTimeAsync(20_000);
+  state.workers[start].emit('message', { result: { markdown: [], html: [] } });
+  state.workers[start + 1].emit('message', { result: { markdown: [], html: [] } });
+  await Promise.all([first, second]);
+  const rejected = expect(queued).rejects.toThrow('exceeded 30s');
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(state.workers[start + 2].terminate).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await rejected;
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each(['result', 'error'])('shares an immutable plan key including its %s', async (outcome) => {
+  const start = state.workers.length;
+  const first = runDocumentImageWorker({ kind: 'plan', text: 'shared' }, `same:${outcome}`);
+  const second = runDocumentImageWorker({ kind: 'plan', text: 'shared' }, `same:${outcome}`);
+  expect(state.workers.length - start).toBe(1);
+  const results = Promise.allSettled([first, second]);
+  state.workers[start].emit(
+    outcome === 'error' ? 'error' : 'message',
+    outcome === 'error' ? new Error('shared failure') : { result: { markdown: [], html: [] } },
+  );
+  const [a, b] = await results;
+  expect(a.status).toBe(outcome === 'error' ? 'rejected' : 'fulfilled');
+  expect(b).toEqual(a);
+  if (a.status === 'rejected' && b.status === 'rejected') expect(b.reason).toBe(a.reason);
+  if (a.status === 'fulfilled' && b.status === 'fulfilled') expect(b.value).toBe(a.value);
+  const retried = runDocumentImageWorker({ kind: 'plan', text: 'shared' }, `same:${outcome}`);
+  expect(state.workers.length - start).toBe(2);
+  state.workers[start + 1].emit('message', { result: { markdown: [], html: [] } });
+  await retried;
+});
+
+it('releases a failed worker slot and starts the queued job', async () => {
+  const start = state.workers.length;
+  const failed = runDocumentImageWorker({ kind: 'plan', text: 'oom' });
+  const caught = expect(failed).rejects.toThrow('out of memory');
+  const other = runDocumentImageWorker({ kind: 'plan', text: 'other' });
+  const queued = runDocumentImageWorker({ kind: 'plan', text: 'queued' });
+  state.workers[start].emit(
+    'error',
+    Object.assign(new Error('out of memory'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }),
+  );
+  await caught;
+  expect(state.workers.length - start).toBe(3);
+  for (const worker of state.workers.slice(start + 1))
+    worker.emit('message', { result: { markdown: [], html: [] } });
+  await Promise.all([other, queued]);
 });
