@@ -66,6 +66,12 @@ import type { SceneContentResult } from '@/lib/server/generation/steps/scene-con
 import type { SpeechAction } from '@/lib/types/action';
 import type { ImageMapping, PdfImage, UserRequirements } from '@/lib/types/generation';
 import { storeGeneratedAsset } from '@/lib/server/store-generated-asset';
+import { getGenerationRunHooks } from '@/lib/server/generation-run-hooks/registry';
+import {
+  classifyHostFailure,
+  isNonRetryableHostFailure,
+  runGenerationExecution,
+} from '@/lib/server/generation-run-hooks/runtime';
 import type { GeneratedAgentConfig, Scene, Stage } from '@/lib/types/stage';
 import { lazyBoundedMap } from '@/lib/utils/concurrency';
 
@@ -117,6 +123,7 @@ import {
 } from './retry';
 import { STEP_DEADLINES_MS, withDeadline } from './deadline';
 import { runFailureCode, type RunFailureCode } from './failure-code';
+import { reportCommittedRunEvents } from './hook-events';
 import type { RunMaterialImage, RunStepServices } from './services';
 import {
   commitGenerationRun,
@@ -128,6 +135,7 @@ import {
   finishMediaOnlyRun,
   readGenerationRunMedia,
   readGenerationRunSteps,
+  refuseGenerationRunExecution,
   type ClaimedRun,
   type StepCommit,
   type StoredRun,
@@ -287,8 +295,18 @@ class StepFailedError extends Error {
   }
 }
 
-/** The code a failed step is reported with (see `runFailureCode`). */
+/**
+ * The code a failed step is reported with: the host's classification of its
+ * own error first, then the built-in one (see `runFailureCode`).
+ */
 function failureCodeOf(error: unknown): RunFailureCode {
+  const host = classifyHostFailure(error);
+  if (host) {
+    return {
+      errorCode: host.errorCode,
+      ...(host.statusCode !== undefined ? { statusCode: host.statusCode } : {}),
+    };
+  }
   return error instanceof InvalidSceneError
     ? { errorCode: 'GENERATION_FAILED' }
     : runFailureCode(error);
@@ -339,7 +357,44 @@ function rosterAgent(
   } as AgentConfig;
 }
 
+/**
+ * Execute one claimed run to its next stop, inside the host's
+ * `wrapExecution` when one is registered. A wrapper that refuses the
+ * execution (throws before running it) pauses the run at its step with the
+ * failure, as a step that failed for good would.
+ */
 export async function executeGenerationRun(
+  claim: ClaimedRun,
+  options: ExecuteRunOptions,
+): Promise<RunExecutionOutcome> {
+  const { run, lease, takeover } = claim;
+  // Resolved only for a wrapper: the execution resolves it again itself.
+  const currentOwnerId = getGenerationRunHooks().wrapExecution
+    ? await currentOwnerOf(run.ownerId)
+    : run.ownerId;
+  const result = await runGenerationExecution(
+    {
+      kind: 'generation-run',
+      runId: run.id,
+      ownerId: run.ownerId,
+      currentOwnerId,
+      ...(run.stageId ? { stageId: run.stageId } : {}),
+      attributes: run.hostAttributes ?? {},
+      takeover,
+    },
+    () => executeClaimedRun(claim, options),
+  );
+  if (result.ran) return result.value;
+  const { error } = result;
+  log.warn(`run ${run.id}: the host refused its execution; pausing`, error);
+  options.onLeaseReleased?.();
+  return refuseGenerationRunExecution(lease, {
+    message: error instanceof Error ? error.message || 'The execution was refused' : String(error),
+    ...failureCodeOf(error),
+  });
+}
+
+async function executeClaimedRun(
   claim: ClaimedRun,
   options: ExecuteRunOptions,
 ): Promise<RunExecutionOutcome> {
@@ -360,6 +415,7 @@ export async function executeGenerationRun(
     // Only a commit that changes the row moves the engine's view of it: the
     // content generated ahead and the retry events commit concurrently.
     if (change.patch) run = committed;
+    if (change.events?.length) reportCommittedRunEvents(committed, change.events, currentOwnerOf);
   };
   const stepContext: StepContext = { log, signal };
   const retryOptions = (
@@ -624,6 +680,9 @@ export async function executeGenerationRun(
           if ('failed' in result) {
             if (isAbortError(result.failed) || signal.aborted) throw result.failed;
             if (isGenerationRunLeaseLostError(result.failed)) throw result.failed;
+            // A host failure no retry helps (the other scenes would meet it
+            // too) pauses the run at this scene now.
+            if (isNonRetryableHostFailure(result.failed)) throw result.failed;
             // Mark the scene and go on with the others.
             const message =
               result.failed instanceof Error
@@ -880,6 +939,8 @@ export async function executeGenerationRun(
         };
       } catch (error) {
         if (isAbortError(error)) throw error;
+        // A host failure no retry helps pauses the run here instead.
+        if (isNonRetryableHostFailure(error)) throw error;
         // As the browser does: the learner's selected preset agents teach.
         log.warn(`run ${run.id}: agent generation failed, falling back to presets:`, error);
         // Never an empty roster: without a selection, the browser's default one.
@@ -1144,6 +1205,7 @@ export async function executeGenerationRun(
     run = committed!;
     steps.set(stepId, change.step!.output);
     for (const checkpoint of change.steps ?? []) steps.set(checkpoint.id, checkpoint.output);
+    reportCommittedRunEvents(run, change.events ?? [], currentOwnerOf);
   };
 
   // ── Media ──
@@ -1612,6 +1674,11 @@ export async function executeGenerationRun(
     const stageId = agents().stage.id;
     let committed: StoredRun | undefined;
     const unplaced = unplacedMedia();
+    const events: NewGenerationRunEvent[] = [
+      ...unplaced.events,
+      { type: 'completed', data: { stageId } },
+      { type: 'state', data: { state: 'completed', step: null } },
+    ];
     await completeRunCourse({
       ownerId: owner,
       lease,
@@ -1623,15 +1690,12 @@ export async function executeGenerationRun(
         committed = await commitGenerationRunIn(tx, lease, {
           steps: unplaced.steps,
           patch: { state: 'completed', step: null, releaseLease: true },
-          events: [
-            ...unplaced.events,
-            { type: 'completed', data: { stageId } },
-            { type: 'state', data: { state: 'completed', step: null } },
-          ],
+          events,
         });
       },
     });
     run = committed!;
+    reportCommittedRunEvents(run, events, currentOwnerOf);
     for (const checkpoint of unplaced.steps) steps.set(checkpoint.id, checkpoint.output);
   };
 

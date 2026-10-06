@@ -252,7 +252,8 @@ async function validateBootConfiguration(): Promise<void> {
   // A host that brings its own identity registers its owner auth methods
   // here, in the order they are asked, before validation and before the
   // server serves a request, and with them any host extension hooks (course
-  // creation, library listing, upload admission, the asset byte store):
+  // creation, library listing, upload admission, the asset byte store, and
+  // the admission, execution context and notifications of generation runs):
   //
   //   const { configureOwnerAuthentication } = await import('@/lib/server/identity');
   //   configureOwnerAuthentication({ methods: [myOwnerAuthMethod] });
@@ -260,6 +261,8 @@ async function validateBootConfiguration(): Promise<void> {
   //     await import('@/lib/server/persistence-hooks');
   //   configurePersistenceHooks(myPersistenceHooks);
   //   configureAssetByteStore(myAssetByteStore);
+  //   const { configureGenerationRunHooks } = await import('@/lib/server/generation-run-hooks');
+  //   configureGenerationRunHooks(myGenerationRunHooks);
   //
   // A registration that throws stops the process too, reported as a startup
   // failure with its stack (it is host code, not a setting).

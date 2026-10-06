@@ -11,6 +11,7 @@
  */
 import { isAbortError, withGenerationRetry, type GenerationRetryEvent } from '@openmaic/generation';
 
+import { classifyHostFailure } from '@/lib/server/generation-run-hooks/runtime';
 import { StepRefusal } from '@/lib/server/generation/steps/context';
 import { upstreamHttpStatus } from '@/lib/server/llm-error-response';
 
@@ -19,14 +20,22 @@ export const FIRST_SCENE_MAX_RETRIES = 2;
 /** 1.1.x's browser retries for every later scene (the withGenerationRetry default). */
 export const SCENE_MAX_RETRIES = 5;
 
-/** A failure carrying the status the step's route would have answered, for classification. */
+/**
+ * A failure carrying the status the step's route would have answered, for
+ * classification, and the host's answer to whether a retry is worthwhile
+ * when the failure is the host's (it overrides the status).
+ */
 class RouteStatusError extends Error {
+  readonly isRetryable?: boolean;
+
   constructor(
     readonly original: unknown,
     readonly statusCode: number,
+    hostRetryable: boolean | undefined,
   ) {
     super(original instanceof Error ? original.message : String(original));
     this.name = 'RouteStatusError';
+    if (hostRetryable !== undefined) this.isRetryable = hostRetryable;
   }
 }
 
@@ -62,7 +71,11 @@ export async function withRouteRetry<T>(
         } catch (error) {
           if (isAbortError(error)) throw error;
           cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-          throw new RouteStatusError(error, routeStatus(error, options.refusalStatus));
+          throw new RouteStatusError(
+            error,
+            routeStatus(error, options.refusalStatus),
+            classifyHostFailure(error)?.retryable,
+          );
         }
       },
       {

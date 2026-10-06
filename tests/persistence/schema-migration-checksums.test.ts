@@ -179,6 +179,13 @@ const SHIPPED: readonly (readonly [
     true,
     '253db00a6eee8dfb35dc8aa435132be86e9e6039fde63eb07e66282a1d5f2866',
   ],
+  [
+    'generation-runs',
+    5,
+    'host_attributes',
+    true,
+    '73994d78d22a31a3b7c62f9ecb147a20bd70ffa17ab036f7bd6a75df682d9827',
+  ],
 ];
 
 /**
