@@ -182,6 +182,7 @@ export interface MaterialToolDependencies {
   readText?: (
     sessionId: string,
     material: ResolvedMaterial,
+    signal?: AbortSignal,
   ) => Promise<{ text: string; revision: string } | null>;
   /** Queue a session copy's extraction (the session chain). */
   enqueueExtraction?: (sessionId: string, materialId: string) => Promise<boolean>;
@@ -665,7 +666,10 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         if (!entry.extractionResult) return sourceTextPendingResult(entry);
       }
 
-      const read = await readText(deps.sessionId, material);
+      const read = await readText(deps.sessionId, material, signal).catch((error) => {
+        throwIfAborted(signal);
+        throw error;
+      });
       throwIfAborted(signal);
       const materialId = resolvedMaterialId(material);
       if (read === null) return textUnavailableResult(materialId);
@@ -783,7 +787,10 @@ export function buildMaterialTools(deps: MaterialToolDependencies): AgentTool<ne
         }
         const remainingCharsBeforeRead = MAX_SEARCH_CHARS_PER_EXEC - scannedChars;
         const readStartedAt = now();
-        const read = await readText(deps.sessionId, material);
+        const read = await readText(deps.sessionId, material, signal).catch((error) => {
+          throwIfAborted(signal);
+          throw error;
+        });
         // The budget bounds the scan. Reading and projecting one revision's
         // text must not consume it before even its first character is searched.
         deadline += Math.max(0, now() - readStartedAt);

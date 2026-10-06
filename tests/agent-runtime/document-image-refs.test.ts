@@ -6,11 +6,8 @@ vi.mock('mdast-util-from-markdown', async (importOriginal) => {
   return { ...original, fromMarkdown: vi.fn(original.fromMarkdown) };
 });
 
-import {
-  imagePathIndex,
-  resolveDerivativeRefs,
-  rewriteImageReferences,
-} from '@/lib/server/material-extraction/document-images';
+import { imagePathIndex } from '@/lib/server/material-extraction/document-images';
+import { resolveDerivativeRefs, rewriteImageReferences } from '../helpers/document-image-sync';
 
 const index = imagePathIndex([{ key: 'img-1', path: 'fig.png' }]);
 const derivatives = [{ key: 'img-1', id: 'own-image' }];
@@ -136,6 +133,7 @@ describe('document image references through storage and reading', () => {
   }, 20_000);
 
   it('reuses the parsed positions while applying each result’s own derivative ids', () => {
+    // This checks the synchronous helper cache; production coverage is in document-image-worker.test.ts.
     const text = '![Figure](openmaic-derivative:img-1)';
     const calls = vi.mocked(fromMarkdown).mock.calls.length;
     expect(resolveDerivativeRefs(text, derivatives, 'reuse-plan')).toBe(
@@ -153,6 +151,7 @@ describe('document image references through storage and reading', () => {
   });
 
   it('evicts old parsed plans when the entry limit is reached', () => {
+    // This checks the synchronous helper cache; production coverage is in document-image-worker.test.ts.
     const text = '![Figure](openmaic-derivative:img-1)';
     resolveDerivativeRefs(text, derivatives, 'old-plan');
     for (let i = 0; i < 16; i += 1) resolveDerivativeRefs(text, derivatives, `eviction-${i}`);

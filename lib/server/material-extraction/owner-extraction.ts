@@ -61,6 +61,7 @@ import {
 import { forwardOwnerWrite } from '@/lib/persistence/owner-merges';
 import type { ServerPersistenceProvider } from '@/lib/persistence/server-provider';
 import { getMinerUBackend } from '@/lib/pdf/pdf-providers';
+import { DocumentImageParseError } from './document-image-parser';
 import { agentRuntimeConfig } from '@/lib/server/agent-runtime/config';
 import { readOwnerMaterialBytes } from '@/lib/server/materials/owner-material-bytes';
 import {
@@ -467,6 +468,7 @@ async function extractOrReuse(
       const artifact = await extractWithDocumentProvider(provider, plan.input);
       return { kind: 'extracted', outcome: await ownerDocumentOutcome(artifact, provider) };
     } catch (error) {
+      if (error instanceof DocumentImageParseError) throw error;
       errors.push(documentFailureLine(provider, error));
       failures.push(error);
     }

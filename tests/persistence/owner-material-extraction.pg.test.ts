@@ -35,6 +35,7 @@ import {
   ensure,
   ensureStartedScenario,
   fallbackReuseScenario,
+  parserFailureScenario,
   heartbeatLossScenario,
   lostClaimStopsProvidersScenario,
   lostDuringLookupScenario,
@@ -198,6 +199,10 @@ describe.skipIf(!contractUrl)('owner-level material extraction on PostgreSQL', (
 
   it('keeps both results when a claim brings the same content into an account that has it', async () => {
     await claimIntoSameContentScenario(await boot());
+  });
+
+  it('stops provider fallback on a parse failure and spends only the existing retry budget', async () => {
+    await parserFailureScenario(await boot());
   });
 
   it('reuses a document fallback s earlier result when the provider ahead of it fails', async () => {

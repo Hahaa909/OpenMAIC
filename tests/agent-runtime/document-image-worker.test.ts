@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import * as parser from '@/lib/server/material-extraction/document-image-parser';
@@ -15,6 +17,21 @@ const index = imagePathIndex([{ key: 'img-1', path: 'fig.png' }]);
 
 describe('document-image production parser', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('keeps the main-thread image modules free of parser imports', () => {
+    for (const file of [
+      'document-images.ts',
+      'document-image-parser.ts',
+      'document-image-apply.mjs',
+      'document-image-paths.mjs',
+    ]) {
+      const source = readFileSync(resolve('lib/server/material-extraction', file), 'utf8');
+      // The worker path is a string passed to Worker, never a static import.
+      expect(source).not.toMatch(
+        /(?:from\s*|import\s*\()\s*['"][^'"]*(?:document-image-plan|parse5|mdast-util-from-markdown)/,
+      );
+    }
+  });
 
   it.each([
     'If $a<b$ then ![same](images/fig.png) holds > 0.',
@@ -79,6 +96,27 @@ describe('document-image production parser', () => {
     }
   });
 
+  it.each([
+    ['![x](./images/fig%201.png)', '![x](openmaic-derivative:img-1)'],
+    ['![x](elsewhere/fig%201.png)', '![x](openmaic-derivative:img-1)'],
+    ['![x](remote/dup.png)', String.raw`\[image: x\]`],
+    ['![x](images/dup.png)', '![x](openmaic-derivative:img-2)'],
+    ['![x](https://example.test/fig.png)', '![x](https://example.test/fig.png)'],
+    ['![x](/images/fig.png)', '![x](/images/fig.png)'],
+  ])('matches provider paths in the worker: %s', async (input, expected) => {
+    const paths = imagePathIndex([
+      { key: 'img-1', path: 'fig 1.png' },
+      { key: 'img-2', path: 'images/dup.png' },
+      { key: 'img-3', path: 'other/dup.png' },
+    ]);
+    const written = await parser.runDocumentImageWorker({
+      kind: 'rewrite',
+      index: paths,
+      blocks: [{ type: 'markdown', text: input }],
+    });
+    expect(written.text).toBe(expected);
+  });
+
   it('publishes exact positions across trimmed blocks, BOM, definitions, HTML and code', async () => {
     const written = await parser.runDocumentImageWorker({
       kind: 'rewrite',
@@ -128,6 +166,127 @@ describe('document-image production parser', () => {
     }
     expect(worker).toHaveBeenCalledTimes(1);
     expect(vi.mocked(fromMarkdown)).not.toHaveBeenCalled();
+  });
+
+  it.each(['offset', 'bytes', 'order'])(
+    'falls back from invalid %s positions without caching reader ids',
+    async (corruption) => {
+      const written = await parser.runDocumentImageWorker({
+        kind: 'rewrite',
+        index,
+        blocks: [
+          {
+            type: 'markdown',
+            text: '![one](images/fig.png)\n\n![two](images/fig.png)\n\n`openmaic-derivative:img-1`',
+          },
+        ],
+      });
+      const text = corruption === 'bytes' ? 'Changed bytes.\n\n' + written.text : written.text;
+      const refs =
+        corruption === 'offset'
+          ? [{ ...written.refs[0], start: written.refs[0].start + 1 }, written.refs[1]]
+          : corruption === 'order'
+            ? [...written.refs].reverse()
+            : written.refs;
+      const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const key = JSON.stringify(['reader', 'text', 'result', `fallback-${corruption}:1`]);
+      for (const id of ['first', 'second']) {
+        const read = await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id }], key, refs);
+        expect(read).toBe(
+          text.replaceAll(/(?<=\]\()openmaic-derivative:img-1(?=\))/g, `material:${id}`),
+        );
+        expect(read).toContain('`openmaic-derivative:img-1`');
+      }
+      expect(worker).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        '[document-images] Invalid published image positions; parsing current bytes',
+      );
+      expect(warning.mock.calls.flat().join(' ')).not.toContain('Changed bytes');
+      // A changed byte revision must not reuse the earlier plan.
+      await resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'third' }],
+        JSON.stringify(['reader', 'text', 'result', `fallback-${corruption}:2`]),
+        refs,
+      );
+      expect(worker).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('merges simultaneous production reads but projects each caller s derivative ids', async () => {
+    const text = '![x](openmaic-derivative:img-1)';
+    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, n) =>
+        resolveDerivativeRefsAsync(
+          text,
+          [{ key: 'img-1', id: `reader-${n}` }],
+          'concurrent-production-key',
+        ),
+      ),
+    );
+    expect(results).toEqual(Array.from({ length: 8 }, (_, n) => `![x](material:reader-${n})`));
+    // Callers share the scheduler entry identified by their exact cache key.
+    expect(worker).toHaveBeenCalledWith(
+      { kind: 'plan', text },
+      'concurrent-production-key',
+      undefined,
+    );
+  });
+
+  it('does not cache a canceled legacy parse or return a cached plan to an aborted caller', async () => {
+    const text = '<span>x</span>'.repeat(25_000) + '\n\n![x](openmaic-derivative:img-1)';
+    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    const controller = new AbortController();
+    const canceled = resolveDerivativeRefsAsync(
+      text,
+      [{ key: 'img-1', id: 'canceled' }],
+      'cancel-cache',
+      undefined,
+      controller.signal,
+    );
+    const rejected = expect(canceled).rejects.toThrow('aborted');
+    controller.abort();
+    await rejected;
+    expect(
+      await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'fresh' }], 'cancel-cache'),
+    ).toContain('material:fresh');
+    expect(worker).toHaveBeenCalledTimes(2);
+    await expect(
+      resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'canceled' }],
+        'cancel-cache',
+        undefined,
+        controller.signal,
+      ),
+    ).rejects.toThrow('aborted');
+    expect(worker).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts legacy positions at the unchanged production cache entry limit', async () => {
+    const text = '![x](openmaic-derivative:img-1)';
+    // Exercise the production cache without starting 18 real parser workers.
+    const plan = {
+      markdown: [{ start: 0, end: text.length, target: 'openmaic-derivative:img-1', alt: 'x' }],
+      html: [],
+    };
+    const worker = vi
+      .spyOn(parser, 'runDocumentImageWorker')
+      .mockImplementation(vi.fn().mockResolvedValue(plan));
+    await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'first' }], 'worker-eviction-old');
+    for (let n = 0; n < 16; n++) {
+      await resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'other' }],
+        `worker-eviction-${n}`,
+      );
+    }
+    expect(
+      await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'last' }], 'worker-eviction-old'),
+    ).toBe('![x](material:last)');
+    expect(worker).toHaveBeenCalledTimes(18);
   });
 
   it('keeps the main event loop responsive during write and legacy cold-read parsing', async () => {

@@ -18,7 +18,9 @@ vi.mock('@/lib/server/identity/resolve', async () =>
 );
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resetClaimParticipantsForTests } from '@/lib/persistence/owner-claims';
+import { claimOwner, resetClaimParticipantsForTests } from '@/lib/persistence/owner-claims';
+import * as documentImages from '@/lib/server/material-extraction/document-images';
+import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 import {
   createMaterialFolder,
   renameMaterialFolder,
@@ -30,10 +32,13 @@ import {
   claimNextOwnerMaterialExtraction,
   ensureOwnerMaterialExtraction,
 } from '@/lib/persistence/owner-material-extraction';
-import { runClaimedOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
+import {
+  runClaimedOwnerExtraction,
+  runNextOwnerExtraction,
+} from '@/lib/server/material-extraction/owner-extraction';
 
-import { ACCOUNT, seedDerivative } from './_material-library-scenarios';
-import { seedSource, stateOf } from './_owner-extraction-scenarios';
+import { ACCOUNT, ANON, seedDerivative } from './_material-library-scenarios';
+import { ensure, seedSource, stateOf } from './_owner-extraction-scenarios';
 import {
   deleteLegacyScenario,
   deleteChainScenario,
@@ -56,6 +61,7 @@ import {
   deletedThroughLinkScenario,
   documentImagesQuotaScenario,
   documentImagesScenario,
+  documentImageBudgetScenario,
   existingCopyScenario,
   libraryListingScenario,
   listingDerivedFieldsScenario,
@@ -248,6 +254,48 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   }
 
   describe('source deletion races', () => {
+    it('releases the identity fence before a legacy parse waits, so an owner claim completes', async () => {
+      const h = await boot();
+      await seedSource(h, 'text-outside-fence', { owner: ANON });
+      await ensure(h, 'text-outside-fence', ANON);
+      await runNextOwnerExtraction(h.deps());
+      const result = (await stateOf(h, 'text-outside-fence')).extraction_result!;
+      let entered!: () => void, release!: () => void;
+      const reached = new Promise<void>((r) => (entered = r));
+      const paused = new Promise<void>((r) => (release = r));
+      const parsing = vi
+        .spyOn(documentImages, 'resolveDerivativeRefsAsync')
+        .mockImplementation(async () => {
+          entered();
+          await paused;
+          return '# Lesson';
+        });
+      const reading = readOwnerMaterialText({
+        id: 'text-outside-fence',
+        ownerId: ANON,
+        extractionResult: { ...result, text: { ...result.text, assetId: randomUUID() } },
+      });
+      let claiming: ReturnType<typeof claimOwner> | undefined;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await reached;
+        claiming = claimOwner(ANON, ACCOUNT, { provider: h.provider });
+        const outcome = await Promise.race([
+          claiming,
+          new Promise<{ status: string }>((r) => {
+            timeout = setTimeout(() => r({ status: 'blocked' }), 2_000);
+          }),
+        ]);
+        expect(outcome).toMatchObject({ status: 'claimed' });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await Promise.allSettled([reading, claiming]);
+        parsing.mockRestore();
+      }
+      expect(await reading).toEqual({ text: '# Lesson', revision: result.revision });
+    });
+
     it('deletes derivatives committed by a publisher it waited for', async () => {
       const h = await boot();
       const claim = await claimedVideo(h, 'delete-publish-first');
@@ -727,6 +775,13 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
   });
 
   describe('extraction', () => {
+    it.each(['bytes', 'tags'] as const)(
+      'publishes and reads an over-%s-budget document with reachable images',
+      async (budget) => {
+        await documentImageBudgetScenario(await boot(), budget);
+      },
+    );
+
     it('keeps a document’s images as derivatives and names them in its text', async () => {
       await documentImagesScenario(await boot());
     });

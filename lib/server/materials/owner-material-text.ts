@@ -25,6 +25,7 @@
  * that first takes the record owner's forwarded write fence, so a claim
  * cannot move the row and its entry between the two reads. The re-read may
  * find a newer result; the text and revision returned are that result's.
+ * Parsing and projecting the read bytes happen after the transaction commits.
  */
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import type { OwnerExtractionResult } from '@/lib/persistence/owner-material-extraction';
@@ -58,6 +59,7 @@ async function textOf(
   result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>,
   ownerId: string,
   byteRevision: number,
+  signal?: AbortSignal,
 ): Promise<OwnerMaterialText> {
   const cacheKey = JSON.stringify([ownerId, result.text.assetId, result.revision, byteRevision]);
   return {
@@ -66,20 +68,25 @@ async function textOf(
       result.derivatives ?? [],
       cacheKey,
       result.text.imageRefs,
+      signal,
     ),
     revision: result.revision,
   };
 }
 
-async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMaterialText | null> {
+async function readOnce(
+  location: OwnerMaterialTextLocation,
+  signal?: AbortSignal,
+): Promise<OwnerMaterialText | null> {
   const result = location.extractionResult;
   if (!result) return null;
   try {
     const read = await (
       await provider()
     ).assetStore.resolve(assetPrincipalForOwner(location.ownerId), result.text.assetId);
-    return read ? await textOf(read.bytes, result, location.ownerId, read.revision) : null;
-  } catch {
+    return read ? await textOf(read.bytes, result, location.ownerId, read.revision, signal) : null;
+  } catch (error) {
+    if (signal?.aborted) throw error;
     // Retried under the fence.
     return null;
   }
@@ -88,9 +95,16 @@ async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMater
 /** The re-read and its pool read failed: the transaction rolls back, nothing is returned. */
 class FencedTextReadFailed extends Error {}
 
+interface ReadTextBytes {
+  bytes: Uint8Array;
+  result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>;
+  ownerId: string;
+  byteRevision: number;
+}
+
 async function rereadUnderFence(
   location: OwnerMaterialTextLocation,
-): Promise<OwnerMaterialText | null> {
+): Promise<ReadTextBytes | null> {
   const persistence = await provider();
   try {
     return await persistence.withTransaction(async (tx) => {
@@ -109,7 +123,9 @@ async function rereadUnderFence(
         const read = await persistence
           .assetStoreIn(tx)
           .resolve(assetPrincipalForOwner(row.owner_id), result.text.assetId);
-        return read ? await textOf(read.bytes, result, row.owner_id, read.revision) : null;
+        return read
+          ? { bytes: read.bytes, result, ownerId: row.owner_id, byteRevision: read.revision }
+          : null;
       } catch (error) {
         // Out of the transaction, so it rolls back rather than ending aborted.
         throw new FencedTextReadFailed('pool read failed', { cause: error });
@@ -130,8 +146,20 @@ async function rereadUnderFence(
  */
 export async function readOwnerMaterialText(
   location: OwnerMaterialTextLocation,
+  signal?: AbortSignal,
 ): Promise<OwnerMaterialText | null> {
-  const first = await readOnce(location);
+  if (signal?.aborted) throw new Error('aborted');
+  const first = await readOnce(location, signal);
   if (first) return first;
-  return rereadUnderFence(location);
+  if (signal?.aborted) throw new Error('aborted');
+  const read = await rereadUnderFence(location);
+  if (!read) return null;
+  // The forwarded fence protects the row and byte read, not the parser. The
+  // transaction has committed before a legacy parse can wait on its worker.
+  try {
+    return await textOf(read.bytes, read.result, read.ownerId, read.byteRevision, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
 }

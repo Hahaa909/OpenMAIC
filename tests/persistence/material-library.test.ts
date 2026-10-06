@@ -30,6 +30,7 @@ import {
   deletedThroughLinkScenario,
   documentImagesQuotaScenario,
   documentImagesScenario,
+  documentImageBudgetScenario,
   existingCopyScenario,
   libraryListingScenario,
   listingDerivedFieldsScenario,
@@ -143,6 +144,13 @@ describe('material library (PGlite)', { timeout: 20_000 }, () => {
   });
 
   describe('extraction', () => {
+    it.each(['bytes', 'tags'] as const)(
+      'publishes and reads an over-%s-budget document with reachable images',
+      async (budget) => {
+        await documentImageBudgetScenario(await boot(), budget);
+      },
+    );
+
     it('keeps a document’s images as derivatives and names them in its text', async () => {
       await documentImagesScenario(await boot());
     });

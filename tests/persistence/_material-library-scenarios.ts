@@ -1361,6 +1361,62 @@ export async function documentImagesScenario(h: ExtractionHarness): Promise<void
   }
 }
 
+/** Over-budget documents keep readable text and reachable, rooted image derivatives. */
+export async function documentImageBudgetScenario(
+  h: ExtractionHarness,
+  budget: 'bytes' | 'tags',
+): Promise<void> {
+  const artifact = await mineruLikeArtifact();
+  const body = budget === 'bytes' ? '教材正文'.repeat(400_000) : '<span>x</span>'.repeat(50_001);
+  const text =
+    body + '\n\n' + artifact.blocks[0]!.text + '\n\n![legacy](openmaic-derivative:img-1)';
+  artifact.blocks[0]!.text = text;
+  h.documentExtract.mockImplementation((async () => artifact) as never);
+  await seedSession(h, 'budget-session');
+  await seedSource(h, 'budget-doc');
+  await ensure(h, 'budget-doc');
+  expect(await runNextOwnerExtraction(h.deps())).toBe(true);
+  const state = await stateOf(h, 'budget-doc');
+  expect(state.status).toBe('done');
+  const result = state.extraction_result!;
+  expect(result.text.imageRefs).toEqual([]);
+  expect(result.stats.diagnostics).toContain(
+    'Document image rewriting skipped: input exceeds parser budget',
+  );
+  expect(result.derivatives.map((d) => d.key)).toEqual(['img-1', 'img-2']);
+  expect(await rootsOf(h, 'budget-doc')).toContain(result.text.assetId);
+  for (const derivative of result.derivatives) {
+    expect(await rootsOf(h, derivative.id)).toEqual([derivative.assetId]);
+  }
+  const location = { id: 'budget-doc', ownerId: ACCOUNT, extractionResult: result };
+  expect(await readOwnerMaterialText(location)).toEqual({ text, revision: result.revision });
+
+  const listed = await runTool('budget-session', 'list_materials', { scope: 'library' });
+  for (const derivative of result.derivatives) {
+    expect(listed.details.materials).toContainEqual(
+      expect.objectContaining({ materialId: derivative.id, derivedFrom: 'budget-doc' }),
+    );
+    const resolved = (await resolveMaterial('budget-session', derivative.id, 'library'))!;
+    expect(resolved?.origin).toBe('owner');
+    const raw = await readResolvedMaterialRaw('budget-session', resolved);
+    expect(raw?.mime).toBe('image/webp');
+    expect(raw?.bytes.byteLength).toBe(derivative.bytes);
+  }
+
+  // Persist the old shape, without positions, so a fresh read really uses
+  // legacy admission. Even a resolvable key must remain unchanged here.
+  const { imageRefs: _refs, ...legacyText } = result.text;
+  await h.pool.query('UPDATE owner_material SET extraction_result = $2::jsonb WHERE id = $1', [
+    'budget-doc',
+    JSON.stringify({ ...result, text: legacyText }),
+  ]);
+  const legacy = (await stateOf(h, 'budget-doc')).extraction_result!;
+  expect(await readOwnerMaterialText({ ...location, extractionResult: legacy })).toEqual({
+    text,
+    revision: result.revision,
+  });
+}
+
 /**
  * A document whose text fits the owner's pool quota but whose images do not
  * publishes nothing: the source fails with its reason, and the text's entry,

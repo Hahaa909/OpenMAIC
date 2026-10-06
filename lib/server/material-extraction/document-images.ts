@@ -12,7 +12,7 @@
  * - MinerU (self-hosted and cloud) writes markdown that names images by file,
  *   `![](images/<file>)`; the parser records that file on each image
  *   (`metadata.path`), so a reference can be matched to its image. The
- *   markdown is parsed, not pattern-matched ({@link rewriteImageReferences}).
+ *   markdown is parsed, not pattern-matched ({@link ownerDocumentOutcome}).
  * - The built-in PDF parser and AliDocMind return images beside text that
  *   names none of them: the images are kept, there is nothing to rewrite.
  * - Plain text and markdown uploads return no images and keep their own text.
@@ -24,7 +24,7 @@
  * own. So the stored text cannot name derivative ids. It names each kept
  * image by a key instead (`openmaic-derivative:<key>`), and each source's
  * result maps keys to its own derivatives; a reader resolves the keys of the
- * result it read ({@link resolveDerivativeRefs}).
+ * result it read ({@link resolveDerivativeRefsAsync}).
  *
  * ## Bounds
  *
@@ -32,16 +32,14 @@
  * `MAX_DERIVED_IMAGES` images, in provider order, each downsampled to a WebP
  * within `MAX_DERIVED_IMAGE_BYTES`. A reference to an image that was not kept
  * -- past the limit, unreadable, or unknown to the provider -- becomes its
- * alt text, so the stored text never names a file nothing holds.
+ * alt text. When the input exceeds the parser budget, keep the provider's
+ * text unchanged and record the skipped rewriting; kept images remain
+ * derivatives, even though their references are not rewritten.
  */
-import {
-  imagePlan,
-  applyImagePlan,
-  type ImagePlan,
-  type ImageReference,
-  type RewriteImageTarget,
-} from './document-image-plan.mjs';
-import { runDocumentImageWorker } from './document-image-parser';
+import { applyImagePlan, type ImagePlan, type ImageReference } from './document-image-apply.mjs';
+import { DocumentImageInputBudgetError, runDocumentImageWorker } from './document-image-parser';
+import { normalizePath, basename, type ImagePathIndex } from './document-image-paths.mjs';
+export type { ImagePathIndex } from './document-image-paths.mjs';
 
 import { MAX_DERIVED_IMAGES, prepareDerivedImage } from '@/lib/document/extractors/images';
 import type { DocumentArtifact, DocumentExtractorProvider } from '@/lib/document/types';
@@ -57,25 +55,6 @@ import {
 export const DERIVATIVE_REF_PREFIX = 'openmaic-derivative:';
 /** The link target a reader sees for one: the derivative's own material id. */
 export const MATERIAL_REF_PREFIX = 'material:';
-
-/** A target the provider resolved against its own files: no scheme, not absolute. */
-function isProviderPath(target: string): boolean {
-  return !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith('/');
-}
-
-function normalizePath(target: string): string {
-  let path = target.replace(/^\.\//, '');
-  try {
-    path = decodeURI(path);
-  } catch {
-    // Keep it as written.
-  }
-  return path;
-}
-
-function basename(path: string): string {
-  return path.split('/').pop() ?? path;
-}
 
 /** One kept image: the derivative to store and the key the text names it by. */
 interface KeptImage {
@@ -131,10 +110,6 @@ async function keptImages(
  * it first, then -- only when exactly one kept image has that file name -- its
  * bare file name, so one image's alias can never take another's path.
  */
-export interface ImagePathIndex {
-  exact: ReadonlyMap<string, string>;
-  byBasename: ReadonlyMap<string, string>;
-}
 
 export function imagePathIndex(
   images: ReadonlyArray<{ key: string; path?: string }>,
@@ -163,39 +138,6 @@ export function imagePathIndex(
   return { exact, byBasename };
 }
 
-function keyOf(index: ImagePathIndex, target: string): string | undefined {
-  const path = normalizePath(target);
-  return index.exact.get(path) ?? index.byBasename.get(basename(path));
-}
-
-/**
- * Rewrite the image references of one markdown text. The text is parsed as
- * CommonMark, so only real image references change: an image (`![alt](x)`,
- * destinations with balanced parentheses or `<...>` included), an image
- * reference (`![alt][label]`, `![alt][]`, `![alt]`) through its definition,
- * and an `<img>` inside raw HTML. Code blocks, inline code and escaped text
- * are not image references and are left exactly as written.
- *
- * A reference to a kept image names its key; one to any other file of the
- * provider becomes its alt text. A reference image is written inline, and a
- * definition of a provider file that only images use is removed, so no
- * provider path is left behind. Remote, inline (`data:`) and absolute
- * references are kept.
- */
-export function rewriteImageReferences(markdown: string, index: ImagePathIndex): string {
-  return rewriteImageDestinations(markdown, (target) => {
-    if (!isProviderPath(target)) return undefined;
-    const key = keyOf(index, target);
-    return key ? `${DERIVATIVE_REF_PREFIX}${key}` : null;
-  });
-}
-
-function rewriteImageDestinations(markdown: string, rewriteTarget: RewriteImageTarget): string {
-  const prefix = markdown.startsWith('\uFEFF') ? '\uFEFF' : '';
-  const input = prefix ? markdown.slice(1) : markdown;
-  return prefix + applyImagePlan(input, imagePlan(input), rewriteTarget);
-}
-
 // A cache of derived reference positions, not owner text or derivative ids.
 // Callers supply an immutable text-entry/revision identity after resolving its
 // bytes. Every reader still applies its own result's mapping, including reuse.
@@ -210,18 +152,6 @@ function cachedImagePlan(cacheKey?: string): ImagePlan | undefined {
     imagePlans.set(cacheKey!, cached);
     return cached.plan;
   }
-}
-
-function derivativeImagePlan(input: string, cacheKey?: string): ImagePlan {
-  const cached = cachedImagePlan(cacheKey);
-  if (cached) return cached;
-  const parsed = imagePlan(input);
-  const plan = {
-    markdown: parsed.markdown.filter((image) => image.target.startsWith(DERIVATIVE_REF_PREFIX)),
-    html: parsed.html.filter((image) => image.target.startsWith(DERIVATIVE_REF_PREFIX)),
-  };
-  cacheImagePlan(plan, cacheKey);
-  return plan;
 }
 
 function cacheImagePlan(plan: ImagePlan, cacheKey?: string): void {
@@ -273,22 +203,27 @@ export async function ownerDocumentOutcome(
   // Uploads decoded by plain-text have no provider-owned image paths. MinerU
   // output still needs rewriting when all of its images are missing.
   const base = documentOutcome(artifact, provider);
-  const rewritten =
-    provider.id === 'plain-text'
-      ? { text: base.text, refs: [] }
-      : await runDocumentImageWorker({
-          kind: 'rewrite',
-          blocks: artifact.blocks
-            .filter((block) => block.type === 'text' || block.type === 'markdown')
-            .map((block) => ({ type: block.type, ...(block.text ? { text: block.text } : {}) })),
-          index,
-        });
   const diagnostics = [
     ...(base.stats.diagnostics ?? []),
     ...(skipped > 0
       ? [`${skipped} document image(s) not kept (limit ${MAX_DERIVED_IMAGES}, or unreadable)`]
       : []),
   ];
+  let rewritten = { text: base.text, refs: [] as ImageReference[] };
+  if (provider.id !== 'plain-text') {
+    try {
+      rewritten = await runDocumentImageWorker({
+        kind: 'rewrite',
+        blocks: artifact.blocks
+          .filter((block) => block.type === 'text' || block.type === 'markdown')
+          .map((block) => ({ type: block.type, ...(block.text ? { text: block.text } : {}) })),
+        index,
+      });
+    } catch (error) {
+      if (!(error instanceof DocumentImageInputBudgetError)) throw error;
+      diagnostics.push('Document image rewriting skipped: input exceeds parser budget');
+    }
+  }
   return {
     ...base,
     text: rewritten.text,
@@ -306,19 +241,23 @@ export async function ownerDocumentOutcome(
 /**
  * Production reads splice positions published with the text. Old results
  * lacking positions parse in the worker once and use the existing bounded
- * position cache. Neither path caches a reader's derivative ids.
+ * position cache. Over-budget legacy text is returned without resolving keys.
+ * Neither path caches a reader's derivative ids.
  */
 export async function resolveDerivativeRefsAsync(
   text: string,
   derivatives: ReadonlyArray<{ id: string; key?: string }>,
   cacheKey: string,
   refs?: readonly ImageReference[],
+  signal?: AbortSignal,
 ): Promise<string> {
+  if (signal?.aborted) throw new Error('aborted');
   const ids = new Map(derivatives.flatMap((image) => (image.key ? [[image.key, image.id]] : [])));
   if (ids.size === 0) return text;
   if (refs !== undefined) {
     let end = 0;
     const parts: string[] = [];
+    let valid = true;
     for (const ref of refs) {
       if (
         !Number.isInteger(ref.start) ||
@@ -327,7 +266,8 @@ export async function resolveDerivativeRefsAsync(
         ref.end > text.length ||
         text.slice(ref.start, ref.end) !== DERIVATIVE_REF_PREFIX + ref.key
       ) {
-        throw new Error('Invalid published document image position');
+        valid = false;
+        break;
       }
       parts.push(
         text.slice(end, ref.start),
@@ -335,14 +275,23 @@ export async function resolveDerivativeRefsAsync(
       );
       end = ref.end;
     }
-    parts.push(text.slice(end));
-    return parts.join('');
+    if (valid) {
+      parts.push(text.slice(end));
+      return parts.join('');
+    }
+    console.warn('[document-images] Invalid published image positions; parsing current bytes');
   }
   const prefix = text.startsWith('\uFEFF') ? '\uFEFF' : '';
   const input = prefix ? text.slice(1) : text;
   let plan = cachedImagePlan(cacheKey);
   if (!plan) {
-    plan = await runDocumentImageWorker({ kind: 'plan', text: input });
+    try {
+      plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey, signal);
+    } catch (error) {
+      if (signal?.aborted || !(error instanceof DocumentImageInputBudgetError)) throw error;
+      return text;
+    }
+    if (signal?.aborted) throw new Error('aborted');
     cacheImagePlan(plan, cacheKey);
   }
   return (
@@ -350,33 +299,6 @@ export async function resolveDerivativeRefsAsync(
     applyImagePlan(input, plan, (target) => {
       const id = ids.get(target.slice(DERIVATIVE_REF_PREFIX.length));
       return id ? MATERIAL_REF_PREFIX + id : undefined;
-    })
-  );
-}
-
-/**
- * Resolve a stored text's keys to the derivatives of the result being read:
- * `openmaic-derivative:<key>` becomes `material:<derivative id>`. A key the
- * result does not have (it cannot happen for a text and result published
- * together) is left as it is.
- */
-export function resolveDerivativeRefs(
-  text: string,
-  derivatives: ReadonlyArray<{ id: string; key?: string }>,
-  cacheKey?: string,
-): string {
-  const idByKey = new Map(
-    derivatives.flatMap((derivative) => (derivative.key ? [[derivative.key, derivative.id]] : [])),
-  );
-  if (idByKey.size === 0) return text;
-  const prefix = text.startsWith('\uFEFF') ? '\uFEFF' : '';
-  const input = prefix ? text.slice(1) : text;
-  return (
-    prefix +
-    applyImagePlan(input, derivativeImagePlan(input, cacheKey), (target) => {
-      if (!target.startsWith(DERIVATIVE_REF_PREFIX)) return undefined;
-      const id = idByKey.get(target.slice(DERIVATIVE_REF_PREFIX.length));
-      return id ? `${MATERIAL_REF_PREFIX}${id}` : undefined;
     })
   );
 }
