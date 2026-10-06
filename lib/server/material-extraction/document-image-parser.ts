@@ -26,6 +26,9 @@ export class DocumentImageParseError extends MaterialExtractionError {
   }
 }
 
+/** Admission refused parsing; callers may preserve text without image resolution. */
+export class DocumentImageInputBudgetError extends DocumentImageParseError {}
+
 const MAX_PARSER_WORKERS = 2;
 // Node 22 can abort the parent when a worker reaches an explicit heap limit.
 // Use input admission plus the execution timeout there; retain the measured
@@ -64,13 +67,13 @@ function inputBudget(job: PlanJob | RewriteJob): number {
     bytes += Buffer.byteLength(text, 'utf8');
     retainedBytes += 2 * text.length;
     if (bytes > MAX_PARSE_INPUT_BYTES)
-      throw new DocumentImageParseError(new Error('Document image input exceeds 4 MiB'));
+      throw new DocumentImageInputBudgetError(new Error('Document image input exceeds 4 MiB'));
     if (!parse) return;
     for (let at = text.indexOf('<'); at !== -1; at = text.indexOf('<', at + 1)) {
       const next = text.charCodeAt(at + (text[at + 1] === '/' ? 2 : 1));
       if ((next >= 65 && next <= 90) || (next >= 97 && next <= 122)) {
         if (++tags > MAX_PARSE_HTML_TAG_STARTS)
-          throw new DocumentImageParseError(
+          throw new DocumentImageInputBudgetError(
             new Error('Document image input exceeds 100000 HTML tag starts'),
           );
       }

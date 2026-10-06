@@ -32,10 +32,12 @@
  * `MAX_DERIVED_IMAGES` images, in provider order, each downsampled to a WebP
  * within `MAX_DERIVED_IMAGE_BYTES`. A reference to an image that was not kept
  * -- past the limit, unreadable, or unknown to the provider -- becomes its
- * alt text, so the stored text never names a file nothing holds.
+ * alt text. When the input exceeds the parser budget, keep the provider's
+ * text unchanged and record the skipped rewriting; kept images remain
+ * derivatives, even though their references are not rewritten.
  */
 import { applyImagePlan, type ImagePlan, type ImageReference } from './document-image-apply.mjs';
-import { runDocumentImageWorker } from './document-image-parser';
+import { DocumentImageInputBudgetError, runDocumentImageWorker } from './document-image-parser';
 import { normalizePath, basename, type ImagePathIndex } from './document-image-paths.mjs';
 export type { ImagePathIndex } from './document-image-paths.mjs';
 
@@ -201,22 +203,27 @@ export async function ownerDocumentOutcome(
   // Uploads decoded by plain-text have no provider-owned image paths. MinerU
   // output still needs rewriting when all of its images are missing.
   const base = documentOutcome(artifact, provider);
-  const rewritten =
-    provider.id === 'plain-text'
-      ? { text: base.text, refs: [] }
-      : await runDocumentImageWorker({
-          kind: 'rewrite',
-          blocks: artifact.blocks
-            .filter((block) => block.type === 'text' || block.type === 'markdown')
-            .map((block) => ({ type: block.type, ...(block.text ? { text: block.text } : {}) })),
-          index,
-        });
   const diagnostics = [
     ...(base.stats.diagnostics ?? []),
     ...(skipped > 0
       ? [`${skipped} document image(s) not kept (limit ${MAX_DERIVED_IMAGES}, or unreadable)`]
       : []),
   ];
+  let rewritten = { text: base.text, refs: [] as ImageReference[] };
+  if (provider.id !== 'plain-text') {
+    try {
+      rewritten = await runDocumentImageWorker({
+        kind: 'rewrite',
+        blocks: artifact.blocks
+          .filter((block) => block.type === 'text' || block.type === 'markdown')
+          .map((block) => ({ type: block.type, ...(block.text ? { text: block.text } : {}) })),
+        index,
+      });
+    } catch (error) {
+      if (!(error instanceof DocumentImageInputBudgetError)) throw error;
+      diagnostics.push('Document image rewriting skipped: input exceeds parser budget');
+    }
+  }
   return {
     ...base,
     text: rewritten.text,
@@ -234,7 +241,8 @@ export async function ownerDocumentOutcome(
 /**
  * Production reads splice positions published with the text. Old results
  * lacking positions parse in the worker once and use the existing bounded
- * position cache. Neither path caches a reader's derivative ids.
+ * position cache. Over-budget legacy text is returned without resolving keys.
+ * Neither path caches a reader's derivative ids.
  */
 export async function resolveDerivativeRefsAsync(
   text: string,
@@ -277,7 +285,12 @@ export async function resolveDerivativeRefsAsync(
   const input = prefix ? text.slice(1) : text;
   let plan = cachedImagePlan(cacheKey);
   if (!plan) {
-    plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey, signal);
+    try {
+      plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey, signal);
+    } catch (error) {
+      if (signal?.aborted || !(error instanceof DocumentImageInputBudgetError)) throw error;
+      return text;
+    }
     if (signal?.aborted) throw new Error('aborted');
     cacheImagePlan(plan, cacheKey);
   }
