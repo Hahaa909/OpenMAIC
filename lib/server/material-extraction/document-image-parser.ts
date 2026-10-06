@@ -27,11 +27,23 @@ export class DocumentImageParseError extends MaterialExtractionError {
 }
 
 const MAX_PARSER_WORKERS = 2;
-// Measured against the A/B/C fixtures in the hardening evidence, including
-// parser/module loading; A and B retain at least twice the observed heap headroom.
-const MAX_PARSER_OLD_GENERATION_MB = 512;
+// Node 22 can abort the parent when a worker reaches an explicit heap limit.
+// Use input admission plus the execution timeout there; retain the measured
+// worker limit on Node 24+, where the oversized standalone probe fails cleanly.
+const PARSER_RESOURCE_LIMITS =
+  Number(process.versions.node.split('.')[0]) >= 24 ? { maxOldGenerationSizeMb: 512 } : undefined;
+// A (3.5 MB) and B (1.6 MB, up to 50k span pairs) fit these budgets. Larger
+// payloads or denser HTML fail before cloning/allocating a parser tree. This
+// counts tag starts conservatively, including those in code or malformed HTML.
+const MAX_PARSE_INPUT_BYTES = 4 * 1024 * 1024;
+const MAX_PARSE_HTML_TAG_STARTS = 100_000;
+// Charge UTF-16 string storage and per-entry overhead, not just UTF-8 bytes.
+// This bounds retained queued payloads; it is not a bound on total process RSS.
+const MAX_QUEUED_PARSE_BYTES = 64 * 1024 * 1024;
+const MAX_QUEUE_WAIT_MS = 30_000;
 let running = 0;
 const pending: Array<() => void> = [];
+let queuedBytes = 0;
 interface ParseTask {
   promise: Promise<Result>;
   cancel: () => void;
@@ -44,7 +56,51 @@ function drain() {
   while (running < MAX_PARSER_WORKERS && pending.length) pending.shift()!();
 }
 
-function enqueue(job: PlanJob | RewriteJob): ParseTask {
+function inputBudget(job: PlanJob | RewriteJob): number {
+  let bytes = 0;
+  let retainedBytes = 1024;
+  let tags = 0;
+  const charge = (text: string, parse = false) => {
+    bytes += Buffer.byteLength(text, 'utf8');
+    retainedBytes += 2 * text.length;
+    if (bytes > MAX_PARSE_INPUT_BYTES)
+      throw new DocumentImageParseError(new Error('Document image input exceeds 4 MiB'));
+    if (!parse) return;
+    for (let at = text.indexOf('<'); at !== -1; at = text.indexOf('<', at + 1)) {
+      const next = text.charCodeAt(at + (text[at + 1] === '/' ? 2 : 1));
+      if ((next >= 65 && next <= 90) || (next >= 97 && next <= 122)) {
+        if (++tags > MAX_PARSE_HTML_TAG_STARTS)
+          throw new DocumentImageParseError(
+            new Error('Document image input exceeds 100000 HTML tag starts'),
+          );
+      }
+    }
+  };
+  if (job.kind === 'plan') charge(job.text, true);
+  else {
+    for (const block of job.blocks) {
+      bytes += 128;
+      retainedBytes += 128;
+      charge(block.type);
+      charge(block.text ?? '', block.type === 'markdown');
+    }
+    for (const entries of [job.index.exact, job.index.byBasename]) {
+      for (const [path, key] of entries) {
+        bytes += 128;
+        retainedBytes += 128;
+        charge(path);
+        charge(key);
+      }
+    }
+  }
+  return retainedBytes;
+}
+
+function queueFailure(message: string): DocumentImageParseError {
+  return new DocumentImageParseError(Object.assign(new Error(message), { retryable: true }));
+}
+
+function enqueue(job: PlanJob | RewriteJob, retainedBytes: number): ParseTask {
   const task: ParseTask = {
     promise: undefined!,
     cancel: () => {},
@@ -52,7 +108,21 @@ function enqueue(job: PlanJob | RewriteJob): ParseTask {
     abandoned: false,
   };
   task.promise = new Promise((resolve, reject) => {
+    if (queuedBytes + retainedBytes > MAX_QUEUED_PARSE_BYTES) {
+      reject(queueFailure('Document image parse queue exceeds 64 MiB'));
+      return;
+    }
+    const removeQueued = () => {
+      const at = pending.indexOf(start);
+      if (at === -1) return false;
+      pending.splice(at, 1);
+      queuedBytes -= retainedBytes;
+      clearTimeout(queueTimer);
+      return true;
+    };
     const start = () => {
+      queuedBytes -= retainedBytes;
+      clearTimeout(queueTimer);
       running++;
       let worker: Worker;
       try {
@@ -62,7 +132,7 @@ function enqueue(job: PlanJob | RewriteJob): ParseTask {
           join(process.cwd(), 'lib/server/material-extraction/document-image-worker.mjs'),
           {
             workerData: job,
-            resourceLimits: { maxOldGenerationSizeMb: MAX_PARSER_OLD_GENERATION_MB },
+            resourceLimits: PARSER_RESOURCE_LIMITS,
           },
         );
       } catch (error) {
@@ -108,10 +178,12 @@ function enqueue(job: PlanJob | RewriteJob): ParseTask {
       );
     };
     task.cancel = () => {
-      const at = pending.indexOf(start);
-      if (at !== -1) pending.splice(at, 1);
-      reject(new Error('aborted'));
+      if (removeQueued()) reject(new Error('aborted'));
     };
+    const queueTimer = setTimeout(() => {
+      if (removeQueued()) reject(queueFailure('Document image parse queue wait exceeded 30s'));
+    }, MAX_QUEUE_WAIT_MS);
+    queuedBytes += retainedBytes;
     pending.push(start);
     drain();
   });
@@ -165,10 +237,18 @@ export function runDocumentImageWorker(
   signal?: AbortSignal,
 ): Promise<Result> {
   if (signal?.aborted) return Promise.reject(new Error('aborted'));
-  if (job.kind !== 'plan' || cacheKey === undefined) return subscribe(enqueue(job), signal);
-  const shared = inFlightPlans.get(cacheKey);
+  const shared =
+    job.kind === 'plan' && cacheKey !== undefined ? inFlightPlans.get(cacheKey) : undefined;
   if (shared && !shared.abandoned) return subscribe(shared, signal);
-  const work = enqueue(job);
+  let retainedBytes: number;
+  try {
+    retainedBytes = inputBudget(job);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (job.kind !== 'plan' || cacheKey === undefined)
+    return subscribe(enqueue(job, retainedBytes), signal);
+  const work = enqueue(job, retainedBytes);
   inFlightPlans.set(cacheKey, work);
   const remove = () => {
     if (inFlightPlans.get(cacheKey) === work) inFlightPlans.delete(cacheKey);

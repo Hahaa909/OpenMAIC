@@ -81,7 +81,7 @@ it('waits for termination before handing the result to its caller', async () => 
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it('sets a measured heap limit and caps mixed plan/rewrite jobs at two workers', async () => {
+it('uses the runtime-safe heap policy and caps mixed plan/rewrite jobs at two workers', async () => {
   const start = state.workers.length;
   const jobs = [
     runDocumentImageWorker({ kind: 'plan', text: 'first' }),
@@ -94,9 +94,9 @@ it('sets a measured heap limit and caps mixed plan/rewrite jobs at two workers',
     runDocumentImageWorker({ kind: 'plan', text: 'fourth' }),
   ];
   expect(state.workers.length - start).toBe(2);
-  expect(vi.mocked(Worker).mock.calls.at(-1)?.[1]?.resourceLimits).toEqual({
-    maxOldGenerationSizeMb: 512,
-  });
+  expect(vi.mocked(Worker).mock.calls.at(-1)?.[1]?.resourceLimits).toEqual(
+    Number(process.versions.node.split('.')[0]) >= 24 ? { maxOldGenerationSizeMb: 512 } : undefined,
+  );
   for (let n = 0; n < 4; n++) {
     state.workers[start + n].emit('message', { result: { markdown: [], html: [] } });
     await jobs[n];
@@ -236,4 +236,127 @@ it('identifies a real worker timeout as a parse failure', async () => {
     retryable: false,
     cause: { message: 'Document image parse exceeded 30s' },
   });
+});
+
+it('rejects oversized UTF-8 bytes and cumulative rewrite blocks before starting a worker', async () => {
+  const before = state.workers.length;
+  for (const job of [
+    { kind: 'plan' as const, text: '界'.repeat(1_400_000) },
+    {
+      kind: 'rewrite' as const,
+      blocks: Array.from({ length: 2 }, () => ({
+        type: 'markdown',
+        text: 'x'.repeat(2 * 1024 * 1024),
+      })),
+      index: { exact: new Map<string, string>(), byBasename: new Map<string, string>() },
+    },
+  ]) {
+    // Pick the overload matching the job without changing its runtime payload.
+    const result = job.kind === 'plan' ? runDocumentImageWorker(job) : runDocumentImageWorker(job);
+    await expect(result).rejects.toMatchObject({
+      name: 'DocumentImageParseError',
+      retryable: false,
+      cause: { message: 'Document image input exceeds 4 MiB' },
+    });
+  }
+  expect(state.workers.length).toBe(before);
+});
+
+it('admits 50k span pairs but rejects denser HTML before starting a worker', async () => {
+  const before = state.workers.length;
+  const allowed = runDocumentImageWorker({ kind: 'plan', text: '<span>x</span>'.repeat(50_000) });
+  expect(state.workers.length).toBe(before + 1);
+  state.worker!.emit('message', { result: { markdown: [], html: [] } });
+  await allowed;
+  await expect(
+    runDocumentImageWorker({ kind: 'plan', text: '<span>x</span>'.repeat(50_001) }),
+  ).rejects.toMatchObject({
+    name: 'DocumentImageParseError',
+    retryable: false,
+    cause: { message: 'Document image input exceeds 100000 HTML tag starts' },
+  });
+  expect(state.workers.length).toBe(before + 1);
+});
+
+it('bounds retained queue bytes, shares admission and reclaims canceled payloads', async () => {
+  const before = state.workers.length;
+  const first = runDocumentImageWorker({ kind: 'plan', text: 'first' });
+  const second = runDocumentImageWorker({ kind: 'plan', text: 'second' });
+  const text = 'x'.repeat(3 * 1024 * 1024);
+  const controllers = Array.from({ length: 10 }, () => new AbortController());
+  const queued = controllers.map((controller, n) =>
+    runDocumentImageWorker({ kind: 'plan', text }, `queue-byte-${n}`, controller.signal),
+  );
+  const canceled = Promise.allSettled(queued);
+  const sharedController = new AbortController();
+  const shared = runDocumentImageWorker(
+    { kind: 'plan', text },
+    'queue-byte-0',
+    sharedController.signal,
+  );
+  const sharedRejected = expect(shared).rejects.toThrow('aborted');
+  const overflow = () => runDocumentImageWorker({ kind: 'plan', text }, 'queue-overflow');
+  await expect(overflow()).rejects.toMatchObject({
+    name: 'DocumentImageParseError',
+    retryable: true,
+    cause: { message: 'Document image parse queue exceeds 64 MiB' },
+  });
+  controllers[0].abort();
+  // One remaining subscriber still retains the shared queue entry and its bytes.
+  await expect(overflow()).rejects.toMatchObject({ retryable: true });
+  sharedController.abort();
+  await sharedRejected;
+  const freshController = new AbortController();
+  const fresh = runDocumentImageWorker(
+    { kind: 'plan', text },
+    'queue-overflow',
+    freshController.signal,
+  );
+  const freshRejected = expect(fresh).rejects.toThrow('aborted');
+  for (const controller of controllers) controller.abort();
+  freshController.abort();
+  await freshRejected;
+  expect((await canceled).every((result) => result.status === 'rejected')).toBe(true);
+  expect(state.workers.length).toBe(before + 2);
+  state.workers[before].emit('message', { result: { markdown: [], html: [] } });
+  state.workers[before + 1].emit('message', { result: { markdown: [], html: [] } });
+  await Promise.all([first, second]);
+});
+
+it('expires queued work while slots await termination and then admits fresh work', async () => {
+  vi.useFakeTimers();
+  const before = state.workers.length;
+  const first = runDocumentImageWorker({ kind: 'plan', text: 'first' });
+  const second = runDocumentImageWorker({ kind: 'plan', text: 'second' });
+  const releases: Array<() => void> = [];
+  for (const worker of state.workers.slice(before)) {
+    worker.terminate.mockImplementation(
+      () => new Promise<void>((resolve) => releases.push(resolve)),
+    );
+    worker.emit('message', { result: { markdown: [], html: [] } });
+  }
+  // Ten queued 3 Mi-character payloads nearly fill the 64 MiB accounting budget.
+  const text = 'x'.repeat(3 * 1024 * 1024);
+  const queued = Array.from({ length: 10 }, (_, n) =>
+    runDocumentImageWorker({ kind: 'plan', text }, `queue-expiry-${n}`),
+  );
+  const results = Promise.allSettled(queued);
+  await vi.advanceTimersByTimeAsync(30_000);
+  for (const result of await results) {
+    expect(result.status).toBe('rejected');
+    if (result.status === 'rejected')
+      expect(result.reason).toMatchObject({
+        name: 'DocumentImageParseError',
+        retryable: true,
+        cause: { message: 'Document image parse queue wait exceeded 30s' },
+      });
+  }
+  expect(state.workers.length).toBe(before + 2);
+  const fresh = runDocumentImageWorker({ kind: 'plan', text }, 'queue-expiry-0');
+  for (const release of releases) release();
+  await Promise.all([first, second]);
+  expect(state.workers.length).toBe(before + 3);
+  state.worker!.emit('message', { result: { markdown: [], html: [] } });
+  await fresh;
+  expect(vi.getTimerCount()).toBe(0);
 });
