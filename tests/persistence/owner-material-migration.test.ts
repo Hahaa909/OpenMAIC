@@ -14,7 +14,10 @@ import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { claimOwner } from '@/lib/persistence/owner-claims';
 import { finalizeOwnerMaterial, registerOwnerMaterial } from '@/lib/persistence/owner-materials';
 import { setMaterialByteStoreForTests } from '@/lib/server/materials/bytes';
-import { migrateOwnerMaterialsToPool } from '@/lib/server/materials/migrate-to-pool';
+import {
+  migrateOwnerMaterialsToPool,
+  removeDeletedOriginals,
+} from '@/lib/server/materials/migrate-to-pool';
 import { readOwnerMaterialBytes } from '@/lib/server/materials/owner-material-bytes';
 
 import {
@@ -362,17 +365,16 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
     expect(deletes).toEqual([]);
   });
 
-  it('removes the old object of a deleted source without migrating it', async () => {
+  it('leaves a deleted source to the cleanup pass', async () => {
     await boot();
     // A deletion whose own cleanup of the old object did not happen.
-    await legacySource('mat-deleted');
+    const bytes = await legacySource('mat-deleted');
     await h.pool.query(`UPDATE owner_material SET deleted_at = 1 WHERE id = 'mat-deleted'`);
 
-    expect(await run()).toEqual({ ...zero, scanned: 1, oldBytesRemoved: 1 });
-    expect(await rowOf('mat-deleted')).toMatchObject({ asset_id: null, oss_key: '' });
-    expect(deletes).toEqual(['objects/mat-deleted']);
-    expect(objects.has('objects/mat-deleted')).toBe(false);
-    expect(await rootsOf('mat-deleted')).toEqual([]);
+    expect(await run()).toEqual(zero);
+    expect(await rowOf('mat-deleted')).toMatchObject({ oss_key: 'objects/mat-deleted' });
+    expect(objects.get('objects/mat-deleted')).toEqual(bytes);
+    expect(deletes).toEqual([]);
   });
 
   it('gives up on a row another backfill published first, keeps that one pointer, and removes its own allocation', async () => {
@@ -486,5 +488,71 @@ describe('backfilling pre-pool material uploads into the asset pool', { timeout:
         sha256: digest(bytes),
       }),
     ).toEqual(bytes);
+  });
+
+  describe('the cleanup pass for deleted sources', () => {
+    const clean = () => removeDeletedOriginals({ batchSize: 2, pauseMs: 0 });
+    const deleted = async (id: string) => {
+      await legacySource(id);
+      await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', [id]);
+    };
+
+    it('removes the old objects of deleted sources, across batches, without migrating them', async () => {
+      await boot();
+      for (const id of ['mat-a', 'mat-b', 'mat-c']) await deleted(id);
+
+      expect(await clean()).toEqual({ scanned: 3, oldBytesRemoved: 3, failed: 0 });
+      for (const id of ['mat-a', 'mat-b', 'mat-c']) {
+        expect(await rowOf(id)).toMatchObject({ asset_id: null, oss_key: '' });
+        expect(await rootsOf(id)).toEqual([]);
+      }
+      expect(deletes).toEqual(['objects/mat-a', 'objects/mat-b', 'objects/mat-c']);
+      expect(await entryCount()).toBe(0);
+      expect(await clean()).toEqual({ scanned: 0, oldBytesRemoved: 0, failed: 0 });
+    });
+
+    it('leaves the objects of live sources to the backfill', async () => {
+      await boot();
+      // Pointer committed, old object kept by a failed delete: only the
+      // flagged backfill may remove it.
+      const moved = await legacySource('mat-moved');
+      failDelete = true;
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      expect(await run()).toMatchObject({ migrated: 1, failed: 1 });
+      failDelete = false;
+      // Not moved at all.
+      const unmoved = await legacySource('mat-unmoved');
+
+      expect(await clean()).toEqual({ scanned: 0, oldBytesRemoved: 0, failed: 0 });
+      expect(deletes).toEqual([]);
+      expect(objects.get('objects/mat-moved')).toEqual(moved);
+      expect(objects.get('objects/mat-unmoved')).toEqual(unmoved);
+      expect(await rowOf('mat-moved')).toMatchObject({ oss_key: 'objects/mat-moved' });
+    });
+
+    it('keeps oss_key when the re-read or the delete fails, for the next pass', async () => {
+      await boot();
+      await deleted('mat-a');
+      await deleted('mat-b');
+      pool.failDirect = /SELECT asset_id, oss_key, deleted_at FROM owner_material WHERE id = \$1/;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(await clean()).toEqual({ scanned: 2, oldBytesRemoved: 1, failed: 1 });
+      expect(await rowOf('mat-a')).toMatchObject({ oss_key: 'objects/mat-a' });
+      expect(objects.has('objects/mat-a')).toBe(true);
+
+      failDelete = true;
+      expect(await clean()).toEqual({ scanned: 1, oldBytesRemoved: 0, failed: 1 });
+      expect(await rowOf('mat-a')).toMatchObject({ oss_key: 'objects/mat-a' });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('old original for material mat-a left for the next pass'),
+        expect.anything(),
+      );
+
+      failDelete = false;
+      expect(await clean()).toEqual({ scanned: 1, oldBytesRemoved: 1, failed: 0 });
+      expect(await rowOf('mat-a')).toMatchObject({ oss_key: '' });
+      expect(objects.has('objects/mat-a')).toBe(false);
+    });
   });
 });

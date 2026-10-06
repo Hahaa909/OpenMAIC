@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // other startup step is stubbed.
 const runtime = vi.hoisted(() => ({ configured: true }));
 const migrateOwnerMaterialsToPool = vi.hoisted(() => vi.fn());
+const removeDeletedOriginals = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/persistence/asset-quota', () => ({ resolveAssetQuotaBytes: vi.fn() }));
 vi.mock('@/lib/persistence/asset-pending-ttl', () => ({ resolveAssetPendingTtlMs: vi.fn() }));
 vi.mock('@/lib/persistence/asset-collector-schedule', () => ({
@@ -25,12 +26,17 @@ vi.mock('@/lib/server/material-extraction/runner', () => ({
 vi.mock('@/lib/server/material-extraction/owner-extraction', () => ({
   startOwnerExtractionRunner: () => ({ stop: async () => ({ drained: true, running: 0 }) }),
 }));
-vi.mock('@/lib/server/materials/migrate-to-pool', () => ({ migrateOwnerMaterialsToPool }));
+vi.mock('@/lib/server/materials/migrate-to-pool', () => ({
+  migrateOwnerMaterialsToPool,
+  removeDeletedOriginals,
+}));
 
 beforeEach(() => {
   runtime.configured = true;
   migrateOwnerMaterialsToPool.mockReset();
   migrateOwnerMaterialsToPool.mockResolvedValue({ scanned: 0 });
+  removeDeletedOriginals.mockReset();
+  removeDeletedOriginals.mockResolvedValue({ scanned: 0 });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(process, 'once').mockReturnValue(process);
@@ -99,5 +105,38 @@ describe('the material backfill at startup', () => {
     await settle();
 
     expect(error).toHaveBeenCalledWith('[material-backfill] pass failed', expect.any(Error));
+  });
+});
+
+describe('the cleanup pass for deleted sources at startup', () => {
+  it.each(['', '1'])('runs one pass whatever the backfill flag (%j)', async (flag) => {
+    vi.stubEnv('MATERIALS_POOL_BACKFILL', flag);
+    const { register } = await import('@/instrumentation');
+
+    await register();
+    await settle();
+
+    expect(removeDeletedOriginals).toHaveBeenCalledOnce();
+  });
+
+  it('does not run without the agent runtime', async () => {
+    runtime.configured = false;
+    const { register } = await import('@/instrumentation');
+
+    await register();
+    await settle();
+
+    expect(removeDeletedOriginals).not.toHaveBeenCalled();
+  });
+
+  it('does not let a failed pass fail the start', async () => {
+    removeDeletedOriginals.mockRejectedValue(new Error('database unavailable'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { register } = await import('@/instrumentation');
+
+    await expect(register()).resolves.toBeUndefined();
+    await settle();
+
+    expect(error).toHaveBeenCalledWith('[material-delete] cleanup pass failed', expect.any(Error));
   });
 });

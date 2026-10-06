@@ -21,7 +21,7 @@
  * request fence refuses retired owners (403), and busy writes answer 503
  * with Retry-After. Links become unreadable; conversation text, old session
  * copies and independent course media remain. Legacy originals are cleaned
- * only after commit, with failures left for the existing enabled backfill.
+ * only after commit, with failures retried by a cleanup pass on every start.
  * Page-only: no agent deletion tool and no library event.
  */
 import type { NextRequest } from 'next/server';

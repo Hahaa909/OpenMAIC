@@ -138,6 +138,33 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     return { withTransaction: withTransaction as never };
   }
 
+  /** As {@link pausingBefore}, but runs `after()` once the matching statement has answered. */
+  function pausingAfter(
+    h: ExtractionHarness,
+    pattern: RegExp,
+    after: (tx: { query(text: string, params?: unknown[]): Promise<unknown> }) => Promise<void>,
+  ): { withTransaction: ExtractionHarness['provider']['withTransaction'] } {
+    type Tx = { query(text: string, params?: unknown[]): Promise<unknown> };
+    let fired = false;
+    const pausing = (tx: Tx): Tx => ({
+      query: async (text, params) => {
+        const answer = await tx.query(text, params);
+        if (!fired && pattern.test(text)) {
+          fired = true;
+          await after(tx);
+        }
+        return answer;
+      },
+    });
+    const withTransaction = (body: (tx: Tx) => Promise<unknown>) =>
+      (
+        h.provider.withTransaction as unknown as (
+          run: (tx: Tx) => Promise<unknown>,
+        ) => Promise<unknown>
+      )((tx) => body(pausing(tx)));
+    return { withTransaction: withTransaction as never };
+  }
+
   /** Wait until some connection of this test's schema waits on a lock. */
   async function untilSomeoneWaits(): Promise<void> {
     for (let attempt = 0; attempt < 400; attempt += 1) {
@@ -182,11 +209,15 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     return made.folder.id;
   }
 
-  /** Start a waiter and verify that its exact backend waits on this holder. */
+  /**
+   * Start a waiter and verify that its exact backend waits on this holder.
+   * The waiter's backend is read just before its first `lockStatement`.
+   */
   async function waitingOn(
     h: ExtractionHarness,
     holderTx: { query(text: string, params?: unknown[]): Promise<unknown> },
     run: (provider: ExtractionHarness['provider']) => Promise<unknown>,
+    lockStatement: RegExp = /^SELECT id FROM owner_material WHERE id = ANY/,
   ): Promise<Promise<unknown>[]> {
     const holder = (
       (await holderTx.query('SELECT pg_backend_pid() AS pid')) as { rows: { pid: number }[] }
@@ -195,7 +226,7 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
     const waiterPid = new Promise<number>((resolve) => {
       observed = resolve;
     });
-    const waiter = pausingBefore(h, /^SELECT id FROM owner_material WHERE id = ANY/, async (tx) => {
+    const waiter = pausingBefore(h, lockStatement, async (tx) => {
       observed(
         ((await tx.query('SELECT pg_backend_pid() AS pid')) as { rows: { pid: number }[] }).rows[0]!
           .pid,
@@ -359,6 +390,89 @@ describe.skipIf(!contractUrl)('material library on PostgreSQL', { timeout: 20_00
         }
       },
     );
+
+    describe('and a move naming a derivative before its source', () => {
+      // 'mixed-d' sorts before 'mixed-s'. A move that locked every id named
+      // would hold the derivative while waiting for the source, which a
+      // deletion holds while it waits for the derivative.
+      const moveLock = /^\s*SELECT id, owner_id, derived_from, status, deleted_at, folder_id/;
+      const move = (provider: ExtractionHarness['provider'], folderId: string) =>
+        moveMaterials(provider, {
+          ownerId: ACCOUNT,
+          materialIds: ['mixed-d', 'mixed-s'],
+          folderId,
+          fence: 'request',
+        });
+      async function mixed(h: ExtractionHarness) {
+        await seedSource(h, 'mixed-s');
+        await seedDerivative(h, 'mixed-d', 'mixed-s');
+        return newFolder(h, 'Target');
+      }
+      async function expectDeleted(h: ExtractionHarness) {
+        expect(
+          (
+            await h.pool.query(
+              `SELECT id, folder_id, deleted_at IS NOT NULL AS deleted FROM owner_material
+                WHERE id IN ('mixed-d', 'mixed-s') ORDER BY id`,
+            )
+          ).rows,
+        ).toEqual([
+          { id: 'mixed-d', folder_id: null, deleted: true },
+          { id: 'mixed-s', folder_id: null, deleted: true },
+        ]);
+      }
+
+      it('waits for a deletion holding the source, then refuses both', async () => {
+        const h = await boot();
+        const folder = await mixed(h);
+        let moving: Promise<unknown> | undefined;
+        // Paused holding the source only, before it locks the derivative.
+        const deleting = pausingBefore(
+          h,
+          /^SELECT id FROM owner_material WHERE derived_from/,
+          async (tx) => {
+            [moving] = await waitingOn(h, tx, (provider) => move(provider, folder), moveLock);
+          },
+        );
+        expect(
+          await withinBudget(
+            deleteMaterial(
+              { ...h.provider, ...deleting },
+              { ownerId: ACCOUNT, materialId: 'mixed-s', fence: 'request' },
+            ),
+          ),
+        ).toEqual({ status: 'deleted', materialIds: ['mixed-s', 'mixed-d'] });
+        expect(await withinBudget(moving!)).toEqual({
+          status: 'not_movable',
+          materialIds: ['mixed-d', 'mixed-s'],
+        });
+        await expectDeleted(h);
+      });
+
+      it('makes a deletion wait for the move holding the source, which refuses', async () => {
+        const h = await boot();
+        const folder = await mixed(h);
+        let deletion: Promise<unknown> | undefined;
+        const moving = pausingAfter(h, moveLock, async (tx) => {
+          [deletion] = await waitingOn(h, tx, (provider) =>
+            deleteMaterial(provider, {
+              ownerId: ACCOUNT,
+              materialId: 'mixed-s',
+              fence: 'request',
+            }),
+          );
+        });
+        expect(await withinBudget(move({ ...h.provider, ...moving }, folder))).toEqual({
+          status: 'not_movable',
+          materialIds: ['mixed-d'],
+        });
+        expect(await withinBudget(deletion!)).toEqual({
+          status: 'deleted',
+          materialIds: ['mixed-s', 'mixed-d'],
+        });
+        await expectDeleted(h);
+      });
+    });
 
     it('serializes concurrent deletions into deleted and not_found', async () => {
       const h = await boot();

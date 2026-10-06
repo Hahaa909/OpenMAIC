@@ -86,16 +86,25 @@ export async function register(): Promise<void> {
       // chain, which keeps serving copies made before links.
       const ownerExtraction = await import('@/lib/server/material-extraction/owner-extraction');
       ownerExtractionRunner = ownerExtraction.startOwnerExtractionRunner();
+      // Two bounded passes over old material objects, one per start each;
+      // neither blocks register() (see lib/server/materials/migrate-to-pool.ts).
+      const materialPasses = import('@/lib/server/materials/migrate-to-pool');
       // Moving pre-pool material uploads into the asset pool is opt-in: it
       // deletes their old objects, so an operator turns it on only once every
-      // instance runs this release (see lib/server/materials/migrate-to-pool.ts).
-      // One bounded pass per start; it never blocks register().
+      // instance runs this release.
       if (process.env.MATERIALS_POOL_BACKFILL === '1') {
-        void import('@/lib/server/materials/migrate-to-pool')
+        void materialPasses
           .then(({ migrateOwnerMaterialsToPool }) => migrateOwnerMaterialsToPool())
           .then((report) => console.info('[material-backfill] pass finished', report))
           .catch((error) => console.error('[material-backfill] pass failed', error));
       }
+      // Old originals of deleted sources whose cleanup after deletion failed.
+      // No new read reaches a deleted row, and this only retries a cleanup
+      // the deletion already authorized, so it needs no flag.
+      void materialPasses
+        .then(({ removeDeletedOriginals }) => removeDeletedOriginals())
+        .then((report) => console.info('[material-delete] cleanup pass finished', report))
+        .catch((error) => console.error('[material-delete] cleanup pass failed', error));
     }
   } catch (error) {
     console.error('[instrumentation] Agent runtime startup failed', error);
