@@ -59,6 +59,7 @@ async function textOf(
   result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>,
   ownerId: string,
   byteRevision: number,
+  signal?: AbortSignal,
 ): Promise<OwnerMaterialText> {
   const cacheKey = JSON.stringify([ownerId, result.text.assetId, result.revision, byteRevision]);
   return {
@@ -67,20 +68,25 @@ async function textOf(
       result.derivatives ?? [],
       cacheKey,
       result.text.imageRefs,
+      signal,
     ),
     revision: result.revision,
   };
 }
 
-async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMaterialText | null> {
+async function readOnce(
+  location: OwnerMaterialTextLocation,
+  signal?: AbortSignal,
+): Promise<OwnerMaterialText | null> {
   const result = location.extractionResult;
   if (!result) return null;
   try {
     const read = await (
       await provider()
     ).assetStore.resolve(assetPrincipalForOwner(location.ownerId), result.text.assetId);
-    return read ? await textOf(read.bytes, result, location.ownerId, read.revision) : null;
-  } catch {
+    return read ? await textOf(read.bytes, result, location.ownerId, read.revision, signal) : null;
+  } catch (error) {
+    if (signal?.aborted) throw error;
     // Retried under the fence.
     return null;
   }
@@ -140,16 +146,20 @@ async function rereadUnderFence(
  */
 export async function readOwnerMaterialText(
   location: OwnerMaterialTextLocation,
+  signal?: AbortSignal,
 ): Promise<OwnerMaterialText | null> {
-  const first = await readOnce(location);
+  if (signal?.aborted) throw new Error('aborted');
+  const first = await readOnce(location, signal);
   if (first) return first;
+  if (signal?.aborted) throw new Error('aborted');
   const read = await rereadUnderFence(location);
   if (!read) return null;
   // The forwarded fence protects the row and byte read, not the parser. The
   // transaction has committed before a legacy parse can wait on its worker.
   try {
-    return await textOf(read.bytes, read.result, read.ownerId, read.byteRevision);
-  } catch {
+    return await textOf(read.bytes, read.result, read.ownerId, read.byteRevision, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
   }
 }

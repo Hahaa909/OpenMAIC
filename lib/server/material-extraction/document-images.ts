@@ -241,7 +241,9 @@ export async function resolveDerivativeRefsAsync(
   derivatives: ReadonlyArray<{ id: string; key?: string }>,
   cacheKey: string,
   refs?: readonly ImageReference[],
+  signal?: AbortSignal,
 ): Promise<string> {
+  if (signal?.aborted) throw new Error('aborted');
   const ids = new Map(derivatives.flatMap((image) => (image.key ? [[image.key, image.id]] : [])));
   if (ids.size === 0) return text;
   if (refs !== undefined) {
@@ -275,7 +277,8 @@ export async function resolveDerivativeRefsAsync(
   const input = prefix ? text.slice(1) : text;
   let plan = cachedImagePlan(cacheKey);
   if (!plan) {
-    plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey);
+    plan = await runDocumentImageWorker({ kind: 'plan', text: input }, cacheKey, signal);
+    if (signal?.aborted) throw new Error('aborted');
     cacheImagePlan(plan, cacheKey);
   }
   return (

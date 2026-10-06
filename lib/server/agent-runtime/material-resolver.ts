@@ -196,6 +196,7 @@ export function sessionTextRevision(record: AgentSessionMaterial): string {
 export async function readResolvedMaterialText(
   sessionId: string,
   material: ResolvedMaterial,
+  signal?: AbortSignal,
 ): Promise<{ text: string; revision: string } | null> {
   if (material.origin === 'session') {
     const { record } = material;
@@ -206,7 +207,7 @@ export async function readResolvedMaterialText(
   const { entry } = material;
   // Read just now: a source without a result has no text to look for.
   if (entry.kind !== 'source' || !entry.extractionResult) return null;
-  return readOwnerMaterialText(entry);
+  return readOwnerMaterialText(entry, signal);
 }
 
 /**

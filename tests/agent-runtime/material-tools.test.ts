@@ -115,6 +115,50 @@ function fencedBodyOf(result: { content: Array<{ type?: string; text?: string }>
 }
 
 describe('material agent tools', () => {
+  it.each(['read_material', 'search_material'] as const)(
+    'passes %s cancellation to reads and preserves the aborted error',
+    async (name) => {
+      const controller = new AbortController();
+      const entry = ownerSource({ revision: 'rev-1' });
+      let entered!: () => void;
+      const reading = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const readText = vi.fn(async (_id, _material, signal?: AbortSignal) => {
+        expect(signal).toBe(controller.signal);
+        entered();
+        return new Promise<never>((_resolve, reject) => {
+          signal!.addEventListener(
+            'abort',
+            () => reject(new Error('internal cancellation reason')),
+            { once: true },
+          );
+        });
+      });
+      const selected = tool(
+        buildMaterialTools({
+          sessionId: 'ses_1',
+          readText,
+          resolveMaterial: async () => ({ origin: 'owner', entry }),
+          listLibrary: async () => [entry],
+        }),
+        name,
+      );
+      const running = selected.execute(
+        'cancel',
+        (name === 'read_material'
+          ? { materialId: entry.id, scope: 'library' }
+          : { query: 'lesson', scope: 'library' }) as never,
+        controller.signal,
+      );
+      const rejected = expect(running).rejects.toThrow('aborted');
+      await reading;
+      controller.abort();
+      await rejected;
+      expect(readText).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([null, '', 'tiny'])('bounds slow library reads even with %s text', async (text) => {
     let elapsed = 0;
     let reads = 0;

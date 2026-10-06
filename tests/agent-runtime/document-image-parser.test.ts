@@ -156,3 +156,68 @@ it('releases a failed worker slot and starts the queued job', async () => {
     worker.emit('message', { result: { markdown: [], html: [] } });
   await Promise.all([other, queued]);
 });
+
+it('aborts one shared subscriber while the other still completes', async () => {
+  const start = state.workers.length;
+  const controller = new AbortController();
+  const canceled = runDocumentImageWorker(
+    { kind: 'plan', text: 'shared' },
+    'shared-abort',
+    controller.signal,
+  );
+  const remaining = runDocumentImageWorker({ kind: 'plan', text: 'shared' }, 'shared-abort');
+  const rejected = expect(canceled).rejects.toThrow('aborted');
+  controller.abort();
+  await rejected;
+  expect(state.workers[start].terminate).not.toHaveBeenCalled();
+  state.workers[start].emit('message', { result: { markdown: [], html: [] } });
+  await expect(remaining).resolves.toEqual({ markdown: [], html: [] });
+  expect(state.workers.length - start).toBe(1);
+});
+
+it('removes the last canceled queued subscriber without starting its worker', async () => {
+  const start = state.workers.length;
+  const first = runDocumentImageWorker({ kind: 'plan', text: 'first' });
+  const second = runDocumentImageWorker({ kind: 'plan', text: 'second' });
+  const controller = new AbortController();
+  const queued = runDocumentImageWorker(
+    { kind: 'plan', text: 'queued' },
+    'queued-abort',
+    controller.signal,
+  );
+  const rejected = expect(queued).rejects.toThrow('aborted');
+  controller.abort();
+  await rejected;
+  state.workers[start].emit('message', { result: { markdown: [], html: [] } });
+  state.workers[start + 1].emit('message', { result: { markdown: [], html: [] } });
+  await Promise.all([first, second]);
+  expect(state.workers.length - start).toBe(2);
+});
+
+it('terminates the last canceled worker and lets a new subscriber start fresh', async () => {
+  const start = state.workers.length;
+  const controller = new AbortController();
+  const canceled = runDocumentImageWorker(
+    { kind: 'plan', text: 'old' },
+    'last-abort',
+    controller.signal,
+  );
+  const rejected = expect(canceled).rejects.toThrow('aborted');
+  controller.abort();
+  await rejected;
+  expect(state.workers[start].terminate).toHaveBeenCalledOnce();
+  const fresh = runDocumentImageWorker({ kind: 'plan', text: 'fresh' }, 'last-abort');
+  expect(state.workers.length - start).toBe(2);
+  state.workers[start + 1].emit('message', { result: { markdown: [], html: [] } });
+  await fresh;
+});
+
+it('rejects an already canceled request without starting a worker', async () => {
+  const start = state.workers.length;
+  const controller = new AbortController();
+  controller.abort();
+  await expect(
+    runDocumentImageWorker({ kind: 'plan', text: 'text' }, 'already-abort', controller.signal),
+  ).rejects.toThrow('aborted');
+  expect(state.workers.length).toBe(start);
+});

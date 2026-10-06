@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
+import type { OwnerMaterialEntry } from '@/lib/persistence/session-material-links';
 import { readOwnerMaterialText } from '@/lib/server/materials/owner-material-text';
 
 const state = vi.hoisted(() => ({
@@ -73,6 +75,7 @@ it('commits the fenced byte read before awaiting legacy parsing', async () => {
       result.derivatives,
       JSON.stringify(['user:alice', 'text', 'new-revision', 7]),
       undefined,
+      undefined,
     );
   } finally {
     finish('![x](material:own-image)');
@@ -98,3 +101,66 @@ it('does not parse a tombstone found by the fenced re-read', async () => {
   expect(state.read).not.toHaveBeenCalled();
   expect(state.parse).not.toHaveBeenCalled();
 });
+
+it('passes cancellation to parsing and propagates it instead of returning null', async () => {
+  const controller = new AbortController();
+  state.parse.mockImplementation(async (_text, _derivatives, _key, _refs, signal) => {
+    expect(signal).toBe(controller.signal);
+    controller.abort();
+    throw new Error('aborted');
+  });
+  await expect(readOwnerMaterialText(location, controller.signal)).rejects.toThrow('aborted');
+  expect(state.read).toHaveBeenCalledOnce();
+});
+
+it.each(['read_material', 'search_material'])(
+  'propagates %s cancellation through the production resolver and owner reader',
+  async (name) => {
+    const controller = new AbortController();
+    const entry: OwnerMaterialEntry = {
+      ...location,
+      kind: 'source',
+      derivedFrom: null,
+      mime: 'application/pdf',
+      bytes: 1,
+      originalName: 'lesson.pdf',
+      ossKey: '',
+      assetId: 'source-bytes',
+      sha256: 'source-sha',
+      status: 'ready',
+      extraction: { status: 'done' },
+      createdAt: 0,
+      deletedAt: null,
+      folderId: null,
+      displayName: null,
+      extractionError: null,
+      lineage: null,
+      extractionResult: {
+        ...result,
+        extractor: { id: 'test', version: '1', options: {} },
+        stats: {},
+        completedAt: 0,
+      },
+    };
+    state.parse.mockImplementation(async (_text, _derivatives, _key, _refs, signal) => {
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      throw new Error('worker canceled');
+    });
+    const selected = buildMaterialTools({
+      sessionId: 'session',
+      resolveMaterial: async () => ({ origin: 'owner', entry }),
+      listLibrary: async () => [entry],
+    }).find((candidate) => candidate.name === name)!;
+    await expect(
+      selected.execute(
+        'call',
+        (name === 'read_material'
+          ? { materialId: entry.id, scope: 'library' }
+          : { query: 'lesson', scope: 'library' }) as never,
+        controller.signal,
+      ),
+    ).rejects.toThrow('aborted');
+    expect(state.parse).toHaveBeenCalledOnce();
+  },
+);

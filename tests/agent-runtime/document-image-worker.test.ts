@@ -228,7 +228,41 @@ describe('document-image production parser', () => {
     );
     expect(results).toEqual(Array.from({ length: 8 }, (_, n) => `![x](material:reader-${n})`));
     // Callers share the scheduler entry identified by their exact cache key.
-    expect(worker).toHaveBeenCalledWith({ kind: 'plan', text }, 'concurrent-production-key');
+    expect(worker).toHaveBeenCalledWith(
+      { kind: 'plan', text },
+      'concurrent-production-key',
+      undefined,
+    );
+  });
+
+  it('does not cache a canceled legacy parse or return a cached plan to an aborted caller', async () => {
+    const text = '<span>x</span>'.repeat(25_000) + '\n\n![x](openmaic-derivative:img-1)';
+    const worker = vi.spyOn(parser, 'runDocumentImageWorker');
+    const controller = new AbortController();
+    const canceled = resolveDerivativeRefsAsync(
+      text,
+      [{ key: 'img-1', id: 'canceled' }],
+      'cancel-cache',
+      undefined,
+      controller.signal,
+    );
+    const rejected = expect(canceled).rejects.toThrow('aborted');
+    controller.abort();
+    await rejected;
+    expect(
+      await resolveDerivativeRefsAsync(text, [{ key: 'img-1', id: 'fresh' }], 'cancel-cache'),
+    ).toContain('material:fresh');
+    expect(worker).toHaveBeenCalledTimes(2);
+    await expect(
+      resolveDerivativeRefsAsync(
+        text,
+        [{ key: 'img-1', id: 'canceled' }],
+        'cancel-cache',
+        undefined,
+        controller.signal,
+      ),
+    ).rejects.toThrow('aborted');
+    expect(worker).toHaveBeenCalledTimes(2);
   });
 
   it('evicts legacy positions at the unchanged production cache entry limit', async () => {
