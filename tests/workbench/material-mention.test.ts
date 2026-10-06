@@ -205,7 +205,7 @@ describe('staging a picked material', () => {
     },
   );
 
-  it('releases both objects when a library pick precedes its upload response', async () => {
+  it('allows repicking after clear while preserving a pending upload reservation', async () => {
     let resolveUpload!: (response: Response) => void;
     let started = false;
     const response = new Promise<Response>((resolve) => {
@@ -229,43 +229,117 @@ describe('staging a picked material', () => {
       return null;
     }
     const mounted = mount();
-    await mounted.render(createElement(StrictMode, null, createElement(Harness)));
-    await act(async () => {
-      await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
-    });
-    await act(async () => {
-      sink.current!.addFiles([new File(['pdf'], 'delayed.pdf', { type: 'application/pdf' })]);
-    });
-    await vi.waitFor(() => expect(started).toBe(true));
-    await act(async () =>
-      sink.current!.addExisting({ materialId: 'same-upload', name: 'library copy', bytes: 3 }),
-    );
-    await act(async () => {
-      resolveUpload(
-        Response.json({ materialId: 'same-upload', originalName: 'upload copy', bytes: 3 }),
+    try {
+      await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+      await act(async () => {
+        await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+      });
+      const original: WorkbenchMaterial = { materialId: 'same', name: 'original', bytes: 1 };
+      const repicked = { ...original, name: 'repicked' };
+      await act(async () => {
+        sink.current!.addExisting(original);
+        sink.current!.addFiles([new File(['pdf'], 'late.pdf', { type: 'application/pdf' })]);
+      });
+      await vi.waitFor(() => expect(started).toBe(true));
+      await act(async () => sink.current!.clear());
+      expect(sink.current!.materials).toEqual([]);
+      expect(sink.current!.uploading).toHaveLength(1);
+      await act(async () => sink.current!.addExisting(repicked));
+      expect(sink.current!.materials).toEqual([repicked]);
+      expect(sink.current!.materials[0]).toBe(repicked);
+      await act(async () => {
+        for (let i = 0; i < MAX_COMPOSER_MATERIALS; i++)
+          sink.current!.addExisting({ materialId: `after-clear-${i}`, name: 'fill', bytes: 1 });
+      });
+      // The in-flight upload still owns one slot after clearing completed picks.
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS - 1);
+      expect(sink.current!.materials.at(-1)?.materialId).toBe(
+        `after-clear-${MAX_COMPOSER_MATERIALS - 3}`,
       );
-      await response;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(sink.current!.materials.map((m) => m.materialId)).toEqual([
-      'same-upload',
-      'same-upload',
-    ]);
-    const sent = sink.current!.materials;
-    await act(async () => sink.current!.removeSent(sent));
-    expect(sink.current!.materials).toEqual([]);
-    await act(async () => {
-      for (let i = 0; i < MAX_COMPOSER_MATERIALS; i++)
-        sink.current!.addExisting({
-          materialId: `after-upload-${i}`,
-          name: `after-upload-${i}`,
-          bytes: 1,
-        });
-    });
-    const count = sink.current!.materials.length;
-    await mounted.dispose();
-    expect(count).toBe(MAX_COMPOSER_MATERIALS);
+      await act(async () => {
+        resolveUpload(Response.json({ materialId: 'late-upload', originalName: 'late', bytes: 3 }));
+        await response;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sink.current!.uploading).toHaveLength(0);
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+      expect(sink.current!.materials.at(-1)?.materialId).toBe('late-upload');
+      await act(async () => {
+        sink.current!.addExisting({ materialId: 'late-upload', name: 'duplicate', bytes: 3 });
+      });
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+    } finally {
+      await mounted.dispose();
+    }
   });
+
+  it.each(['removeSent', 'remove'] as const)(
+    'releases both objects when a library pick precedes its upload response: %s',
+    async (cleanup) => {
+      let resolveUpload!: (response: Response) => void;
+      let started = false;
+      const response = new Promise<Response>((resolve) => {
+        resolveUpload = resolve;
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === '/api/agent/runtime') return Response.json({ enabled: true });
+          if (String(input) === '/api/materials') {
+            started = true;
+            return response;
+          }
+          throw new Error(`unexpected fetch ${String(input)}`);
+        }),
+      );
+      const sink: { current: ComposerMaterials | null } = { current: null };
+      const record = recorder(sink);
+      function Harness() {
+        record(useComposerMaterials());
+        return null;
+      }
+      const mounted = mount();
+      await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+      await act(async () => {
+        await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+      });
+      await act(async () => {
+        sink.current!.addFiles([new File(['pdf'], 'delayed.pdf', { type: 'application/pdf' })]);
+      });
+      await vi.waitFor(() => expect(started).toBe(true));
+      await act(async () =>
+        sink.current!.addExisting({ materialId: 'same-upload', name: 'library copy', bytes: 3 }),
+      );
+      await act(async () => {
+        resolveUpload(
+          Response.json({ materialId: 'same-upload', originalName: 'upload copy', bytes: 3 }),
+        );
+        await response;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sink.current!.materials.map((m) => m.materialId)).toEqual([
+        'same-upload',
+        'same-upload',
+      ]);
+      const sent = sink.current!.materials;
+      await act(async () => {
+        if (cleanup === 'removeSent') sink.current!.removeSent(sent);
+        else sink.current!.remove('same-upload');
+      });
+      expect(sink.current!.materials).toEqual([]);
+      await act(async () => {
+        for (let i = 0; i < MAX_COMPOSER_MATERIALS; i++)
+          sink.current!.addExisting({
+            materialId: `after-upload-${i}`,
+            name: `after-upload-${i}`,
+            bytes: 1,
+          });
+      });
+      const count = sink.current!.materials.length;
+      await mounted.dispose();
+      expect(count).toBe(MAX_COMPOSER_MATERIALS);
+    },
+  );
 
   it('stages once, attaches nothing, and keeps the per-message cap', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
