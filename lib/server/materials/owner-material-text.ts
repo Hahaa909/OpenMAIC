@@ -25,6 +25,7 @@
  * that first takes the record owner's forwarded write fence, so a claim
  * cannot move the row and its entry between the two reads. The re-read may
  * find a newer result; the text and revision returned are that result's.
+ * Parsing and projecting the read bytes happen after the transaction commits.
  */
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import type { OwnerExtractionResult } from '@/lib/persistence/owner-material-extraction';
@@ -88,9 +89,16 @@ async function readOnce(location: OwnerMaterialTextLocation): Promise<OwnerMater
 /** The re-read and its pool read failed: the transaction rolls back, nothing is returned. */
 class FencedTextReadFailed extends Error {}
 
+interface ReadTextBytes {
+  bytes: Uint8Array;
+  result: Pick<OwnerExtractionResult, 'revision' | 'text' | 'derivatives'>;
+  ownerId: string;
+  byteRevision: number;
+}
+
 async function rereadUnderFence(
   location: OwnerMaterialTextLocation,
-): Promise<OwnerMaterialText | null> {
+): Promise<ReadTextBytes | null> {
   const persistence = await provider();
   try {
     return await persistence.withTransaction(async (tx) => {
@@ -109,7 +117,9 @@ async function rereadUnderFence(
         const read = await persistence
           .assetStoreIn(tx)
           .resolve(assetPrincipalForOwner(row.owner_id), result.text.assetId);
-        return read ? await textOf(read.bytes, result, row.owner_id, read.revision) : null;
+        return read
+          ? { bytes: read.bytes, result, ownerId: row.owner_id, byteRevision: read.revision }
+          : null;
       } catch (error) {
         // Out of the transaction, so it rolls back rather than ending aborted.
         throw new FencedTextReadFailed('pool read failed', { cause: error });
@@ -133,5 +143,13 @@ export async function readOwnerMaterialText(
 ): Promise<OwnerMaterialText | null> {
   const first = await readOnce(location);
   if (first) return first;
-  return rereadUnderFence(location);
+  const read = await rereadUnderFence(location);
+  if (!read) return null;
+  // The forwarded fence protects the row and byte read, not the parser. The
+  // transaction has committed before a legacy parse can wait on its worker.
+  try {
+    return await textOf(read.bytes, read.result, read.ownerId, read.byteRevision);
+  } catch {
+    return null;
+  }
 }
