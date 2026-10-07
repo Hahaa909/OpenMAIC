@@ -40,7 +40,7 @@ function inlineMathKatexOptions(): KatexOptions {
     throwOnError: false,
     trust: false,
     strict: 'ignore',
-    maxExpand: 50,
+    maxExpand: 1000,
     macros: Object.fromEntries(MACRO_DEFINITIONS.map((name) => [name, ''])),
   };
 }

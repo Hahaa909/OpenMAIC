@@ -80,6 +80,18 @@ describe('renderInlineMath', () => {
     expect(root.textContent!.length).toBeLessThan(bomb.length * 2);
   });
 
+  it('typesets long legitimate formulas that expand many built-in macros', () => {
+    // 30 × (\neq, \iff, \, and \dots): well over 100 built-in expansions.
+    const latex = Array.from(
+      { length: 30 },
+      (_, i) => `a_{${i}} \\neq b_{${i}} \\iff c\\,d \\dots`,
+    ).join(',\\ ');
+    const root = host(`<p>${stored(latex)}</p>`);
+    renderInlineMath(root);
+    expectTypeset(root, latex);
+    expect(root.querySelector('.katex-error')).toBeNull();
+  });
+
   it('keeps the source of a formula KaTeX rejects', () => {
     const root = host(`<p>${stored('\\frac{')}</p>`);
     renderInlineMath(root);
