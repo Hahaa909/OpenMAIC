@@ -2052,7 +2052,35 @@
         "load": "The knowledge base could not be loaded",
         "busy": "Your account is being updated. Try again in a moment",
         "identity": "Your sign-in changed. Reload the page",
-        "stale": "what is shown may be out of date"
+        "stale": "what is shown may be out of date",
+        "nameTaken": "Another folder already has this name",
+        "invalidName": "Enter a name of at most 255 characters",
+        "folderNameEmpty": "Enter a folder name",
+        "folderNameTooLong": "This folder name is too long",
+        "folderLimit": "You have reached the folder limit",
+        "notMovable": "This material cannot be moved",
+        "gone": "It no longer exists",
+        "save": "That did not work. Try again"
+      },
+      "actions": {
+        "more": "More actions for {{name}}",
+        "rename": "Rename",
+        "move": "Move to…",
+        "column": "Actions"
+      },
+      "folder": {
+        "new": "New folder"
+      },
+      "dialog": {
+        "name": "Name",
+        "cancel": "Cancel",
+        "save": "Save",
+        "create": "Create",
+        "createFolderTitle": "New folder",
+        "renameFolderTitle": "Rename folder",
+        "renameMaterialTitle": "Rename material",
+        "moveTitle": "Move “{{name}}”",
+        "noFolders": "There are no folders to move it to yet. Create one first."
       }
     },
     "untitledCourse": "Untitled course",

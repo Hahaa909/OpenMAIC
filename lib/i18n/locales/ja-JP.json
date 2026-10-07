@@ -2052,7 +2052,35 @@
         "load": "ナレッジベースを読み込めませんでした",
         "busy": "アカウントを更新中です。しばらくしてからもう一度お試しください",
         "identity": "ログイン状態が変わりました。ページを再読み込みしてください",
-        "stale": "表示内容が最新でない可能性があります"
+        "stale": "表示内容が最新でない可能性があります",
+        "nameTaken": "同じ名前のフォルダーがすでにあります",
+        "invalidName": "255 文字以内の名前を入力してください",
+        "folderNameEmpty": "フォルダー名を入力してください",
+        "folderNameTooLong": "フォルダー名が長すぎます",
+        "folderLimit": "フォルダー数の上限に達しました",
+        "notMovable": "この資料は移動できません",
+        "gone": "すでに存在しません",
+        "save": "うまくいきませんでした。もう一度お試しください"
+      },
+      "actions": {
+        "more": "{{name}} のその他の操作",
+        "rename": "名前を変更",
+        "move": "移動…",
+        "column": "操作"
+      },
+      "folder": {
+        "new": "新しいフォルダー"
+      },
+      "dialog": {
+        "name": "名前",
+        "cancel": "キャンセル",
+        "save": "保存",
+        "create": "作成",
+        "createFolderTitle": "新しいフォルダー",
+        "renameFolderTitle": "フォルダー名を変更",
+        "renameMaterialTitle": "資料名を変更",
+        "moveTitle": "「{{name}}」を移動",
+        "noFolders": "移動先のフォルダーがまだありません。先に作成してください。"
       }
     },
     "untitledCourse": "未命名课堂",

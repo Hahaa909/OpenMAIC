@@ -26,6 +26,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  FolderPlus,
   Inbox,
   LayoutGrid,
   Library,
@@ -38,8 +39,14 @@ import {
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils/cn';
 import {
+  createLibraryFolder,
   formatMaterialBytes,
+  MATERIAL_NAME_MAX_LENGTH,
   materialLibraryErrorKey,
+  materialLibraryWriteErrorKey,
+  moveLibraryMaterials,
+  renameLibraryFolder,
+  renameLibraryMaterial,
   type LibraryFolder,
   type LibraryLimits,
   type LibraryMaterial,
@@ -47,6 +54,14 @@ import {
   type MaterialExtractionStatus,
 } from '@/lib/workbench/material-library-client';
 import { useMaterialLibrary } from '@/lib/workbench/use-material-library';
+import { validateFolderName } from '@/lib/utils/folder-name-validation';
+import {
+  LibraryItemMenu,
+  menuIcons,
+  MoveDialog,
+  NameDialog,
+  type LibraryMenuItem,
+} from './MaterialLibraryDialogs';
 import { WORKBENCH_MATERIAL_ACCEPT } from '@/lib/workbench/material-upload-policy';
 import {
   createMaterialUploadIdentityGate,
@@ -171,11 +186,15 @@ function ScopeNav({
   scope,
   folders,
   onSelect,
+  onCreateFolder,
+  folderMenu,
   t,
 }: {
   readonly scope: LibraryScope;
   readonly folders: readonly LibraryFolder[];
   readonly onSelect: (scope: LibraryScope) => void;
+  readonly onCreateFolder: () => void;
+  readonly folderMenu: (folder: LibraryFolder) => ReactNode;
   readonly t: Translate;
 }) {
   const item = (
@@ -184,12 +203,13 @@ function ScopeNav({
     label: string,
     icon: ReactNode,
     count?: number,
+    menu?: ReactNode,
   ) => {
     const active =
       target.kind === scope.kind &&
       (target.kind !== 'folder' || (scope.kind === 'folder' && scope.folderId === target.folderId));
     return (
-      <li key={testId}>
+      <li key={testId} className="flex min-w-0 items-center gap-0.5">
         <button
           type="button"
           data-testid={testId}
@@ -206,6 +226,7 @@ function ScopeNav({
             <span className="ws-row-meta shrink-0 text-[11px]">{count}</span>
           ) : null}
         </button>
+        {menu}
       </li>
     );
   };
@@ -225,24 +246,33 @@ function ScopeNav({
           <Inbox className="size-4 shrink-0 opacity-60" aria-hidden="true" />,
         )}
       </ul>
-      {folders.length > 0 ? (
-        <>
-          <p className="mb-1 mt-4 px-2 text-[11px] font-medium text-[color:var(--ws-ink-mute)]">
-            {t('workspace.knowledgeBase.scope.folders')}
-          </p>
-          <ul className="flex flex-col gap-0.5">
-            {folders.map((folder) =>
-              item(
-                `kb-scope-folder-${folder.id}`,
-                { kind: 'folder', folderId: folder.id },
-                folder.name,
-                <Folder className="size-4 shrink-0 opacity-60" aria-hidden="true" />,
-                folder.materialCount,
-              ),
-            )}
-          </ul>
-        </>
-      ) : null}
+      <div className="mb-1 mt-4 flex items-center gap-1 px-2">
+        <p className="min-w-0 flex-1 text-[11px] font-medium text-[color:var(--ws-ink-mute)]">
+          {t('workspace.knowledgeBase.scope.folders')}
+        </p>
+        <button
+          type="button"
+          data-testid="kb-folder-new"
+          onClick={onCreateFolder}
+          aria-label={t('workspace.knowledgeBase.folder.new')}
+          title={t('workspace.knowledgeBase.folder.new')}
+          className="ws-util-btn inline-flex size-7 items-center justify-center rounded-md"
+        >
+          <FolderPlus className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {folders.map((folder) =>
+          item(
+            `kb-scope-folder-${folder.id}`,
+            { kind: 'folder', folderId: folder.id },
+            folder.name,
+            <Folder className="size-4 shrink-0 opacity-60" aria-hidden="true" />,
+            folder.materialCount,
+            folderMenu(folder),
+          ),
+        )}
+      </ul>
     </nav>
   );
 }
@@ -256,11 +286,13 @@ function folderLabel(material: LibraryMaterial, t: Translate): string {
 function MaterialCards({
   materials,
   showFolder,
+  menu,
   locale,
   t,
 }: {
   readonly materials: readonly LibraryMaterial[];
   readonly showFolder: boolean;
+  readonly menu: (material: LibraryMaterial) => ReactNode;
   readonly locale: string;
   readonly t: Translate;
 }) {
@@ -283,6 +315,7 @@ function MaterialCards({
             >
               {material.name}
             </span>
+            {menu(material)}
           </div>
           <StatusLabel material={material} t={t} />
           <span className="text-[11px] text-[color:var(--ws-ink-mute)]">
@@ -297,10 +330,12 @@ function MaterialCards({
 
 function MaterialList({
   materials,
+  menu,
   locale,
   t,
 }: {
   readonly materials: readonly LibraryMaterial[];
+  readonly menu: (material: LibraryMaterial) => ReactNode;
   readonly locale: string;
   readonly t: Translate;
 }) {
@@ -325,7 +360,10 @@ function MaterialList({
             <th className="py-2 pr-3 font-medium">{t('workspace.knowledgeBase.column.status')}</th>
             <th className="py-2 pr-3 font-medium">{t('workspace.knowledgeBase.column.folder')}</th>
             <th className="py-2 pr-3 font-medium">{t('workspace.knowledgeBase.column.size')}</th>
-            <th className="py-2 font-medium">{t('workspace.knowledgeBase.column.added')}</th>
+            <th className="py-2 pr-3 font-medium">{t('workspace.knowledgeBase.column.added')}</th>
+            <th className="w-8 py-2">
+              <span className="sr-only">{t('workspace.knowledgeBase.actions.column')}</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -352,9 +390,10 @@ function MaterialList({
               <td className="whitespace-nowrap py-2 pr-3 text-[color:var(--ws-ink-soft)]">
                 {formatMaterialBytes(material.bytes, locale)}
               </td>
-              <td className="whitespace-nowrap py-2 text-[color:var(--ws-ink-soft)]">
+              <td className="whitespace-nowrap py-2 pr-3 text-[color:var(--ws-ink-soft)]">
                 {date(material.createdAt)}
               </td>
+              <td className="py-1">{menu(material)}</td>
             </tr>
           ))}
         </tbody>
@@ -435,14 +474,16 @@ export function MaterialLibraryPage() {
   // Set by an upload started while a folder was open: it went to Unfiled.
   const [uploadedToUnfiled, setUploadedToUnfiled] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  // A stored upload reads the list again (its own change, §7).
-  const reloadAfterUpload = useRef<() => void>(() => {});
-  const uploads = useLibraryUploads(() => reloadAfterUpload.current());
+  // The page's own changes read the list again (§7) -- but only while the
+  // page is still there: an upload or a write can answer after the teacher
+  // left, and then there is nothing to refresh.
+  const reloadIfMounted = useRef<() => void>(() => {});
+  const uploads = useLibraryUploads(() => reloadIfMounted.current());
   const library = useMaterialLibrary({ scope, query, uploading: uploads.pending });
   useEffect(() => {
-    reloadAfterUpload.current = library.reload;
+    reloadIfMounted.current = library.reload;
     return () => {
-      reloadAfterUpload.current = () => {};
+      reloadIfMounted.current = () => {};
     };
   }, [library.reload]);
 
@@ -455,6 +496,90 @@ export function MaterialLibraryPage() {
     if (scope.kind === 'folder') setUploadedToUnfiled(true);
     uploads.start(files);
   };
+
+  // ── Organizing (RFC #1716 §5) ───────────────────────────────────────
+  type NameRequest =
+    | { readonly kind: 'renameMaterial'; readonly material: LibraryMaterial }
+    | { readonly kind: 'renameFolder'; readonly folder: LibraryFolder }
+    | { readonly kind: 'createFolder' };
+  const [naming, setNaming] = useState<NameRequest | null>(null);
+  const [moving, setMoving] = useState<LibraryMaterial | null>(null);
+
+  /** One write; the list is read again whatever it answered (§7). */
+  const write = async (action: () => Promise<void>): Promise<string | null> => {
+    try {
+      await action();
+      return null;
+    } catch (error) {
+      return materialLibraryWriteErrorKey(error);
+    } finally {
+      reloadIfMounted.current();
+    }
+  };
+  const checkMaterialName = (name: string) => {
+    const trimmed = name.trim();
+    return trimmed.length === 0 || trimmed.length > MATERIAL_NAME_MAX_LENGTH
+      ? 'workspace.knowledgeBase.error.invalidName'
+      : null;
+  };
+  const checkFolderName = (name: string) => {
+    const checked = validateFolderName(name);
+    if (checked.ok) return null;
+    return checked.kind === 'empty'
+      ? 'workspace.knowledgeBase.error.folderNameEmpty'
+      : 'workspace.knowledgeBase.error.folderNameTooLong';
+  };
+  const submitName = (name: string) => {
+    if (!naming) return Promise.resolve(null);
+    if (naming.kind === 'renameMaterial') {
+      return write(() => renameLibraryMaterial(naming.material.materialId, name));
+    }
+    if (naming.kind === 'renameFolder') {
+      return write(() => renameLibraryFolder(naming.folder.id, name));
+    }
+    // A new folder, or the owner's folder of that name: open it either way.
+    return write(async () => {
+      const { folderId } = await createLibraryFolder(name);
+      selectScope({ kind: 'folder', folderId });
+    });
+  };
+  const materialMenu = (material: LibraryMaterial) => {
+    const items: LibraryMenuItem[] = [
+      {
+        id: 'rename',
+        label: t('workspace.knowledgeBase.actions.rename'),
+        icon: menuIcons.rename,
+        onSelect: () => setNaming({ kind: 'renameMaterial', material }),
+      },
+      {
+        id: 'move',
+        label: t('workspace.knowledgeBase.actions.move'),
+        icon: menuIcons.move,
+        onSelect: () => setMoving(material),
+      },
+    ];
+    return (
+      <LibraryItemMenu
+        testId={`kb-material-menu-${material.materialId}`}
+        label={t('workspace.knowledgeBase.actions.more', { name: material.name })}
+        items={items}
+      />
+    );
+  };
+  const folderMenu = (folder: LibraryFolder) => (
+    <LibraryItemMenu
+      testId={`kb-folder-menu-${folder.id}`}
+      label={t('workspace.knowledgeBase.actions.more', { name: folder.name })}
+      items={[
+        {
+          id: 'rename',
+          label: t('workspace.knowledgeBase.actions.rename'),
+          icon: menuIcons.rename,
+          onSelect: () => setNaming({ kind: 'renameFolder', folder }),
+        },
+      ]}
+    />
+  );
 
   // The folder being looked at was deleted elsewhere. Refreshing never
   // navigates (RFC #1716 §7): say so, and let the teacher go back.
@@ -550,7 +675,14 @@ export function MaterialLibraryPage() {
         </header>
 
         <div className="flex flex-col gap-6 md:flex-row">
-          <ScopeNav scope={scope} folders={library.folders} onSelect={selectScope} t={t} />
+          <ScopeNav
+            scope={scope}
+            folders={library.folders}
+            onSelect={selectScope}
+            onCreateFolder={() => setNaming({ kind: 'createFolder' })}
+            folderMenu={folderMenu}
+            t={t}
+          />
 
           <section className="min-w-0 flex-1" aria-live="polite">
             {uploadedToUnfiled ? (
@@ -676,11 +808,17 @@ export function MaterialLibraryPage() {
                   <MaterialCards
                     materials={library.materials}
                     showFolder={scope.kind === 'all'}
+                    menu={materialMenu}
                     locale={locale}
                     t={t}
                   />
                 ) : (
-                  <MaterialList materials={library.materials} locale={locale} t={t} />
+                  <MaterialList
+                    materials={library.materials}
+                    menu={materialMenu}
+                    locale={locale}
+                    t={t}
+                  />
                 )}
                 {library.hasMore ? (
                   <button
@@ -701,6 +839,53 @@ export function MaterialLibraryPage() {
           </section>
         </div>
       </div>
+
+      {naming ? (
+        <NameDialog
+          key={
+            naming.kind === 'renameMaterial'
+              ? `material-${naming.material.materialId}`
+              : naming.kind === 'renameFolder'
+                ? `folder-${naming.folder.id}`
+                : 'create'
+          }
+          testId="kb-name-dialog"
+          title={t(
+            naming.kind === 'createFolder'
+              ? 'workspace.knowledgeBase.dialog.createFolderTitle'
+              : naming.kind === 'renameFolder'
+                ? 'workspace.knowledgeBase.dialog.renameFolderTitle'
+                : 'workspace.knowledgeBase.dialog.renameMaterialTitle',
+          )}
+          submitLabel={t(
+            naming.kind === 'createFolder'
+              ? 'workspace.knowledgeBase.dialog.create'
+              : 'workspace.knowledgeBase.dialog.save',
+          )}
+          initialName={
+            naming.kind === 'renameMaterial'
+              ? naming.material.name
+              : naming.kind === 'renameFolder'
+                ? naming.folder.name
+                : ''
+          }
+          maxLength={naming.kind === 'renameMaterial' ? MATERIAL_NAME_MAX_LENGTH : undefined}
+          check={naming.kind === 'renameMaterial' ? checkMaterialName : checkFolderName}
+          submit={submitName}
+          onClose={() => setNaming(null)}
+          t={t}
+        />
+      ) : null}
+      {moving ? (
+        <MoveDialog
+          key={moving.materialId}
+          material={moving}
+          folders={library.folders}
+          move={(folderId) => write(() => moveLibraryMaterials([moving.materialId], folderId))}
+          onClose={() => setMoving(null)}
+          t={t}
+        />
+      ) : null}
     </main>
   );
 }

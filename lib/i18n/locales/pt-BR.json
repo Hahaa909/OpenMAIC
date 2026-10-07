@@ -2052,7 +2052,35 @@
         "load": "Não foi possível carregar a base de conhecimento",
         "busy": "Sua conta está sendo atualizada. Tente novamente em instantes",
         "identity": "Seu login mudou. Recarregue a página",
-        "stale": "o conteúdo exibido pode estar desatualizado"
+        "stale": "o conteúdo exibido pode estar desatualizado",
+        "nameTaken": "Já existe outra pasta com este nome",
+        "invalidName": "Digite um nome com no máximo 255 caracteres",
+        "folderNameEmpty": "Digite um nome de pasta",
+        "folderNameTooLong": "Este nome de pasta é muito longo",
+        "folderLimit": "Você atingiu o limite de pastas",
+        "notMovable": "Este material não pode ser movido",
+        "gone": "Ele não existe mais",
+        "save": "Não deu certo. Tente novamente"
+      },
+      "actions": {
+        "more": "Mais ações para {{name}}",
+        "rename": "Renomear",
+        "move": "Mover para…",
+        "column": "Ações"
+      },
+      "folder": {
+        "new": "Nova pasta"
+      },
+      "dialog": {
+        "name": "Nome",
+        "cancel": "Cancelar",
+        "save": "Salvar",
+        "create": "Criar",
+        "createFolderTitle": "Nova pasta",
+        "renameFolderTitle": "Renomear pasta",
+        "renameMaterialTitle": "Renomear material",
+        "moveTitle": "Mover “{{name}}”",
+        "noFolders": "Ainda não há pastas para onde movê-lo. Crie uma primeiro."
       }
     },
     "untitledCourse": "未命名课堂",

@@ -2037,7 +2037,35 @@
         "load": "知識庫載入失敗",
         "busy": "帳號正在更新，請稍後再試",
         "identity": "登入狀態已變更，請重新整理頁面",
-        "stale": "顯示的內容可能不是最新的"
+        "stale": "顯示的內容可能不是最新的",
+        "nameTaken": "已有同名資料夾",
+        "invalidName": "請輸入不超過 255 個字元的名稱",
+        "folderNameEmpty": "請輸入資料夾名稱",
+        "folderNameTooLong": "資料夾名稱太長",
+        "folderLimit": "資料夾數量已達上限",
+        "notMovable": "這份資料不能移動",
+        "gone": "它已經不存在了",
+        "save": "操作沒有成功，請重試"
+      },
+      "actions": {
+        "more": "{{name}} 的更多操作",
+        "rename": "重新命名",
+        "move": "移動到…",
+        "column": "操作"
+      },
+      "folder": {
+        "new": "新增資料夾"
+      },
+      "dialog": {
+        "name": "名稱",
+        "cancel": "取消",
+        "save": "儲存",
+        "create": "建立",
+        "createFolderTitle": "新增資料夾",
+        "renameFolderTitle": "重新命名資料夾",
+        "renameMaterialTitle": "重新命名資料",
+        "moveTitle": "移動「{{name}}」",
+        "noFolders": "還沒有可以移入的資料夾，請先新增一個。"
       }
     },
     "untitledCourse": "未命名课堂",

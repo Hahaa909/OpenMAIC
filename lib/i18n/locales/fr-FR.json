@@ -2052,7 +2052,35 @@
         "load": "Impossible de charger la base de connaissances",
         "busy": "Votre compte est en cours de mise à jour. Réessayez dans un instant",
         "identity": "Votre connexion a changé. Rechargez la page",
-        "stale": "l’affichage n’est peut-être pas à jour"
+        "stale": "l’affichage n’est peut-être pas à jour",
+        "nameTaken": "Un autre dossier porte déjà ce nom",
+        "invalidName": "Saisissez un nom de 255 caractères maximum",
+        "folderNameEmpty": "Saisissez un nom de dossier",
+        "folderNameTooLong": "Ce nom de dossier est trop long",
+        "folderLimit": "Vous avez atteint le nombre maximal de dossiers",
+        "notMovable": "Ce document ne peut pas être déplacé",
+        "gone": "Il n’existe plus",
+        "save": "L’opération a échoué. Réessayez"
+      },
+      "actions": {
+        "more": "Autres actions pour {{name}}",
+        "rename": "Renommer",
+        "move": "Déplacer vers…",
+        "column": "Actions"
+      },
+      "folder": {
+        "new": "Nouveau dossier"
+      },
+      "dialog": {
+        "name": "Nom",
+        "cancel": "Annuler",
+        "save": "Enregistrer",
+        "create": "Créer",
+        "createFolderTitle": "Nouveau dossier",
+        "renameFolderTitle": "Renommer le dossier",
+        "renameMaterialTitle": "Renommer le document",
+        "moveTitle": "Déplacer « {{name}} »",
+        "noFolders": "Aucun dossier où le déplacer pour l’instant. Créez-en un d’abord."
       }
     },
     "untitledCourse": "未命名课堂",

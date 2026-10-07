@@ -2052,7 +2052,35 @@
         "load": "No se pudo cargar la base de conocimientos",
         "busy": "Tu cuenta se está actualizando. Inténtalo de nuevo en un momento",
         "identity": "Tu inicio de sesión cambió. Vuelve a cargar la página",
-        "stale": "lo que se muestra podría no estar actualizado"
+        "stale": "lo que se muestra podría no estar actualizado",
+        "nameTaken": "Ya existe otra carpeta con este nombre",
+        "invalidName": "Escribe un nombre de 255 caracteres como máximo",
+        "folderNameEmpty": "Escribe un nombre de carpeta",
+        "folderNameTooLong": "El nombre de la carpeta es demasiado largo",
+        "folderLimit": "Llegaste al límite de carpetas",
+        "notMovable": "Este material no se puede mover",
+        "gone": "Ya no existe",
+        "save": "No funcionó. Inténtalo de nuevo"
+      },
+      "actions": {
+        "more": "Más acciones para {{name}}",
+        "rename": "Cambiar nombre",
+        "move": "Mover a…",
+        "column": "Acciones"
+      },
+      "folder": {
+        "new": "Nueva carpeta"
+      },
+      "dialog": {
+        "name": "Nombre",
+        "cancel": "Cancelar",
+        "save": "Guardar",
+        "create": "Crear",
+        "createFolderTitle": "Nueva carpeta",
+        "renameFolderTitle": "Cambiar nombre de la carpeta",
+        "renameMaterialTitle": "Cambiar nombre del material",
+        "moveTitle": "Mover “{{name}}”",
+        "noFolders": "Aún no hay carpetas a donde moverlo. Crea una primero."
       }
     },
     "untitledCourse": "未命名课堂",

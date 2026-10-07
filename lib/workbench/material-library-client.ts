@@ -11,6 +11,9 @@
 /** How many sources one listing request asks for: the route's ceiling. */
 export const MATERIAL_LIBRARY_PAGE_SIZE = 200;
 
+/** The longest display name a source may have (`MATERIAL_NAME_MAX_LENGTH` server-side). */
+export const MATERIAL_NAME_MAX_LENGTH = 255;
+
 export type MaterialExtractionStatus = 'idle' | 'pending' | 'running' | 'done' | 'failed';
 
 /** One source as `GET /api/materials/library` returns it. */
@@ -99,6 +102,35 @@ export async function materialLibraryErrorOf(
         ? record.errorCode
         : undefined;
   return new MaterialLibraryRequestError(response.status, reason, code);
+}
+
+/**
+ * The i18n key that says why an organizing write was refused: the library's
+ * own reason when it gave one, otherwise what the status means.
+ */
+export function materialLibraryWriteErrorKey(error: unknown): string {
+  if (error instanceof MaterialLibraryRequestError) {
+    switch (error.reason) {
+      case 'name_taken':
+        return 'workspace.knowledgeBase.error.nameTaken';
+      case 'invalid_name':
+        return 'workspace.knowledgeBase.error.invalidName';
+      case 'name_empty':
+        return 'workspace.knowledgeBase.error.folderNameEmpty';
+      case 'name_tooLong':
+        return 'workspace.knowledgeBase.error.folderNameTooLong';
+      case 'limit':
+        return 'workspace.knowledgeBase.error.folderLimit';
+      case 'not_movable':
+        return 'workspace.knowledgeBase.error.notMovable';
+    }
+    if (error.status === 404) return 'workspace.knowledgeBase.error.gone';
+    if (error.status === 503) return 'workspace.knowledgeBase.error.busy';
+    if (error.status === 401 || error.status === 403) {
+      return 'workspace.knowledgeBase.error.identity';
+    }
+  }
+  return 'workspace.knowledgeBase.error.save';
 }
 
 /** The i18n key that says why a library read failed. */
@@ -249,4 +281,44 @@ export function formatMaterialBytes(bytes: number, locale: string): string {
     number = unit === 0 ? String(Math.round(value)) : value.toFixed(1);
   }
   return `${number} ${units[unit]}`;
+}
+
+async function libraryWrite(url: string, method: string, body: unknown): Promise<unknown> {
+  const response = await fetch(url, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await materialLibraryErrorOf(response);
+  return response.json().catch(() => ({}));
+}
+
+/** Rename a source's display name; its uploaded file name stays. */
+export async function renameLibraryMaterial(materialId: string, name: string): Promise<void> {
+  await libraryWrite(`/api/materials/${encodeURIComponent(materialId)}`, 'PATCH', { name });
+}
+
+/** Rename a folder. */
+export async function renameLibraryFolder(folderId: string, name: string): Promise<void> {
+  await libraryWrite(`/api/materials/folders/${encodeURIComponent(folderId)}`, 'PATCH', { name });
+}
+
+/**
+ * Create a folder, or get the owner's folder of that name back
+ * (`created: false`): either way, the folder the name now names.
+ */
+export async function createLibraryFolder(name: string): Promise<{ folderId: string }> {
+  const body = (await libraryWrite('/api/materials/folders', 'POST', { name })) as {
+    folder?: { id?: unknown };
+  };
+  if (typeof body.folder?.id !== 'string') throw new MaterialLibraryRequestError(500);
+  return { folderId: body.folder.id };
+}
+
+/** Move sources into a folder, or into Unfiled with `null`: all of them or none. */
+export async function moveLibraryMaterials(
+  materialIds: readonly string[],
+  folderId: string | null,
+): Promise<void> {
+  await libraryWrite('/api/materials/move', 'POST', { materialIds, folderId });
 }

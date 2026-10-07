@@ -65,6 +65,13 @@ let folders: () => Promise<Response> | Response;
 const libraryCalls: URLSearchParams[] = [];
 let uploadMaterial: (file: File) => Promise<Response> | Response;
 const uploadCalls: { url: string; init: RequestInit }[] = [];
+interface WriteCall {
+  readonly method: string;
+  readonly path: string;
+  readonly body: unknown;
+}
+let writeMaterial: (call: WriteCall) => Promise<Response> | Response;
+const writeCalls: WriteCall[] = [];
 
 function stubFetch() {
   vi.stubGlobal(
@@ -72,6 +79,16 @@ function stubFetch() {
     vi.fn(async (input: string, init?: RequestInit) => {
       const url = new URL(input, 'http://x');
       if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      const method = init?.method ?? 'GET';
+      const organizing =
+        method === 'PATCH' ||
+        url.pathname === '/api/materials/move' ||
+        (url.pathname === '/api/materials/folders' && method === 'POST');
+      if (organizing) {
+        const call = { method, path: url.pathname, body: JSON.parse(String(init!.body)) };
+        writeCalls.push(call);
+        return writeMaterial(call);
+      }
       if (url.pathname === '/api/materials/folders') return folders();
       if (url.pathname === '/api/materials' && init?.method === 'POST') {
         uploadCalls.push({ url: input, init });
@@ -128,6 +145,11 @@ function deferred<T>() {
 beforeEach(() => {
   libraryCalls.length = 0;
   uploadCalls.length = 0;
+  writeCalls.length = 0;
+  writeMaterial = ({ path }) =>
+    path === '/api/materials/folders'
+      ? json({ folder: { id: 'f-new', name: 'New' }, created: true }, 201)
+      : json({ status: 'renamed' });
   uploadMaterial = (file) =>
     json(
       {
@@ -884,6 +906,273 @@ describe('uploading from the page', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('organizing from the page', () => {
+  const inDocument = (testId: string) =>
+    document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  const openMenu = async (testId: string) => {
+    const trigger = inDocument(testId)!;
+    await act(async () => {
+      trigger.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
+      );
+      trigger.click();
+    });
+  };
+  const choose = (testId: string) =>
+    act(async () => {
+      inDocument(testId)!.click();
+    });
+  const typeName = async (value: string) => {
+    const input = inDocument('kb-name-dialog-input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const submitName = async () => {
+    await choose('kb-name-dialog-submit');
+    await settle();
+  };
+
+  beforeEach(() => {
+    library = (params) =>
+      json({
+        materials:
+          params.get('folderId') === 'f1'
+            ? [source('in-f1', { folderId: 'f1', folderName: 'Unit 1' })]
+            : [source('a')],
+        limits: LIMITS,
+      });
+  });
+
+  it('renames a source from its menu, then reads the list again', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    const reads = libraryCalls.length;
+
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-rename');
+    expect((inDocument('kb-name-dialog-input') as HTMLInputElement).value).toBe('a.pdf');
+    await typeName('  Chapter 1  ');
+    await submitName();
+
+    expect(writeCalls).toEqual([
+      { method: 'PATCH', path: '/api/materials/a', body: { name: 'Chapter 1' } },
+    ]);
+    expect(inDocument('kb-name-dialog')).toBeNull();
+    expect(libraryCalls.length).toBe(reads + 1);
+    await page.dispose();
+  });
+
+  it('keeps a refused rename in its dialog, in the server’s terms, and still re-reads', async () => {
+    writeMaterial = () =>
+      json(
+        { success: false, errorCode: 'INVALID_REQUEST', error: 'taken', reason: 'name_taken' },
+        409,
+      );
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    const reads = libraryCalls.length;
+
+    await openMenu('kb-folder-menu-f1');
+    await choose('kb-folder-menu-f1-rename');
+    await typeName('Unit 2');
+    await submitName();
+
+    expect(writeCalls).toEqual([
+      { method: 'PATCH', path: '/api/materials/folders/f1', body: { name: 'Unit 2' } },
+    ]);
+    expect(inDocument('kb-name-dialog-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.nameTaken',
+    );
+    expect(inDocument('kb-name-dialog')).not.toBeNull();
+    expect(libraryCalls.length).toBe(reads + 1);
+    await page.dispose();
+  });
+
+  it('hints at an empty or overlong folder name before asking the server', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await openMenu('kb-folder-menu-f1');
+    await choose('kb-folder-menu-f1-rename');
+
+    await typeName('   ');
+    await submitName();
+    expect(inDocument('kb-name-dialog-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.folderNameEmpty',
+    );
+    await typeName('一'.repeat(21));
+    await submitName();
+    expect(inDocument('kb-name-dialog-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.folderNameTooLong',
+    );
+    expect(writeCalls).toEqual([]);
+    await page.dispose();
+  });
+
+  it('moves a source into a folder, or back to Unfiled with null', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-move');
+    // Already in Unfiled: only the folder is offered.
+    expect(inDocument('kb-move-to-unfiled')).toBeNull();
+    await choose('kb-move-to-f1');
+    await settle();
+    expect(writeCalls.at(-1)).toEqual({
+      method: 'POST',
+      path: '/api/materials/move',
+      body: { materialIds: ['a'], folderId: 'f1' },
+    });
+    expect(inDocument('kb-move-dialog')).toBeNull();
+
+    await page.click('kb-scope-folder-f1');
+    await settle();
+    await openMenu('kb-material-menu-in-f1');
+    await choose('kb-material-menu-in-f1-move');
+    expect(inDocument('kb-move-to-f1')).toBeNull();
+    await choose('kb-move-to-unfiled');
+    await settle();
+    expect(writeCalls.at(-1)).toEqual({
+      method: 'POST',
+      path: '/api/materials/move',
+      body: { materialIds: ['in-f1'], folderId: null },
+    });
+    await page.dispose();
+  });
+
+  it('says why a move was refused, never as a success', async () => {
+    writeMaterial = () =>
+      json(
+        {
+          success: false,
+          errorCode: 'INVALID_REQUEST',
+          error: 'no',
+          reason: 'not_movable',
+          materialIds: ['a'],
+        },
+        422,
+      );
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-move');
+    await choose('kb-move-to-f1');
+    await settle();
+    expect(inDocument('kb-move-dialog-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.notMovable',
+    );
+    expect(inDocument('kb-move-dialog')).not.toBeNull();
+    await page.dispose();
+  });
+
+  it('creates a folder and opens it; a name already taken opens that folder', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+
+    folders = () =>
+      json({
+        folders: [
+          { id: 'f1', name: 'Unit 1', materialCount: 2 },
+          { id: 'f-new', name: 'New', materialCount: 0 },
+        ],
+      });
+    await page.click('kb-folder-new');
+    await typeName('New');
+    await submitName();
+    expect(writeCalls).toEqual([
+      { method: 'POST', path: '/api/materials/folders', body: { name: 'New' } },
+    ]);
+    expect(page.query('kb-scope-folder-f-new')?.getAttribute('aria-current')).toBe('page');
+    expect(libraryCalls.at(-1)?.get('folderId')).toBe('f-new');
+
+    writeMaterial = () => json({ folder: { id: 'f1', name: 'Unit 1' }, created: false }, 200);
+    await page.click('kb-folder-new');
+    await typeName('unit 1');
+    await submitName();
+    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
+    expect(inDocument('kb-name-dialog')).toBeNull();
+    await page.dispose();
+  });
+
+  it('does not read the list for a page the teacher left before a write answered', async () => {
+    for (const action of ['rename', 'move', 'create'] as const) {
+      const answer = deferred<Response>();
+      writeMaterial = () => answer.promise;
+      writeCalls.length = 0;
+      const page = mount();
+      await page.render(createElement(MaterialLibraryPage));
+      await settle();
+      if (action === 'create') {
+        await page.click('kb-folder-new');
+        await typeName('Later');
+        await choose('kb-name-dialog-submit');
+      } else if (action === 'rename') {
+        await openMenu('kb-material-menu-a');
+        await choose('kb-material-menu-a-rename');
+        await typeName('Later');
+        await choose('kb-name-dialog-submit');
+      } else {
+        await openMenu('kb-material-menu-a');
+        await choose('kb-material-menu-a-move');
+        await choose('kb-move-to-f1');
+      }
+      expect(writeCalls, action).toHaveLength(1);
+
+      await page.dispose();
+      const reads = libraryCalls.length;
+      const folderReads = vi
+        .mocked(fetch)
+        .mock.calls.filter(([input]) => String(input) === '/api/materials/folders').length;
+      await act(async () =>
+        answer.resolve(
+          action === 'create'
+            ? json({ folder: { id: 'f-late', name: 'Later' }, created: true }, 201)
+            : json({ status: 'renamed' }),
+        ),
+      );
+      await settle();
+      expect(libraryCalls.length, action).toBe(reads);
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === '/api/materials/folders')
+          .length,
+        action,
+      ).toBe(folderReads);
+    }
+  });
+
+  it('names the folder limit, a vanished item and a busy owner', async () => {
+    const answers = [
+      json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'limit' }, 409),
+      new Response('Not found', { status: 404 }),
+      json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503),
+    ];
+    writeMaterial = () => answers.shift()!;
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await page.click('kb-folder-new');
+    await typeName('Another');
+    const shown: (string | null | undefined)[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await submitName();
+      shown.push(inDocument('kb-name-dialog-error')?.textContent);
+    }
+    expect(shown).toEqual([
+      'workspace.knowledgeBase.error.folderLimit',
+      'workspace.knowledgeBase.error.gone',
+      'workspace.knowledgeBase.error.busy',
+    ]);
+    await page.dispose();
   });
 });
 

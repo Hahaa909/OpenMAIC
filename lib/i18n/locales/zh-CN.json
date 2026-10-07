@@ -2052,7 +2052,35 @@
         "load": "知识库加载失败",
         "busy": "账号正在更新，请稍后重试",
         "identity": "登录状态已变化，请刷新页面",
-        "stale": "显示的可能不是最新内容"
+        "stale": "显示的可能不是最新内容",
+        "nameTaken": "已有同名文件夹",
+        "invalidName": "请输入不超过 255 个字符的名称",
+        "folderNameEmpty": "请输入文件夹名称",
+        "folderNameTooLong": "文件夹名称太长",
+        "folderLimit": "文件夹数量已达上限",
+        "notMovable": "这份资料不能移动",
+        "gone": "它已经不存在了",
+        "save": "操作没有成功，请重试"
+      },
+      "actions": {
+        "more": "{{name}} 的更多操作",
+        "rename": "改名",
+        "move": "移动到…",
+        "column": "操作"
+      },
+      "folder": {
+        "new": "新建文件夹"
+      },
+      "dialog": {
+        "name": "名称",
+        "cancel": "取消",
+        "save": "保存",
+        "create": "创建",
+        "createFolderTitle": "新建文件夹",
+        "renameFolderTitle": "重命名文件夹",
+        "renameMaterialTitle": "重命名资料",
+        "moveTitle": "移动“{{name}}”",
+        "noFolders": "还没有可以移入的文件夹，请先新建一个。"
       }
     },
     "untitledCourse": "未命名课堂",

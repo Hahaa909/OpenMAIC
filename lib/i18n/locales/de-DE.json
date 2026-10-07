@@ -2052,7 +2052,35 @@
         "load": "Die Wissensbasis konnte nicht geladen werden",
         "busy": "Dein Konto wird gerade aktualisiert. Versuche es gleich noch einmal",
         "identity": "Deine Anmeldung hat sich geändert. Lade die Seite neu",
-        "stale": "die Anzeige ist möglicherweise nicht aktuell"
+        "stale": "die Anzeige ist möglicherweise nicht aktuell",
+        "nameTaken": "Ein anderer Ordner hat bereits diesen Namen",
+        "invalidName": "Gib einen Namen mit höchstens 255 Zeichen ein",
+        "folderNameEmpty": "Gib einen Ordnernamen ein",
+        "folderNameTooLong": "Dieser Ordnername ist zu lang",
+        "folderLimit": "Die maximale Anzahl an Ordnern ist erreicht",
+        "notMovable": "Dieses Material kann nicht verschoben werden",
+        "gone": "Es existiert nicht mehr",
+        "save": "Das hat nicht geklappt. Versuche es erneut"
+      },
+      "actions": {
+        "more": "Weitere Aktionen für {{name}}",
+        "rename": "Umbenennen",
+        "move": "Verschieben nach…",
+        "column": "Aktionen"
+      },
+      "folder": {
+        "new": "Neuer Ordner"
+      },
+      "dialog": {
+        "name": "Name",
+        "cancel": "Abbrechen",
+        "save": "Speichern",
+        "create": "Erstellen",
+        "createFolderTitle": "Neuer Ordner",
+        "renameFolderTitle": "Ordner umbenennen",
+        "renameMaterialTitle": "Material umbenennen",
+        "moveTitle": "„{{name}}“ verschieben",
+        "noFolders": "Es gibt noch keinen Ordner, in den es verschoben werden kann. Lege zuerst einen an."
       }
     },
     "untitledCourse": "未命名课堂",
