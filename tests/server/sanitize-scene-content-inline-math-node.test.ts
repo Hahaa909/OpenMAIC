@@ -3,6 +3,7 @@
  * math is rendered: inline formulas are reduced to their source in time
  * linear in the input, whatever the source contains.
  */
+import { Parser } from 'htmlparser2';
 import katex from 'katex';
 import sanitizeHtml from 'sanitize-html';
 import { describe, expect, it } from 'vitest';
@@ -112,5 +113,141 @@ describe('sanitizeSceneContent — hostile inline formulas stay cheap', () => {
     });
     const scenes = Array.from({ length: 20 }, (_, index) => scene(index));
     expect(sanitizeSceneContent(scenes)).toEqual(scenes.map((item) => sanitizeSceneContent(item)));
+  });
+});
+
+describe('sanitizeSceneContent — inline formulas in foreign content', () => {
+  for (const [label, html] of [
+    ['SVG', '<p>a<svg><span data-inline-math="x"/></svg>b</p>'],
+    ['MathML', '<p>a<math><mi>q</mi><span data-inline-math="y"/>b</math>c</p>'],
+    [
+      'SVG KaTeX root',
+      '<svg><span class="katex"><annotation encoding="application/x-tex">k</annotation></span></svg>',
+    ],
+  ] as const) {
+    it(`replaces a self-closing ${label} formula once, stably`, () => {
+      const once = sanitizeProseHtml(html);
+      expect(once.match(/data-inline-math/g)).toHaveLength(1);
+      expect(sanitizeProseHtml(once)).toBe(once);
+      expect(sanitizeProseHtml(sanitizeProseHtml(once))).toBe(once);
+    });
+  }
+});
+
+describe('sanitizeSceneContent — inline formula fuzzing', () => {
+  /** Deterministic PRNG, so a failure reproduces. */
+  function random(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      return state / 0x7fffffff;
+    };
+  }
+
+  function soupGenerator(seed: number, tags: readonly string[]): () => string {
+    const next = random(seed);
+    const pick = <T>(values: readonly T[]): T => values[Math.floor(next() * values.length)];
+    const sources = ['x', 'x^2', 'a&b', '"q"', '<b>', '\\frac{a}{b}', '', "it's", '&amp;', 'x > y'];
+    const encode = (value: string) =>
+      pick([value.replace(/&/g, '&amp;').replace(/"/g, '&quot;'), value.replace(/"/g, '&quot;')]);
+    const attributes = () => {
+      const out: string[] = [];
+      if (next() < 0.35) out.push(`data-inline-math="${encode(pick(sources))}"`);
+      if (next() < 0.25) out.push(pick(['class="katex"', 'class="&#107;atex"', 'class=katex']));
+      if (next() < 0.2) out.push('encoding="application/x-tex"');
+      if (next() < 0.1) out.push('onclick="x()"');
+      return out.length ? ` ${out.join(' ')}` : '';
+    };
+    return () => {
+      let html = '';
+      const count = 1 + Math.floor(next() * 25);
+      for (let index = 0; index < count; index += 1) {
+        const kind = next();
+        if (kind < 0.35) html += `<${pick(tags)}${attributes()}${next() < 0.15 ? '/' : ''}>`;
+        else if (kind < 0.6) html += `</${pick(tags)}>`;
+        else html += pick(['text', ' ', 'a&amp;b', '&lt;', 'annotation', 'katex', '<', '>', '&']);
+      }
+      return html;
+    };
+  }
+
+  /** Inline, foreign and raw-text tags: no block structure for the HTML parser to repair. */
+  const INLINE_TAGS = [
+    'span',
+    'b',
+    'i',
+    'a',
+    'svg',
+    'math',
+    'mi',
+    'semantics',
+    'annotation',
+    'template',
+    'br',
+    'img',
+    'textarea',
+    'style',
+    'script',
+    'title',
+  ];
+  const BLOCK_TAGS = ['p', 'div', 'table', 'tr', 'td', 'ul', 'li'];
+
+  /** Every element carrying the attribute is a span holding exactly its source as text. */
+  function formulaShapes(html: string): string[] {
+    const problems: string[] = [];
+    let open: { source: string; text: string; nested: boolean } | null = null;
+    const parser = new Parser(
+      {
+        onopentag(name, attribs) {
+          if (open) open.nested = true;
+          const source = attribs['data-inline-math'];
+          if (source === undefined) return;
+          if (name !== 'span') problems.push(`${name} carries a source`);
+          open = { source, text: '', nested: false };
+        },
+        ontext(text) {
+          if (open) open.text += text;
+        },
+        onclosetag(name) {
+          if (!open || name !== 'span') return;
+          if (open.nested || open.text !== open.source) problems.push(JSON.stringify(open));
+          open = null;
+        },
+      },
+      { decodeEntities: true },
+    );
+    parser.end(html);
+    return problems;
+  }
+
+  it('is idempotent on random tag soup with formula markers', () => {
+    const soup = soupGenerator(1812, INLINE_TAGS);
+    for (let index = 0; index < 3000; index += 1) {
+      const input = soup();
+      const once = sanitizeProseHtml(input);
+      expect(sanitizeProseHtml(once), input).toBe(once);
+      expect(formulaShapes(once), input).toEqual([]);
+    }
+  });
+
+  it('keeps formulas stable across passes when block structure is repaired', () => {
+    // With block tags in the mix, the parser's implied closing (a <p> or <tr>
+    // opened where it cannot nest) can move tags again on a second pass. That
+    // is the prose policy's own behaviour, unchanged by this module; the
+    // formulas themselves must not change.
+    const soup = soupGenerator(1810, [...BLOCK_TAGS, ...INLINE_TAGS]);
+    const formulas = (html: string) =>
+      [...html.matchAll(/<span data-inline-math(?:="([^"]*)")?>([^<]*)<\/span>/g)].map((match) => [
+        match[1] ?? '',
+        match[2],
+      ]);
+    for (let index = 0; index < 3000; index += 1) {
+      const input = soup();
+      const once = sanitizeProseHtml(input);
+      const twice = sanitizeProseHtml(once);
+      expect(formulas(twice), input).toEqual(formulas(once));
+      expect(formulaShapes(once), input).toEqual([]);
+      expect(formulaShapes(twice), input).toEqual([]);
+    }
   });
 });

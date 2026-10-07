@@ -63,6 +63,8 @@ function storedFormula(latex: string): string {
 interface OpenFormula {
   /** Offset of the formula's opening `<`. */
   readonly start: number;
+  /** Offset of the `>` that ends its opening tag. */
+  readonly openEnd: number;
   /** Element depth of the formula element. */
   readonly depth: number;
   /** Known source (`data-inline-math`), or the TeX annotation once seen. */
@@ -105,11 +107,23 @@ export function liftInlineMath(html: string): string | null {
         if (name === 'span') {
           const source = attribs[INLINE_MATH_ATTRIBUTE];
           if (source !== undefined) {
-            open.push({ start: parser.startIndex, depth, source, fromAttribute: true });
+            open.push({
+              start: parser.startIndex,
+              openEnd: parser.endIndex,
+              depth,
+              source,
+              fromAttribute: true,
+            });
             return;
           }
           if ((attribs.class ?? '').split(/[\t\n\f\r ]+/).includes('katex')) {
-            open.push({ start: parser.startIndex, depth, source: null, fromAttribute: false });
+            open.push({
+              start: parser.startIndex,
+              openEnd: parser.endIndex,
+              depth,
+              source: null,
+              fromAttribute: false,
+            });
             return;
           }
         }
@@ -138,12 +152,13 @@ export function liftInlineMath(html: string): string | null {
           open.pop();
           if (top.source !== null) {
             // An explicit close ends at its `>`; an implied one just before
-            // the token that closed it (or at the end of the input).
-            const end = ending
-              ? html.length - 1
-              : isImplied
-                ? parser.startIndex - 1
-                : parser.endIndex;
+            // the token that closed it (or at the end of the input). A
+            // self-closing tag in SVG/MathML is also reported as implied,
+            // while still on its own token: it ends with that token.
+            const end = Math.max(
+              top.openEnd,
+              ending ? html.length - 1 : isImplied ? parser.startIndex - 1 : parser.endIndex,
+            );
             // Formulas nested inside this one are covered by it.
             while (replacements.length && replacements[replacements.length - 1].start > top.start) {
               replacements.pop();
