@@ -2038,6 +2038,10 @@
         "unfiled": "No hay materiales sin clasificar",
         "query": "Ningún material coincide con “{{query}}”"
       },
+      "folderGone": {
+        "message": "Esta carpeta ya no existe",
+        "back": "Volver a Todo"
+      },
       "error": {
         "load": "No se pudo cargar la base de conocimientos",
         "busy": "Tu cuenta se está actualizando. Inténtalo de nuevo en un momento",

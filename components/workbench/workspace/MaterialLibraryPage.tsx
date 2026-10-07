@@ -352,6 +352,13 @@ export function MaterialLibraryPage() {
   const [view, setView] = useState<'cards' | 'list'>('cards');
   const library = useMaterialLibrary({ scope, query });
 
+  // The folder being looked at was deleted elsewhere. Refreshing never
+  // navigates (RFC #1716 §7): say so, and let the teacher go back.
+  const folderGone =
+    scope.kind === 'folder' &&
+    library.status === 'ready' &&
+    !library.folders.some((folder) => folder.id === scope.folderId);
+
   const emptyKey = query
     ? 'workspace.knowledgeBase.empty.query'
     : scope.kind === 'folder'
@@ -424,6 +431,22 @@ export function MaterialLibraryPage() {
               <p data-testid="kb-loading" className="text-[13px] text-[color:var(--ws-ink-mute)]">
                 {t('workspace.knowledgeBase.loading')}
               </p>
+            ) : folderGone ? (
+              <div
+                data-testid="kb-folder-gone"
+                role="status"
+                className="flex flex-col items-start gap-2"
+              >
+                <p className="text-[13px]">{t('workspace.knowledgeBase.folderGone.message')}</p>
+                <button
+                  type="button"
+                  data-testid="kb-folder-gone-back"
+                  onClick={() => setScope({ kind: 'all' })}
+                  className="ws-quiet text-[13px] underline"
+                >
+                  {t('workspace.knowledgeBase.folderGone.back')}
+                </button>
+              </div>
             ) : library.status === 'error' ? (
               <div data-testid="kb-error" role="alert" className="flex flex-col items-start gap-2">
                 <p className="text-[13px]">{t(materialLibraryErrorKey(library.error))}</p>

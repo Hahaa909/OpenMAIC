@@ -17,7 +17,12 @@ vi.mock('@/lib/hooks/use-i18n', () => ({
 }));
 
 import { MaterialLibraryPage } from '@/components/workbench/workspace/MaterialLibraryPage';
-import { useMaterialLibrary, type MaterialLibraryData } from '@/lib/workbench/use-material-library';
+import {
+  MATERIAL_LIBRARY_POLL_MS,
+  useMaterialLibrary,
+  type MaterialLibraryData,
+} from '@/lib/workbench/use-material-library';
+import { useWorkbenchStore } from '@/lib/workbench/session-store';
 import {
   formatMaterialBytes,
   materialLibraryErrorOf,
@@ -80,11 +85,20 @@ const settle = (milliseconds = 0) =>
     await new Promise((resolve) => setTimeout(resolve, milliseconds));
   });
 
+/** Mounted roots still alive; `afterEach` unmounts any a failed test left. */
+const mounted = new Set<() => Promise<void>>();
+
 function mount() {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
+  const dispose = async () => {
+    if (!mounted.delete(dispose)) return;
+    await act(async () => root.unmount());
+    container.remove();
+  };
+  mounted.add(dispose);
   return {
     container,
     query: (testId: string) => container.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
@@ -93,10 +107,7 @@ function mount() {
       act(async () => {
         container.querySelector<HTMLElement>(`[data-testid="${testId}"]`)!.click();
       }),
-    async dispose() {
-      await act(async () => root.unmount());
-      container.remove();
-    },
+    dispose,
   };
 }
 
@@ -116,7 +127,8 @@ beforeEach(() => {
   stubFetch();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const dispose of [...mounted]) await dispose();
   vi.unstubAllGlobals();
 });
 
@@ -506,6 +518,207 @@ describe('load more on the page', () => {
     expect(page.query('kb-material-refreshed')).not.toBeNull();
     expect(page.query('kb-material-after-fresh')).not.toBeNull();
     expect(page.query('kb-material-initial')).toBeNull();
+    await page.dispose();
+  });
+});
+
+describe('staying fresh outside a run (option B)', () => {
+  function FreshProbe({
+    scope,
+    record,
+  }: {
+    readonly scope: LibraryScope;
+    readonly record: (value: MaterialLibraryData) => void;
+  }) {
+    record(useMaterialLibrary({ scope, query: '' }));
+    return null;
+  }
+
+  let hidden = false;
+  const tick = (milliseconds: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(milliseconds);
+    });
+  const setHidden = async (value: boolean) => {
+    hidden = value;
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    hidden = false;
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (hidden ? 'hidden' : 'visible'),
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    // @ts-expect-error -- drop the test's own property, back to jsdom's
+    delete document.visibilityState;
+  });
+
+  async function mountProbe(scope: LibraryScope = { kind: 'all' }) {
+    const sink = { current: null as MaterialLibraryData | null };
+    const page = mount();
+    await page.render(
+      createElement(FreshProbe, {
+        scope,
+        record: (value: MaterialLibraryData) => {
+          sink.current = value;
+        },
+      }),
+    );
+    await tick(0);
+    return { sink, page };
+  }
+
+  it('polls while a shown source is parsing, and stops once nothing is', async () => {
+    let status = 'running';
+    library = () => json({ materials: [source('a', { extraction: { status } })], limits: LIMITS });
+    const { page } = await mountProbe();
+    expect(libraryCalls).toHaveLength(1);
+
+    await tick(MATERIAL_LIBRARY_POLL_MS);
+    expect(libraryCalls).toHaveLength(2);
+    status = 'done';
+    await tick(MATERIAL_LIBRARY_POLL_MS);
+    expect(libraryCalls).toHaveLength(3);
+    await tick(MATERIAL_LIBRARY_POLL_MS * 4);
+    expect(libraryCalls).toHaveLength(3);
+    await page.dispose();
+  });
+
+  it('keeps polling after a failed read: a failure is not the parse finishing', async () => {
+    let fail = false;
+    library = () =>
+      fail
+        ? json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503)
+        : json({ materials: [source('a', { extraction: { status: 'pending' } })], limits: LIMITS });
+    const { sink, page } = await mountProbe();
+    fail = true;
+    await tick(MATERIAL_LIBRARY_POLL_MS);
+    expect(sink.current?.error).toMatchObject({ status: 503 });
+    fail = false;
+    await tick(MATERIAL_LIBRARY_POLL_MS);
+    expect(libraryCalls).toHaveLength(3);
+    expect(sink.current?.error).toBeNull();
+    await page.dispose();
+  });
+
+  it('does not poll a hidden tab, and reads again as soon as it is visible', async () => {
+    library = () =>
+      json({ materials: [source('a', { extraction: { status: 'running' } })], limits: LIMITS });
+    const { page } = await mountProbe();
+    await setHidden(true);
+    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
+    expect(libraryCalls).toHaveLength(1);
+
+    await setHidden(false);
+    await tick(0);
+    expect(libraryCalls).toHaveLength(2);
+    await page.dispose();
+  });
+
+  it('reads again on window focus, without polling when nothing is parsing', async () => {
+    const { page } = await mountProbe();
+    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
+    expect(libraryCalls).toHaveLength(1);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await tick(0);
+    expect(libraryCalls).toHaveLength(2);
+    await page.dispose();
+  });
+
+  it('reads once more after a read that was running when the teacher came back', async () => {
+    for (const outcome of ['answers', 'fails'] as const) {
+      const old = deferred<Response>();
+      library = () => old.promise;
+      libraryCalls.length = 0;
+      const { sink, page } = await mountProbe();
+      await setHidden(true);
+      // Meanwhile another tab changes the library; then the teacher returns,
+      // with both a visibility change and a focus.
+      library = () => json({ materials: [source('fresh')], limits: LIMITS });
+      await setHidden(false);
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(libraryCalls, outcome).toHaveLength(1);
+
+      await act(async () =>
+        old.resolve(
+          outcome === 'answers'
+            ? json({ materials: [source('old')], limits: LIMITS })
+            : json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503),
+        ),
+      );
+      await tick(0);
+      // Exactly one more read, however many signals arrived, and it wins.
+      expect(libraryCalls, outcome).toHaveLength(2);
+      expect(
+        sink.current?.materials.map((m) => m.materialId),
+        outcome,
+      ).toEqual(['fresh']);
+      await tick(MATERIAL_LIBRARY_POLL_MS * 3);
+      expect(libraryCalls, outcome).toHaveLength(2);
+      await page.dispose();
+    }
+  });
+
+  it('reads again when the run reports a material change, in the same folder', async () => {
+    const { page } = await mountProbe({ kind: 'folder', folderId: 'f1' });
+    await act(async () => {
+      useWorkbenchStore.setState((state) => ({
+        materialLibraryRevision: state.materialLibraryRevision + 1,
+      }));
+    });
+    await tick(0);
+    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual(['f1', 'f1']);
+    await page.dispose();
+  });
+
+  it('leaves no timer or request behind once the page is gone', async () => {
+    library = () =>
+      json({ materials: [source('a', { extraction: { status: 'running' } })], limits: LIMITS });
+    const { page } = await mountProbe();
+    await page.dispose();
+    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(libraryCalls).toHaveLength(1);
+  });
+
+  it('says a folder deleted elsewhere is gone, and leaves going back to the teacher', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await tick(0);
+    await page.click('kb-scope-folder-f1');
+    await tick(0);
+    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
+
+    // Another tab deleted it; the next read no longer lists it.
+    folders = () => json({ folders: [] });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await tick(0);
+    expect(page.query('kb-folder-gone')).not.toBeNull();
+    // The refresh did not navigate: still the same folder, no other scope read.
+    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual([null, 'f1', 'f1']);
+    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBeNull();
+
+    await page.click('kb-folder-gone-back');
+    await tick(0);
+    expect(page.query('kb-folder-gone')).toBeNull();
+    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBe('page');
+    expect(libraryCalls.at(-1)?.get('folderId')).toBeNull();
     await page.dispose();
   });
 });

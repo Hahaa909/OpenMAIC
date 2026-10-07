@@ -2038,6 +2038,10 @@
         "unfiled": "Aucun document non classé",
         "query": "Aucun document ne correspond à « {{query}} »"
       },
+      "folderGone": {
+        "message": "Ce dossier n’existe plus",
+        "back": "Revenir à Tout"
+      },
       "error": {
         "load": "Impossible de charger la base de connaissances",
         "busy": "Votre compte est en cours de mise à jour. Réessayez dans un instant",

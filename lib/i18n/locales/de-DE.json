@@ -2038,6 +2038,10 @@
         "unfiled": "Keine nicht abgelegten Materialien",
         "query": "Keine Materialien passen zu „{{query}}“"
       },
+      "folderGone": {
+        "message": "Diesen Ordner gibt es nicht mehr",
+        "back": "Zurück zu „Alle“"
+      },
       "error": {
         "load": "Die Wissensbasis konnte nicht geladen werden",
         "busy": "Dein Konto wird gerade aktualisiert. Versuche es gleich noch einmal",

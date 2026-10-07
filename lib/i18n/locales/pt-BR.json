@@ -2038,6 +2038,10 @@
         "unfiled": "Nenhum material sem pasta",
         "query": "Nenhum material corresponde a “{{query}}”"
       },
+      "folderGone": {
+        "message": "Esta pasta não existe mais",
+        "back": "Voltar para Tudo"
+      },
       "error": {
         "load": "Não foi possível carregar a base de conhecimento",
         "busy": "Sua conta está sendo atualizada. Tente novamente em instantes",

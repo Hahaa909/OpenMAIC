@@ -19,8 +19,18 @@
  *   would not belong to the list the refresh brings. A refresh started while
  *   a page is loading supersedes it, and that page is dropped. So the list,
  *   its page count and its cursor always come from the same read.
+ * - **Option B freshness (§7).** Outside its own writes (whose callers
+ *   `reload`), the list is read again when the window regains focus or the
+ *   tab becomes visible (once more right after a read already running then,
+ *   which may predate what changed meanwhile), when a run reports a material
+ *   change
+ *   (`materialLibraryRevision`), and every few seconds while the tab is
+ *   visible and a shown source is still parsing. Polling stops once nothing
+ *   shown is pending, while the tab is hidden, and with the page; a failed
+ *   read does not end it. None of this ever changes the scope.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useWorkbenchStore } from '@/lib/workbench/session-store';
 import {
   fetchMaterialLibraryFolders,
   fetchMaterialLibraryPage,
@@ -66,6 +76,11 @@ const scopeKey = (scope: LibraryScope, query: string) =>
 
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
+/** How long after a read the list is read again while something is parsing. */
+export const MATERIAL_LIBRARY_POLL_MS = 3_000;
+
+const tabVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+
 export function useMaterialLibrary(input: {
   readonly scope: LibraryScope;
   readonly query: string;
@@ -88,6 +103,12 @@ export function useMaterialLibrary(input: {
   const controller = useRef<AbortController | null>(null);
   /** Which read of the list is running, if any: never both. */
   const inFlight = useRef<'refresh' | 'more' | null>(null);
+  /**
+   * The teacher came back while a refresh was running. That read may have
+   * started before whatever changed meanwhile, so one more follows it.
+   */
+  const refreshQueued = useRef(false);
+  const followUp = useRef<() => void>(() => {});
   /** How many pages the list shows, which a refresh reads again. */
   const pages = useRef(1);
   const nextBefore = useRef<string | undefined>(undefined);
@@ -98,8 +119,10 @@ export function useMaterialLibrary(input: {
     controller.current?.abort();
     const abort = new AbortController();
     controller.current = abort;
-    // Supersedes a page still loading: its ticket is now stale.
+    // Supersedes a page still loading: its ticket is now stale. Starting
+    // now also answers any refresh that was waiting for the previous read.
     inFlight.current = 'refresh';
+    refreshQueued.current = false;
     setSnapshot((previous) =>
       previous.refreshing && !previous.loadingMore
         ? previous
@@ -143,6 +166,7 @@ export function useMaterialLibrary(input: {
           loadingMore: false,
           refreshing: false,
         }));
+        if (refreshQueued.current) followUp.current();
       },
       (error: unknown) => {
         if (ticket !== generation.current || isAbort(error)) return;
@@ -159,6 +183,7 @@ export function useMaterialLibrary(input: {
                 refreshing: false,
               },
         );
+        if (refreshQueued.current) followUp.current();
       },
     );
   }, []);
@@ -196,6 +221,10 @@ export function useMaterialLibrary(input: {
     );
   }, []);
 
+  useEffect(() => {
+    followUp.current = reload;
+  }, [reload]);
+
   // A new scope or query: one page, from the top.
   useEffect(() => {
     request.current = { scope: input.scope, query: input.query, key };
@@ -210,10 +239,60 @@ export function useMaterialLibrary(input: {
     () => () => {
       generation.current += 1;
       inFlight.current = null;
+      refreshQueued.current = false;
+      followUp.current = () => {};
       controller.current?.abort();
     },
     [],
   );
+
+  // ── Option B: focus, visibility, in-run changes, polling ─────────────
+  const [visible, setVisible] = useState(tabVisible);
+  useEffect(() => {
+    // Back on the page: read again. A refresh already on its way may have
+    // started before what changed meanwhile, so it is followed by one more
+    // (focus and visibility arriving together still make one).
+    const refresh = () => {
+      if (inFlight.current === 'refresh') refreshQueued.current = true;
+      else reload();
+    };
+    const onVisibility = () => {
+      const now = tabVisible();
+      setVisible(now);
+      if (now) refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [reload]);
+
+  // A run changed the library. A read already running may predate the
+  // change, so this one always starts over.
+  const revision = useWorkbenchStore((state) => state.materialLibraryRevision);
+  const seenRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === seenRevision.current) return;
+    seenRevision.current = revision;
+    reload();
+  }, [revision, reload]);
+
+  const parsing =
+    snapshot.key === key &&
+    snapshot.materials.some(
+      (material) =>
+        material.extraction.status === 'pending' || material.extraction.status === 'running',
+    );
+  // One timer per settled read (`snapshot` changes with each), none while a
+  // read is running, so polls never overlap. A failed read schedules the
+  // next one too: a failure does not mean the parsing finished.
+  useEffect(() => {
+    if (!parsing || !visible || snapshot.refreshing || snapshot.loadingMore) return;
+    const timer = setTimeout(reload, MATERIAL_LIBRARY_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [parsing, visible, snapshot, reload]);
 
   return useMemo(() => {
     // Between a scope change and its first answer, nothing from the old

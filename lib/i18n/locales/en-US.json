@@ -2038,6 +2038,10 @@
         "unfiled": "No unfiled materials",
         "query": "No materials match “{{query}}”"
       },
+      "folderGone": {
+        "message": "This folder no longer exists",
+        "back": "Back to All"
+      },
       "error": {
         "load": "The knowledge base could not be loaded",
         "busy": "Your account is being updated. Try again in a moment",

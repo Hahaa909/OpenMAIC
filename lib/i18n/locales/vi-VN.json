@@ -2038,6 +2038,10 @@
         "unfiled": "Không có tài liệu chưa phân loại",
         "query": "Không có tài liệu nào khớp với “{{query}}”"
       },
+      "folderGone": {
+        "message": "Thư mục này không còn tồn tại",
+        "back": "Quay lại Tất cả"
+      },
       "error": {
         "load": "Không thể tải kho kiến thức",
         "busy": "Tài khoản đang được cập nhật. Vui lòng thử lại sau giây lát",
