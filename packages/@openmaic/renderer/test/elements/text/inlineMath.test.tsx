@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { ReactElement } from 'react';
 import katex from 'katex';
 import { render } from '@testing-library/react';
 import type { PPTShapeElement, PPTTableElement, PPTTextElement } from '@openmaic/dsl';
@@ -6,7 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { BaseShapeElement } from '../../../src/elements/shape/BaseShapeElement';
 import { StaticTable } from '../../../src/elements/table/StaticTable';
 import { BaseTextElement } from '../../../src/elements/text/BaseTextElement';
-import { MAX_INLINE_MATH_SOURCE, renderInlineMath } from '../../../src/utils/inlineMath';
+import {
+  INLINE_MATH_MAX_ROOT_FORMULAS,
+  INLINE_MATH_SYNC_SOURCE_BUDGET,
+  MAX_INLINE_MATH_SOURCE,
+  renderInlineMath,
+} from '../../../src/utils/inlineMath';
 
 const LATEX = '\\sqrt{x}+\\frac{a}{b}';
 
@@ -220,5 +226,110 @@ describe('slide elements typeset inline formulas', () => {
     expectTypeset(table.container, LATEX);
     table.rerender(<StaticTable elementInfo={tableElement(`<p>${stored('z_3')}</p>`, 500)} />);
     expectTypeset(table.container, 'z_3');
+  });
+
+  it('stay typeset when re-rendered with identical content, and on A→B→A→A', () => {
+    const a = `<p>${stored('x^2')}</p>`;
+    const b = `<p>${stored('y^2')}</p>`;
+    const cases = [
+      [BaseTextElement, (content: string) => textElement(content)],
+      [BaseShapeElement, (content: string) => shapeElement(content)],
+      [StaticTable, (content: string) => tableElement(content)],
+    ] as const;
+    for (const [Component, make] of cases) {
+      const Element = Component as unknown as (props: { elementInfo: unknown }) => ReactElement;
+      const same = make(a);
+      const view = render(<Element elementInfo={same} />);
+      view.rerender(<Element elementInfo={same} />);
+      expectTypeset(view.container, 'x^2');
+      for (const [content, latex] of [
+        [b, 'y^2'],
+        [a, 'x^2'],
+        [a, 'x^2'],
+      ] as const) {
+        view.rerender(<Element elementInfo={make(content)} />);
+        expectTypeset(view.container, latex);
+      }
+      view.unmount();
+    }
+  });
+});
+
+describe('inline math typesetting budget', () => {
+  /** A distinct ~1900-character matrix: expensive to typeset and never cached. */
+  const matrix = (index: number) =>
+    `\\begin{pmatrix}${Array.from({ length: 160 }, (_, k) => `a_{${index}${k}}`).join('&')}\\end{pmatrix}`.slice(
+      0,
+      1_900,
+    );
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+  it('typesets ordinary prose in one pass', () => {
+    const root = host(
+      Array.from({ length: 60 }, (_, index) => `<p>${stored(`x_{${index}}^2+${index}`)}</p>`).join(
+        '',
+      ),
+    );
+    expect(renderInlineMath(root)).toBe(false);
+    expect(root.querySelectorAll('.katex[data-inline-math]')).toHaveLength(60);
+  });
+
+  it('leaves heavy formulas past the budget for later passes', async () => {
+    const sources = Array.from({ length: 8 }, (_, index) => `${matrix(index)}+${index}`);
+    expect(sources.every((source) => source.length <= MAX_INLINE_MATH_SOURCE)).toBe(true);
+    const root = host(sources.map((source) => `<p>${stored(source)}</p>`).join(''));
+    expect(renderInlineMath(root)).toBe(true);
+    const first = root.querySelectorAll('.katex[data-inline-math]').length;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(Math.ceil(INLINE_MATH_SYNC_SOURCE_BUDGET / 1_900));
+    let passes = 1;
+    while (renderInlineMath(root)) passes += 1;
+    expect(passes).toBeGreaterThan(1);
+    expect(root.querySelectorAll('.katex[data-inline-math]')).toHaveLength(sources.length);
+  });
+
+  it('typesets everything at once when asked to complete', () => {
+    const sources = Array.from({ length: 6 }, (_, index) => `${matrix(index + 20)}+${index}`);
+    const root = host(sources.map((source) => `<p>${stored(source)}</p>`).join(''));
+    expect(renderInlineMath(root, { complete: true })).toBe(false);
+    expect(root.querySelectorAll('.katex[data-inline-math]')).toHaveLength(sources.length);
+  });
+
+  it('shows formulas past the hard cap as text', () => {
+    const count = INLINE_MATH_MAX_ROOT_FORMULAS + 2;
+    const root = host(
+      `<p>${Array.from({ length: count }, (_, index) => stored(`q_{${index}}`)).join(' ')}</p>`,
+    );
+    renderInlineMath(root, { complete: true });
+    expect(root.querySelectorAll('.katex[data-inline-math]')).toHaveLength(
+      INLINE_MATH_MAX_ROOT_FORMULAS,
+    );
+    expect(root.textContent).toContain(`q_{${count - 1}}`);
+  });
+
+  it('finishes the rest in idle time after mount, and stops on unmount', async () => {
+    const box = { left: 0, top: 0, width: 400, height: 80, rotate: 0 };
+    const sources = Array.from({ length: 6 }, (_, index) => `${matrix(index + 40)}+${index}`);
+    const content = sources.map((source) => `<p>${stored(source)}</p>`).join('');
+    const element = {
+      ...box,
+      id: 'heavy',
+      type: 'text',
+      content,
+      defaultFontName: '',
+      defaultColor: '#000',
+    } as PPTTextElement;
+    const view = render(<BaseTextElement elementInfo={element} />);
+    const typeset = () => view.container.querySelectorAll('.katex[data-inline-math]').length;
+    expect(typeset()).toBeLessThan(sources.length);
+    for (let index = 0; index < 20 && typeset() < sources.length; index += 1) await settle();
+    expect(typeset()).toBe(sources.length);
+
+    const other = { ...element, id: 'heavy-2', content: content.replace(/\+(\d)/g, '-$1') };
+    const second = render(<BaseTextElement elementInfo={other} />);
+    const detached = second.container;
+    second.unmount();
+    await settle();
+    expect(detached.querySelectorAll('.katex[data-inline-math]')).toHaveLength(0);
   });
 });

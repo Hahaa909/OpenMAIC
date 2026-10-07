@@ -14,6 +14,23 @@ export const INLINE_MATH_ATTRIBUTE = 'data-inline-math';
 /** Longest source typeset; longer sources are shown as plain LaTeX text. */
 export const MAX_INLINE_MATH_SOURCE = 2_000;
 
+/**
+ * Typesetting budget per pass over one prose root, counting only formulas not
+ * already in the typeset cache. Within it formulas are typeset before paint;
+ * the rest are typeset in idle time, a chunk of the same size at a time, so a
+ * slide packed with large formulas cannot freeze the page. Ordinary prose (a
+ * text box with a few dozen short formulas) fits in one pass.
+ */
+export const INLINE_MATH_SYNC_SOURCE_BUDGET = 4_000;
+export const INLINE_MATH_SYNC_FORMULA_BUDGET = 100;
+
+/**
+ * Hard cap per prose root, counting every formula in document order: past it,
+ * formulas are shown as their LaTeX text and never typeset.
+ */
+export const INLINE_MATH_MAX_ROOT_SOURCE = 50_000;
+export const INLINE_MATH_MAX_ROOT_FORMULAS = 1_000;
+
 /** Commands that define macros: mapped to nothing so user input cannot define any. */
 const MACRO_DEFINITIONS = [
   '\\def',
@@ -65,6 +82,8 @@ function typesetUncached(doc: Document, latex: string): Element | null {
   try {
     katex.render(latex, host, inlineMathKatexOptions());
   } catch {
+    // KaTeX refuses to run in a quirks-mode document (no doctype); the source
+    // then stays as text.
     return null;
   }
   const formula = host.firstElementChild;
@@ -97,37 +116,109 @@ function typeset(doc: Document, latex: string): Element | null {
     : (doc.importNode(entry.formula, true) as Element);
 }
 
+export interface RenderInlineMathOptions {
+  /**
+   * Typeset every formula now, ignoring the per-pass budget (the hard cap
+   * still applies). For callers that capture the result right away, such as
+   * slide snapshots.
+   */
+  readonly complete?: boolean;
+}
+
+function showSource(element: Element, latex: string): void {
+  element.textContent = latex;
+  handled.add(element);
+}
+
 /**
- * Typeset every inline formula under `root`. Each `span[data-inline-math]` is
+ * Typeset the inline formulas under `root`. Each `span[data-inline-math]` is
  * replaced by a KaTeX render of its source carrying the same attribute (the
  * editor's storage shape); a source that cannot be typeset is shown as text.
+ * Returns `true` when formulas were left for a later pass by the budget.
  */
-export function renderInlineMath(root: ParentNode): void {
+export function renderInlineMath(root: ParentNode, options: RenderInlineMathOptions = {}): boolean {
   const doc = (root as Node).ownerDocument ?? (root as Document);
+  let rootSource = 0;
+  let rootFormulas = 0;
+  let passSource = 0;
+  let passFormulas = 0;
+  let pending = false;
   for (const element of root.querySelectorAll(`span[${INLINE_MATH_ATTRIBUTE}]`)) {
-    // Already handled, or inside a formula replaced earlier in this pass.
-    if (handled.has(element) || !(root as Node).contains(element)) continue;
+    // Inside a formula replaced earlier in this pass.
+    if (!(root as Node).contains(element)) continue;
     const latex = element.getAttribute(INLINE_MATH_ATTRIBUTE) ?? '';
+    rootSource += latex.length;
+    rootFormulas += 1;
+    if (handled.has(element)) continue;
+    if (rootSource > INLINE_MATH_MAX_ROOT_SOURCE || rootFormulas > INLINE_MATH_MAX_ROOT_FORMULAS) {
+      showSource(element, latex);
+      continue;
+    }
+    if (!typesetCache.has(latex)) {
+      if (
+        !options.complete &&
+        passFormulas > 0 &&
+        (passSource + latex.length > INLINE_MATH_SYNC_SOURCE_BUDGET ||
+          passFormulas >= INLINE_MATH_SYNC_FORMULA_BUDGET)
+      ) {
+        pending = true;
+        continue;
+      }
+      passSource += latex.length;
+      passFormulas += 1;
+    }
     const formula = typeset(doc, latex);
     if (!formula) {
-      element.textContent = latex;
-      handled.add(element);
+      showSource(element, latex);
       continue;
     }
     handled.add(formula);
     element.replaceWith(formula);
   }
+  return pending;
+}
+
+type IdleHandle = { cancel(): void };
+
+function whenIdle(run: () => void): IdleHandle {
+  const scope = globalThis as typeof globalThis & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (scope.requestIdleCallback && scope.cancelIdleCallback) {
+    const handle = scope.requestIdleCallback(run, { timeout: 500 });
+    return { cancel: () => scope.cancelIdleCallback!(handle) };
+  }
+  const handle = setTimeout(run, 16);
+  return { cancel: () => clearTimeout(handle) };
+}
+
+/** Typeset what a pass left over, one budget-sized chunk per idle period. */
+function finishWhenIdle(root: Element): () => void {
+  let handle: IdleHandle | null = null;
+  const step = () => {
+    handle = null;
+    if (!root.isConnected) return;
+    if (renderInlineMath(root)) handle = whenIdle(step);
+  };
+  handle = whenIdle(step);
+  return () => handle?.cancel();
 }
 
 /**
  * Typeset the inline formulas of prose injected into `ref` as `html`. Runs
  * after every commit, before paint: React may rewrite the injected markup on
  * any re-render (not only when `html` changes), which would put the stored
- * source spans back. Formulas already typeset are skipped, so a commit that
- * left the markup alone costs one query. Never updates React state.
+ * source spans back. Formulas already typeset are skipped and cached renders
+ * are cloned, so a commit that left the markup alone costs one query. What the
+ * budget leaves over is typeset in idle time; the next commit, an unmount or
+ * new content cancels that and starts over from the markup then in place.
+ * Never updates React state.
  */
 export function useInlineMath(ref: RefObject<Element | null>, html: string): void {
   useLayoutEffect(() => {
-    if (ref.current && html.includes(INLINE_MATH_ATTRIBUTE)) renderInlineMath(ref.current);
+    const root = ref.current;
+    if (!root || !html.includes(INLINE_MATH_ATTRIBUTE)) return;
+    if (renderInlineMath(root)) return finishWhenIdle(root);
   });
 }

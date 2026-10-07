@@ -114,4 +114,28 @@ describe('app slide renderer — inline formulas', () => {
     update({ elementInfo: table(prose('y^2'), 500) });
     expectTypeset('y^2');
   });
+
+  it('stays typeset on identical re-renders and on A→B→A→A, in every element', () => {
+    const cases = [
+      [BaseTextElement, (content: string) => text(content)],
+      [BaseShapeElement, (content: string) => shape(content)],
+      [StaticTable, (content: string) => table(content)],
+    ] as const;
+    for (const [component, make] of cases) {
+      const same = make(prose('x^2'));
+      const update = mount(component as ComponentType<{ elementInfo: unknown }>, {
+        elementInfo: same,
+      });
+      update({ elementInfo: same });
+      expectTypeset('x^2');
+      for (const latex of ['y^2', 'x^2', 'x^2']) {
+        update({ elementInfo: make(prose(latex)) });
+        expectTypeset(latex);
+      }
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      host = null;
+    }
+  });
 });
