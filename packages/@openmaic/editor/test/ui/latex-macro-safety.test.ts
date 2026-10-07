@@ -37,6 +37,25 @@ describe('editor math rendering ignores formula-defined macros', () => {
     });
   }
 
+  it('keeps built-in equation numbering', () => {
+    const html = (latex: string) => {
+      const result = renderLatexSource(latex);
+      return 'html' in result ? (result.html ?? '') : `ERROR ${result.error}`;
+    };
+    const text = (markup: string) => markup.replace(/<[^>]*>/g, '');
+    const numbers = (markup: string) => markup.match(/class="eqn-num"/g)?.length ?? 0;
+    expect(text(html('E=mc^2\\tag{1}'))).toContain('(1)');
+    expect(text(html('E=mc^2\\tag*{(A)}'))).toContain('(A)');
+    expect(numbers(html('\\begin{align} a &= b \\\\ c &= d \\\\ e &= f \\end{align}'))).toBe(3);
+    expect(
+      numbers(
+        html('\\begin{align} a &= b \\notag \\\\ c &= d \\nonumber \\\\ e &= f \\end{align}'),
+      ),
+    ).toBe(1);
+    // A self-referencing tag is dropped rather than recursed into.
+    expect(text(html('x \\tag{\\df@tag}'))).not.toMatch(/ERROR|\(/);
+  });
+
   it('still renders legitimate formulas', () => {
     expect(renderLatexSource('x \\neq \\frac{1}{2} \\iff a, \\dots, b')).toMatchObject({
       html: expect.stringContaining('katex'),

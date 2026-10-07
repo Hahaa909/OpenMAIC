@@ -244,3 +244,141 @@ describe('legitimate formulas render exactly as before', () => {
     });
   }
 });
+
+describe('built-in equation numbering survives the hardening', () => {
+  /** [formula, the explicit tags it shows]. Automatic numbers are CSS counters. */
+  const NUMBERED: readonly [string, readonly string[]][] = [
+    ['E = mc^2 \\tag{1}', ['(1)']],
+    ['E = mc^2 \\tag*{a}', ['a']],
+    ['\\begin{equation} x = y \\tag*{(*)} \\end{equation}', ['(*)']],
+    [
+      '\\begin{align} a &= b \\\\ c &= d \\nonumber \\\\ e &= f \\notag \\\\ g &= h \\tag{9} \\\\ i &= j \\end{align}',
+      ['(9)'],
+    ],
+    ['\\begin{gather} a = b \\notag \\\\ c = d \\tag*{iv} \\end{gather}', ['iv']],
+  ];
+  const katexDisplay = (latex: string, options: object) =>
+    katex.renderToString(latex, { ...options, displayMode: true, throwOnError: true });
+  const temmlDisplay = (latex: string, options: object) =>
+    temml.renderToString(latex, { ...options, displayMode: true, throwOnError: true });
+  /** Visible text: markup and the source annotation removed. */
+  const textOf = (html: string) =>
+    html.replace(/<annotation[\s\S]*?<\/annotation>/g, '').replace(/<[^>]*>/g, '');
+
+  for (const [latex, tags] of NUMBERED) {
+    it(`KaTeX and Temml number ${latex} exactly as stock`, () => {
+      for (const output of ['html', 'mathml', 'htmlAndMathml'] as const) {
+        expect(katexDisplay(latex, safeKatexOptions({ output })), output).toBe(
+          katexDisplay(latex, { output }),
+        );
+      }
+      expect(temmlDisplay(latex, safeKatexOptions())).toBe(temmlDisplay(latex, {}));
+      // Guard the comparison itself: stock output does show the tags.
+      for (const tag of tags) {
+        expect(textOf(katexDisplay(latex, safeKatexOptions({ output: 'html' })))).toContain(tag);
+        expect(textOf(temmlDisplay(latex, safeKatexOptions()))).toContain(tag);
+      }
+    });
+  }
+
+  /** Automatic equation numbers: KaTeX's and Temml's counter cells. */
+  const autoNumbers = (html: string) => html.match(/class="(?:eqn-num|tml-eqn)"/g)?.length ?? 0;
+
+  it('suppresses align numbers with \\nonumber and \\notag', () => {
+    const katexHtml = (latex: string) => katexDisplay(latex, safeKatexOptions({ output: 'html' }));
+    const temmlMathml = (latex: string) => temmlDisplay(latex, safeKatexOptions());
+    for (const render of [katexHtml, temmlMathml]) {
+      expect(
+        autoNumbers(render('\\begin{align} a &= b \\\\ c &= d \\\\ e &= f \\end{align}')),
+      ).toBe(3);
+      expect(
+        autoNumbers(
+          render('\\begin{align} a &= b \\nonumber \\\\ c &= d \\notag \\\\ e &= f \\end{align}'),
+        ),
+      ).toBe(1);
+    }
+  });
+
+  describe('production consumers', () => {
+    const consumers: Record<string, (latex: string) => string> = {
+      'slide latex element': (latex) => renderLatexElementHtml(latex) ?? '',
+      'quiz math text (display)': (latex) => renderLatexToHtml(latex, true) ?? '',
+      'editor latex dialog': (latex) => {
+        const result = renderLatexSource(latex);
+        return 'html' in result ? (result.html ?? '') : `ERROR ${result.error}`;
+      },
+      'workbench chat markdown': (latex) =>
+        renderToStaticMarkup(createElement(TextBlock, { text: `$$\n${latex}\n$$` })),
+    };
+    for (const [name, render] of Object.entries(consumers)) {
+      it(`${name}: shows \\tag, \\tag*, and respects \\notag`, () => {
+        expect(textOf(render('E=mc^2\\tag{1}'))).toContain('(1)');
+        expect(textOf(render('E=mc^2\\tag*{(A)}'))).toContain('(A)');
+        const all = render('\\begin{align} a &= b \\\\ c &= d \\\\ e &= f \\end{align}');
+        const some = render(
+          '\\begin{align} a &= b \\notag \\\\ c &= d \\nonumber \\\\ e &= f \\end{align}',
+        );
+        expect(autoNumbers(all)).toBeGreaterThan(0);
+        expect(autoNumbers(some)).toBe(autoNumbers(all) / 3);
+      });
+    }
+  });
+
+  describe('the numbering path cannot define or expand anything else', () => {
+    const render = (latex: string) => katexDisplay(latex, safeKatexOptions());
+    const renderTemml = (latex: string) => temmlDisplay(latex, safeKatexOptions());
+
+    it.each([
+      ['a definition inside a tag', 'x \\tag{\\gdef\\ma{LEAK}} \\ma'],
+      ['a definition used inside its tag', 'x \\tag{\\gdef\\ma{LEAK}\\ma}'],
+      ['a \\newcommand inside a starred tag', 'x \\tag*{\\newcommand{\\ma}{LEAK}\\ma}'],
+      [
+        'a tag written as \\gdef\\df@tag, then a macro',
+        '\\gdef\\df@tag{\\text{a}}\\gdef\\ma{LEAK} x \\ma',
+      ],
+      ['a recursive \\@eqnsw', '\\gdef\\@eqnsw{\\@eqnsw\\@eqnsw}\\@eqnsw'],
+      ['\\@eqnsw set to text', '\\gdef\\@eqnsw{LEAK}\\@eqnsw'],
+    ])('%s stays inert', (_name, latex) => {
+      for (const engine of [render, renderTemml]) {
+        expect(() => engine(latex)).toThrow(
+          /Undefined control sequence|Unsupported function name|Multiple \\tag/,
+        );
+      }
+    });
+
+    it.each([
+      ['\\tag{\\df@tag}', 'x \\tag{\\df@tag}'],
+      ['\\tag{{\\df@tag}}', 'x \\tag{{\\df@tag}}'],
+      ['\\gdef\\df@tag{\\text{\\df@tag}}', 'x \\gdef\\df@tag{\\text{\\df@tag}}'],
+      [
+        '\\expandafter\\gdef\\expandafter\\df@tag',
+        'x \\expandafter\\gdef\\expandafter\\df@tag{\\text{\\df@tag}}',
+      ],
+    ])('self-referencing tag %s is dropped instead of recursing', (_name, latex) => {
+      // Stock engines recurse on these until the stack or the expansion budget runs out.
+      expect(() => katexDisplay(latex, {})).toThrow(/call stack|Too many expansions/);
+      for (const engine of [render, renderTemml]) {
+        const html = engine(latex);
+        expect(textOf(html)).not.toMatch(/\(|df@tag/);
+      }
+    });
+
+    it('rejects a second tag, including one nested in the first', () => {
+      for (const engine of [render, renderTemml]) {
+        expect(() => engine('x \\tag{1} \\tag{2}')).toThrow(/Multiple \\tag/);
+        expect(() => engine('x \\tag{\\tag{2}}')).toThrow(/Multiple \\tag/);
+      }
+    });
+
+    it('drops tag shapes the built-ins never produce', () => {
+      for (const latex of [
+        'x \\gdef\\df@tag{y}',
+        'x \\gdef\\df@tag{\\text{a}b}',
+        'x \\gdef\\df@tag#1{\\text{#1}}',
+      ]) {
+        expect(textOf(render(latex)), latex).toBe(textOf(render('x')));
+        expect(textOf(renderTemml(latex)), latex).toBe(textOf(renderTemml('x')));
+      }
+    });
+  });
+});

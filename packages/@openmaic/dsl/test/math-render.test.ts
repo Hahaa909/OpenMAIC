@@ -28,17 +28,37 @@ function contextOver(source: string[]) {
         if (depth === 0) break;
         group.push(token);
       }
-      return { tokens: group };
+      // The engines return argument tokens in stack order (last first).
+      return { tokens: group.reverse() };
+    },
+    defined: new Map<string, { tokens: { text: string }[]; numArgs: number }>(),
+    macros: {
+      set: (name: string, value: { tokens: { text: string }[]; numArgs: number }) => {
+        context.defined.set(name, value);
+      },
     },
   };
   return { context, rest: () => tokens.join('') };
 }
 
-function expand(command: string, source: string[]): string {
+function expandWithState(command: string, source: string[]) {
   const macro = safeKatexOptions().macros[command];
   const { context, rest } = contextOver(source);
   const replacement = typeof macro === 'function' ? macro(context) : macro;
-  return replacement + rest();
+  const defined = Object.fromEntries(
+    [...context.defined].map(([name, value]) => [
+      name,
+      [...value.tokens]
+        .reverse()
+        .map((token) => token.text)
+        .join(''),
+    ]),
+  );
+  return { output: replacement + rest(), defined };
+}
+
+function expand(command: string, source: string[]): string {
+  return expandWithState(command, source).output;
 }
 
 describe('safeKatexOptions', () => {
@@ -128,6 +148,49 @@ describe('safeKatexOptions', () => {
     it('prefixes are dropped', () => {
       expect(expand('\\global', ['y'])).toBe('y');
       expect(expand('\\long', ['y'])).toBe('y');
+    });
+  });
+
+  describe('\\gdef sets only the built-in equation-numbering state', () => {
+    const tagBody = (...inner: string[]) => ['{', '\\text', '{', ...inner, '}', '}'];
+
+    it('accepts the shapes that \\tag, \\tag*, and \\nonumber expand to', () => {
+      expect(
+        expandWithState('\\gdef', ['\\df@tag', ...tagBody('(', '{', '1', '}', ')'), 'y']),
+      ).toEqual({
+        output: 'y',
+        defined: { '\\df@tag': '\\text{({1})}' },
+      });
+      expect(expandWithState('\\gdef', ['\\df@tag', ...tagBody('a'), 'y'])).toEqual({
+        output: 'y',
+        defined: { '\\df@tag': '\\text{a}' },
+      });
+      expect(expandWithState('\\gdef', ['\\@eqnsw', '{', '0', '}', 'y'])).toEqual({
+        output: 'y',
+        defined: { '\\@eqnsw': '0' },
+      });
+    });
+
+    it.each([
+      ['any other name', ['\\ma', ...tagBody('a')]],
+      ['a self-referencing tag', ['\\df@tag', ...tagBody('\\df@tag', 'x')]],
+      ['a nested self-reference', ['\\df@tag', ...tagBody('{', '\\df@tag', '}')]],
+      ['a tag that is not one \\text group', ['\\df@tag', '{', 'x', '}']],
+      ['a tag with text after the group', ['\\df@tag', '{', '\\text', '{', 'a', '}', 'b', '}']],
+      ['a tag with parameters', ['\\df@tag', '#', '1', ...tagBody('#', '1')]],
+      ['\\@eqnsw set to anything but 0', ['\\@eqnsw', '{', '1', '}']],
+      ['a recursive \\@eqnsw', ['\\@eqnsw', '{', '\\@eqnsw', '\\@eqnsw', '}']],
+    ])('swallows %s without defining anything', (_name, definition) => {
+      expect(expandWithState('\\gdef', [...definition, 'y'])).toEqual({ output: 'y', defined: {} });
+    });
+
+    it('keeps every other definition command inert for the state names', () => {
+      for (const command of ['\\def', '\\edef', '\\xdef']) {
+        expect(expandWithState(command, ['\\df@tag', ...tagBody('a'), 'y']), command).toEqual({
+          output: 'y',
+          defined: {},
+        });
+      }
     });
   });
 });

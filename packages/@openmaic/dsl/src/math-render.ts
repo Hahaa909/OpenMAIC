@@ -12,7 +12,10 @@
  * - every macro-defining command is replaced by an inert macro that consumes
  *   the definition without registering anything. A formula that then uses the
  *   undefined name fails like any other unknown command (rendered as an error
- *   span or thrown, depending on the caller's `throwOnError`);
+ *   span or thrown, depending on the caller's `throwOnError`). The one
+ *   exception is the state behind built-in equation numbering (`\tag`,
+ *   `\tag*`, `\nonumber`, `\notag`), which the engines set with `\gdef`; only
+ *   its built-in shapes are accepted (see `gdefNumberingStateOnly`);
  * - `trust` is forced to `false`;
  * - `maxExpand` is pinned explicitly. With definitions disabled, expansion is
  *   linear in the input length, so this is a backstop rather than the guard.
@@ -73,7 +76,11 @@ interface MacroContext {
   future(): MacroToken;
   popToken(): MacroToken;
   consumeSpaces(): void;
+  /** Tokens come back in stack order (last token first), outer braces removed. */
   consumeArg(): { tokens: MacroToken[] };
+  macros: {
+    set(name: string, value: unknown, global: boolean): void;
+  };
 }
 
 const END = 'EOF';
@@ -82,12 +89,82 @@ function atEnd(context: MacroContext): boolean {
   return context.future().text === END;
 }
 
+/** Skip `<parameter text>{<body>}` after a definition's name. */
+function swallowDefinitionText(context: MacroContext): void {
+  while (!atEnd(context) && context.future().text !== '{') context.popToken();
+  if (!atEnd(context)) context.consumeArg();
+}
+
 /** `\def<cs><parameter text>{<body>}`: drop the name, parameters, and body. */
 function swallowDef(raw: object): string {
   const context = raw as MacroContext;
   if (!atEnd(context)) context.popToken();
-  while (!atEnd(context) && context.future().text !== '{') context.popToken();
-  if (!atEnd(context)) context.consumeArg();
+  swallowDefinitionText(context);
+  return '';
+}
+
+/**
+ * The engines' built-in equation numbering keeps its state in two internal
+ * macros, and sets them with `\gdef` from built-in macros:
+ *
+ * - `\tag{x}` and `\tag*{x}` expand (through `\tag@paren` / `\tag@literal`) to
+ *   `\gdef\df@tag{\text{(x)}}` / `\gdef\df@tag{\text{x}}`; the engine expands
+ *   `\df@tag` once, after the row or the whole formula, as the tag;
+ * - `\nonumber` and `\notag` expand to `\gdef\@eqnsw{0}`, which suppresses the
+ *   automatic number of the current `align`/`gather`/`equation` row.
+ *
+ * `@` is a letter in both engines' lexers, so a formula can also name these
+ * macros itself: the check below does not rely on them being private. It
+ * allows exactly the two built-in shapes, which a formula could already
+ * produce with `\tag*` and `\nonumber`, so it adds no new capability:
+ *
+ * - `\@eqnsw` may only be set to `0`;
+ * - `\df@tag` may only be set to one `\text{...}` group that does not mention
+ *   `\df@tag`. The engine expands the tag exactly once, so its output stays
+ *   proportional to the input; a self-reference would re-expand it until the
+ *   call stack or the expansion budget runs out (`\tag{\df@tag}`). Nested
+ *   `\tag` inside the tag is rejected by the engines (`Multiple \tag`), and
+ *   every other definition inside it stays inert.
+ *
+ * Every other `\gdef` is swallowed like any definition.
+ */
+const EQUATION_NUMBERING_STATE: Readonly<Record<string, (body: MacroToken[]) => boolean>> = {
+  '\\@eqnsw': (body) => body.length === 1 && body[0].text === '0',
+  '\\df@tag': (body) => {
+    if (body.length < 3 || body[0].text !== '\\text' || body[1].text !== '{') return false;
+    let depth = 0;
+    for (let index = 1; index < body.length; index += 1) {
+      const text = body[index].text;
+      if (text === '\\df@tag') return false;
+      if (text === '{') depth += 1;
+      if (text === '}') depth -= 1;
+      // The `\text` group must close at the last token, and only there.
+      if (depth === 0) return index === body.length - 1;
+    }
+    return false;
+  },
+};
+
+/**
+ * `\gdef`: inert, except for the built-in equation-numbering state described
+ * above, which it sets exactly as the engines' own `\gdef` would.
+ */
+function gdefNumberingStateOnly(raw: object): string {
+  const context = raw as MacroContext;
+  if (atEnd(context)) return '';
+  const name = context.popToken().text;
+  const accepts = Object.hasOwn(EQUATION_NUMBERING_STATE, name)
+    ? EQUATION_NUMBERING_STATE[name]
+    : undefined;
+  if (!accepts || context.future().text !== '{') {
+    swallowDefinitionText(context);
+    return '';
+  }
+  const { tokens } = context.consumeArg();
+  if (accepts([...tokens].reverse())) {
+    // The same value the engines' `\gdef` stores for a parameterless macro.
+    context.macros.set(name, { tokens, numArgs: 0, delimiters: [[]] }, true);
+  }
   return '';
 }
 
@@ -152,7 +229,7 @@ const INERT_DEFINITIONS: Readonly<
   Record<(typeof MATH_MACRO_DEFINITION_COMMANDS)[number], MathMacroExpansion>
 > = {
   '\\def': swallowDef,
-  '\\gdef': swallowDef,
+  '\\gdef': gdefNumberingStateOnly,
   '\\edef': swallowDef,
   '\\xdef': swallowDef,
   // Prefixes: dropping them leaves the following definition to be swallowed.
