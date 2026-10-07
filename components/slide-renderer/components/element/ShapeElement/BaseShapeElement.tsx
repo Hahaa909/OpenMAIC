@@ -1,6 +1,8 @@
 'use client';
 
+import { useRef } from 'react';
 import type { PPTShapeElement, ShapeText } from '@openmaic/dsl';
+import { useInlineMath } from '@openmaic/renderer';
 import { useElementOutline } from '../hooks/useElementOutline';
 import { useElementShadow } from '../hooks/useElementShadow';
 import { useElementFlip } from '../hooks/useElementFlip';
@@ -27,6 +29,9 @@ export function BaseShapeElement({ elementInfo }: BaseShapeElementProps) {
     defaultFontName: 'Microsoft YaHei',
     defaultColor: '#333333',
   };
+
+  const proseRef = useRef<HTMLDivElement>(null);
+  useInlineMath(proseRef, text.content);
 
   return (
     <div
@@ -103,6 +108,7 @@ export function BaseShapeElement({ elementInfo }: BaseShapeElementProps) {
             }}
           >
             <div
+              ref={proseRef}
               className="ProseMirror-static [&_p]:mb-[var(--paragraphSpace)]"
               style={{
                 // @ts-expect-error CSS custom properties

@@ -2,9 +2,9 @@
  * Slide rich text for the standalone HTML export: sanitized with the
  * persistence policy, plus a report of what that policy removes.
  *
- * - Inline formulas survive sanitization: the shared prose policy carries
- *   them through as LaTeX source and re-renders them with KaTeX (see
- *   `lib/sanitize/inline-math.ts`).
+ * - Inline formulas survive sanitization as LaTeX source
+ *   (`<span data-inline-math>`, see `lib/sanitize/inline-math.ts`); the
+ *   player's slide renderer typesets them when the file is opened.
  * - Resources the policy drops. Images (`src`, `srcset`, posters) and CSS
  *   `url(...)` / `image-set(...)` / `@import` references cannot be shown
  *   offline once removed; they are inventoried over the whole authored tree

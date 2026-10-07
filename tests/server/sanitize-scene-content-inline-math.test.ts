@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * Inline formulas at the persistence boundary: editor inline math keeps its
- * LaTeX source and a working render through `sanitizeSceneContent`, nothing
- * authored rides along with it, and formula-free prose is untouched.
+ * Inline formulas at the persistence boundary: editor inline math is stored
+ * as LaTeX source only (`<span data-inline-math="SRC">SRC</span>`), the editor
+ * parses it back, nothing authored rides along with it, and formula-free
+ * prose is untouched.
  */
 import katex from 'katex';
 import type { Node as ProseMirrorNode } from 'prosemirror-model';
@@ -11,6 +12,7 @@ import {
   createTextDocument,
   serializeTextDocument,
 } from '../../packages/@openmaic/editor/src/react/text/prosemirror/document';
+import { MAX_INLINE_MATH_SOURCE } from '@/lib/sanitize/inline-math';
 import { sanitizeProseHtml, sanitizeSceneContent } from '@/lib/server/sanitize-scene-content';
 
 const LATEX = '\\sqrt{x}+\\frac{a}{b}';
@@ -113,26 +115,24 @@ function editorFormulas(html: string): string[] {
   return found;
 }
 
-/** A fresh KaTeX render of a formula as the DOM serializes it, without its root tag. */
-function freshRenderBody(latex: string): string {
-  return parse(katex.renderToString(latex, { output: 'html', throwOnError: false, trust: false }))
-    .firstElementChild!.innerHTML;
+/** The stored form of one formula. */
+function stored(latex: string): string {
+  const span = document.createElement('span');
+  span.setAttribute('data-inline-math', latex);
+  span.textContent = latex;
+  return span.outerHTML;
 }
 
 describe('sanitizeSceneContent — inline formulas', () => {
-  it('keeps editor inline math in text, shape text and table cells', () => {
+  it('stores editor inline math as source in text, shape text and table cells', () => {
     const sanitized = sanitizeSceneContent(sceneWith(editorHtml()));
     for (const html of proseFields(sanitized)) {
-      expect(html).toContain(`data-inline-math="${LATEX}"`);
-      expect(html).toContain(freshRenderBody(LATEX));
-      expect(html).toContain('<svg'); // the radical
-      expect(html).toContain('viewBox='); // camelCase survives
-      expect(html).toMatch(/style="top:/); // positioned fraction parts
-      expect(html.startsWith('<p>Area: ')).toBe(true);
-      expect(html).toContain(' units</p>');
-      expect(html).not.toContain('contenteditable');
-      expect(html).not.toContain('<math');
+      expect(html).toBe(`<p>Area: ${stored(LATEX)} units</p>`);
       expect(editorFormulas(html)).toEqual([LATEX]);
+      // The editor re-renders it from source.
+      const reopened = serializeTextDocument(createTextDocument(html));
+      expect(reopened).toContain('<svg');
+      expect(reopened).toContain(`data-inline-math="${LATEX}"`);
     }
   });
 
@@ -163,22 +163,23 @@ describe('sanitizeSceneContent — inline formulas', () => {
     expect(editorFormulas(malformed)).toEqual(['\\frac{']);
     expect(attributeNames(malformed).filter((name) => name.startsWith('on'))).toEqual([]);
     const empty = sanitizeProseHtml(editorHtmlFor(''));
-    expect(empty).toBe('<p>Area: <span data-inline-math=""></span> units</p>');
+    expect(empty).toBe('<p>Area: <span data-inline-math></span> units</p>');
+    expect(editorFormulas(empty)).toEqual(['']);
   });
 
-  it('keeps a formula over the render limit recoverable by the editor', () => {
-    const latex = 'x+'.repeat(5_000);
+  it('keeps an over-long formula as plain LaTeX text', () => {
+    const latex = 'x+'.repeat(MAX_INLINE_MATH_SOURCE);
     const once = sanitizeProseHtml(editorHtmlFor(latex));
-    expect(once).not.toContain('class="katex"');
-    expect(editorFormulas(once)).toEqual([latex]);
+    expect(once).toBe(`<p>Area: ${latex} units</p>`);
+    expect(editorFormulas(once)).toEqual([]);
     expect(sanitizeProseHtml(once)).toBe(once);
+    const atLimit = 'x'.repeat(MAX_INLINE_MATH_SOURCE);
+    expect(sanitizeProseHtml(stored(atLimit))).toBe(stored(atLimit));
   });
 
   it('recovers the source from the KaTeX annotation when the attribute is missing', () => {
     const withAnnotation = katex.renderToString(LATEX, { output: 'htmlAndMathml' });
-    const html = sanitizeProseHtml(`<p>${withAnnotation}</p>`);
-    expect(html).toContain(`data-inline-math="${LATEX}"`);
-    expect(html).toContain(freshRenderBody(LATEX));
+    expect(sanitizeProseHtml(`<p>${withAnnotation}</p>`)).toBe(`<p>${stored(LATEX)}</p>`);
   });
 
   it('leaves content flattened before this fix as it is', () => {
@@ -205,6 +206,7 @@ describe('sanitizeSceneContent — inline formulas', () => {
       expect(html).not.toContain('background');
       expect(attributeNames(html).filter((name) => name.startsWith('on'))).toEqual([]);
       expect(editorFormulas(html)).toEqual(['x', 'y']);
+      expect(html).toBe(`<p>${stored('x')}${stored('y')}</p>`);
     }
   });
 
@@ -230,7 +232,7 @@ describe('sanitizeSceneContent — inline formulas', () => {
         const roots = parse(html).querySelectorAll('[data-inline-math]');
         expect(roots).toHaveLength(1);
         expect(roots[0].getAttribute('data-inline-math')).toBe(latex);
-        expect(roots[0].classList.contains('katex')).toBe(true);
+        expect(roots[0].textContent).toBe(latex);
       }
       expect(sanitizeSceneContent(sanitized)).toEqual(sanitized);
     });
@@ -245,7 +247,7 @@ describe('sanitizeSceneContent — inline formulas', () => {
     ].join(' ');
     for (const html of proseFields(sanitizeSceneContent(sceneWith(editorHtmlFor('y^2', forged))))) {
       const fragment = parse(html);
-      expect(fragment.querySelectorAll('.katex')).toHaveLength(1);
+      expect(fragment.querySelectorAll('[data-inline-math]')).toHaveLength(1);
       expect(fragment.querySelector('a')?.getAttribute('title')).toBe('openmaicmath0x0x');
       expect(fragment.textContent).toContain('openmaicmath0x0x');
     }
@@ -268,9 +270,7 @@ describe('sanitizeSceneContent — inline formulas', () => {
 });
 
 describe('sanitizeSceneContent — formula-free prose', () => {
-  it('is sanitized exactly as before, without re-serialization', () => {
-    // A tree an HTML5 parser would restructure (no <tbody>, a span directly
-    // in <table>): unchanged proves no parse/serialize pass ran.
+  it('is sanitized exactly as before', () => {
     const cases: Array<[string, string]> = [
       [
         '<table><span>x</span><tr><td>c</td></tr></table>',

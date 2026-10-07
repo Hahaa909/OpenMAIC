@@ -154,13 +154,17 @@ function hasQuizMath(text: string | undefined): boolean {
 
 /**
  * Whether the classroom shows math, so the KaTeX fonts must ship: a slide
- * carrying KaTeX markup, or quiz text the player renders as math (the same
- * `renderQuizMathText` decides it in both places).
+ * carrying KaTeX markup or an inline formula, or quiz text the player renders
+ * as math (the same `renderQuizMathText` decides it in both places).
  */
 function needsMathFonts(manifest: ClassroomManifest): boolean {
   return manifest.scenes.some((scene) => {
     const content = scene.content;
-    if (content.type === 'slide') return JSON.stringify(content.canvas).includes('katex');
+    if (content.type === 'slide') {
+      // KaTeX markup, or inline formulas the player typesets from source.
+      const canvas = JSON.stringify(content.canvas);
+      return canvas.includes('katex') || canvas.includes('data-inline-math');
+    }
     if (content.type !== 'quiz') return false;
     return (content.questions ?? []).some(
       (question) =>

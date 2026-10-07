@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import type { PPTShapeElement, ShapeText } from '@openmaic/dsl';
 import { useElementOutline } from '../shared/useElementOutline';
 import { useElementShadow } from '../shared/useElementShadow';
@@ -9,6 +9,7 @@ import { useElementFill } from '../shared/useElementFill';
 import { GradientDefs } from './GradientDefs';
 import { PatternDefs } from './PatternDefs';
 import { preservesPlainTextLineBreaks } from '../../utils/richText';
+import { useInlineMath } from '../../utils/inlineMath';
 
 export interface BaseShapeElementProps {
   elementInfo: PPTShapeElement;
@@ -106,6 +107,9 @@ export function BaseShapeElement({ elementInfo, renderLabel }: BaseShapeElementP
     defaultColor: '#333333',
   };
 
+  const proseRef = useRef<HTMLDivElement>(null);
+  useInlineMath(proseRef, text.content);
+
   const justifyContent =
     text.align === 'top' ? 'flex-start' : text.align === 'bottom' ? 'flex-end' : 'center';
   const defaultLabelContent = (
@@ -127,6 +131,7 @@ export function BaseShapeElement({ elementInfo, renderLabel }: BaseShapeElementP
       }}
     >
       <div
+        ref={proseRef}
         className="ProseMirror-static slide-renderer-prose"
         style={{
           // @ts-expect-error CSS custom properties

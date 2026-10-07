@@ -1,7 +1,7 @@
 /**
  * Scene-content HTML sanitization for the classroom persistence boundary.
- * Needs no DOM (`sanitize-html`, `parse5` and `katex` only), so client code
- * can apply the same policy: the standalone HTML export runs it over the
+ * Needs no DOM (`sanitize-html` and its parser only), so client code can
+ * apply the same policy: the standalone HTML export runs it over the
  * working state it embeds, which has not crossed the persistence boundary yet.
  *
  * INVARIANT: stored slide HTML is restricted to the formatting vocabulary the
@@ -28,17 +28,12 @@
  * needs its own policy so formulas are not flattened.
  *
  * Inline formulas inside prose (the editor's `span[data-inline-math]`) are
- * carried through the prose policy as source only and re-rendered with KaTeX
- * afterwards; see `./inline-math`.
+ * stored as LaTeX source only and rendered by the clients that display
+ * slides; see `./inline-math`. The server never runs KaTeX.
  */
 import sanitizeHtml, { type IOptions } from 'sanitize-html';
 
-import {
-  createInlineMathBudget,
-  liftInlineMath,
-  renderInlineMath,
-  type InlineMathBudget,
-} from './inline-math';
+import { liftInlineMath } from './inline-math';
 
 // ---------------------------------------------------------------------------
 // Allowlist primitives
@@ -207,9 +202,9 @@ const PROSE_OPTIONS: IOptions = {
 };
 
 /**
- * The prose policy plus `data-inline-math` on `span`, used only once every
- * formula has been replaced by an empty source span: the attribute value is
- * inert text, and each surviving span is refilled with a generated render.
+ * The prose policy plus `data-inline-math` on `span`, used only on prose whose
+ * formulas have all been reduced to source-only spans; the attribute value is
+ * inert text.
  */
 const PROSE_OPTIONS_WITH_MATH_SOURCE: IOptions = {
   ...PROSE_OPTIONS,
@@ -221,25 +216,14 @@ const PROSE_OPTIONS_WITH_MATH_SOURCE: IOptions = {
 
 /**
  * Sanitize one prose-HTML string (a text element's `content`, a shape's
- * `text.content`, or a table cell's `text`). Inline formulas keep their LaTeX
- * source and come back as a fresh KaTeX render, within `budget` (see
- * `./inline-math`); prose without a formula is sanitized exactly as before,
- * without the extra parse.
+ * `text.content`, or a table cell's `text`). Each inline formula is stored as
+ * `<span data-inline-math="LATEX">LATEX</span>`; prose without a formula is
+ * sanitized exactly as before.
  */
-export function sanitizeProseHtml(
-  html: string,
-  budget: InlineMathBudget = createInlineMathBudget(),
-): string {
-  try {
-    const lifted = liftInlineMath(html);
-    if (lifted !== null) {
-      return renderInlineMath(sanitizeHtml(lifted, PROSE_OPTIONS_WITH_MATH_SOURCE), budget);
-    }
-  } catch {
-    // Pathological markup (e.g. nesting deep enough to exhaust the stack in
-    // the tree passes): flatten its formulas rather than fail the read/write.
-  }
-  return sanitizeHtml(html, PROSE_OPTIONS);
+export function sanitizeProseHtml(html: string): string {
+  const lifted = liftInlineMath(html);
+  if (lifted === null) return sanitizeHtml(html, PROSE_OPTIONS);
+  return sanitizeHtml(lifted, PROSE_OPTIONS_WITH_MATH_SOURCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,11 +279,11 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sanitizeCell(row: unknown, budget: InlineMathBudget): unknown {
+function sanitizeCell(row: unknown): unknown {
   if (!Array.isArray(row)) return row;
   return row.map((cell) => {
     if (!isRecord(cell) || typeof cell.text !== 'string') return cell;
-    return { ...cell, text: sanitizeProseHtml(cell.text, budget) };
+    return { ...cell, text: sanitizeProseHtml(cell.text) };
   });
 }
 
@@ -310,25 +294,25 @@ function sanitizeCell(row: unknown, budget: InlineMathBudget): unknown {
  * latex uses the KaTeX snapshot policy. Code elements store plain text lines —
  * deliberately NOT treated as HTML, so code like `a < b` is never escaped.
  */
-function sanitizeValue(value: unknown, budget: InlineMathBudget): unknown {
-  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, budget));
+function sanitizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeValue);
   if (!isRecord(value)) return value;
 
   const out: JsonRecord = {};
   for (const [key, child] of Object.entries(value)) {
-    out[key] = sanitizeValue(child, budget);
+    out[key] = sanitizeValue(child);
   }
 
   if (typeof out.type !== 'string') return out;
 
   if (out.type === 'text' && typeof out.content === 'string') {
-    out.content = sanitizeProseHtml(out.content, budget);
+    out.content = sanitizeProseHtml(out.content);
   } else if (out.type === 'shape') {
     if (isRecord(out.text) && typeof out.text.content === 'string') {
-      out.text = { ...out.text, content: sanitizeProseHtml(out.text.content, budget) };
+      out.text = { ...out.text, content: sanitizeProseHtml(out.text.content) };
     }
   } else if (out.type === 'table' && Array.isArray(out.data)) {
-    out.data = out.data.map((row) => sanitizeCell(row, budget));
+    out.data = out.data.map(sanitizeCell);
   } else if (out.type === 'latex' && typeof out.html === 'string') {
     out.html = sanitizeLatexHtml(out.html);
   }
@@ -343,6 +327,5 @@ function sanitizeValue(value: unknown, budget: InlineMathBudget): unknown {
  * change existed, and the write path applies it to new payloads.
  */
 export function sanitizeSceneContent<T>(payload: T): T {
-  // One inline-formula rendering budget for the whole payload.
-  return sanitizeValue(payload, createInlineMathBudget()) as T;
+  return sanitizeValue(payload) as T;
 }

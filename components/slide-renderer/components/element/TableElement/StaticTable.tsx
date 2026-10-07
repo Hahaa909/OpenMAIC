@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type { PPTTableElement } from '@openmaic/dsl';
+import { useInlineMath } from '@openmaic/renderer';
 import { getTableSubThemeColor } from '@/lib/utils/element';
 import { getTextStyle, formatText, getHiddenCells } from './tableUtils';
 
@@ -26,6 +27,16 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
     Number.isFinite(cellMinHeight) && cellMinHeight >= 0 ? cellMinHeight : 40;
 
   const hiddenCells = useMemo(() => getHiddenCells(tableData), [tableData]);
+  const tableRef = useRef<HTMLTableElement>(null);
+  // Re-typeset whenever any cell's markup changes (React rewrites it then).
+  useInlineMath(
+    tableRef,
+    tableData
+      .map((row) =>
+        Array.isArray(row) ? row.map((cell) => formatText(cell?.text)).join('\u0000') : '',
+      )
+      .join('\u0001'),
+  );
 
   const [subThemeDark, subThemeLight] = useMemo(() => {
     if (!theme) return ['', ''];
@@ -83,6 +94,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
 
   return (
     <table
+      ref={tableRef}
       className="w-full h-full"
       style={{
         borderCollapse: 'collapse',

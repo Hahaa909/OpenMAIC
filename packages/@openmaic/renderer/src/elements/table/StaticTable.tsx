@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, type CSSProperties } from 'react';
+import { useMemo, useRef, type CSSProperties } from 'react';
 import type { PPTTableElement, TableCellBorder } from '@openmaic/dsl';
 import { getTableSubThemeColor } from '../../utils/element';
 import { getTextStyle } from './tableUtils';
+import { useInlineMath } from '../../utils/inlineMath';
 
 function cellBorderCss(b?: TableCellBorder): string | undefined {
   if (!b || b.width <= 0) return undefined;
@@ -17,6 +18,12 @@ interface StaticTableProps {
 
 export function StaticTable({ elementInfo }: StaticTableProps) {
   const { width, data, colWidths, cellMinHeight, rowHeights, outline, theme } = elementInfo;
+  const tableRef = useRef<HTMLTableElement>(null);
+  // Re-typeset whenever any cell's markup changes (React rewrites it then).
+  useInlineMath(
+    tableRef,
+    data.map((row) => row.map((cell) => cell?.text ?? '').join('\u0000')).join('\u0001'),
+  );
 
   const [subThemeDark, subThemeLight] = useMemo(() => {
     if (!theme) return ['', ''];
@@ -63,6 +70,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
 
   return (
     <table
+      ref={tableRef}
       className="slide-renderer-prose"
       style={{
         width: '100%',

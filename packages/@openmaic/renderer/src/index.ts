@@ -36,5 +36,11 @@ export {
 export { cn } from './utils/cn';
 export { getElementRange, getLineElementPath, getTableSubThemeColor } from './utils/element';
 export { createTextProseStyles } from './styles';
+export {
+  INLINE_MATH_ATTRIBUTE,
+  MAX_INLINE_MATH_SOURCE,
+  renderInlineMath,
+  useInlineMath,
+} from './utils/inlineMath';
 
 export * from './types';
