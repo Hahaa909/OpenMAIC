@@ -1499,6 +1499,51 @@ export async function foldersScenario(h: ExtractionHarness): Promise<void> {
   expect(await create('cell BIOLOGY')).toMatchObject({ status: 'ok', created: false });
 }
 
+/** Existing-folder answers use the listing's live-ready-source count. */
+export async function folderCountsScenario(h: ExtractionHarness): Promise<void> {
+  const create = () =>
+    createMaterialFolder(h.provider, {
+      ownerId: ACCOUNT,
+      name: 'Counts',
+      fence: 'request',
+    });
+  const made = await create();
+  expect(made).toMatchObject({ status: 'ok', created: true, folder: { materialCount: 0 } });
+  if (made.status !== 'ok') throw new Error('expected a folder');
+  const folderId = made.folder.id;
+  for (const id of ['count-a', 'count-b', 'count-deleted', 'count-uploading']) {
+    await seedSource(h, id, { folderId });
+  }
+  await seedDerivative(h, 'count-image', 'count-a');
+  await h.pool.query('UPDATE owner_material SET folder_id = $1 WHERE id = $2', [
+    folderId,
+    'count-image',
+  ]);
+  await h.pool.query("UPDATE owner_material SET deleted_at = 1 WHERE id = 'count-deleted'");
+  await h.pool.query("UPDATE owner_material SET status = 'uploading' WHERE id = 'count-uploading'");
+  expect(await listMaterialFolders(h.pool as never, ACCOUNT)).toMatchObject([{ materialCount: 2 }]);
+  expect(await create()).toMatchObject({
+    status: 'ok',
+    created: false,
+    folder: { materialCount: 2 },
+  });
+  const rename = (name: string) =>
+    renameMaterialFolder(h.provider, {
+      ownerId: ACCOUNT,
+      folderId,
+      name,
+      fence: 'request',
+    });
+  expect(await rename('Counts')).toMatchObject({
+    status: 'unchanged',
+    folder: { materialCount: 2 },
+  });
+  expect(await rename('Renamed counts')).toMatchObject({
+    status: 'renamed',
+    folder: { materialCount: 2 },
+  });
+}
+
 /**
  * Moving: into a folder and back to Unfiled, derivatives with their source,
  * all or nothing, never a derivative, a deleted or another owner's material,
@@ -1635,6 +1680,24 @@ export async function organizeAcrossClaimScenario(h: ExtractionHarness): Promise
   expect((await listMaterialFolders(h.pool as never, ACCOUNT)).map((f) => f.materialCount)).toEqual(
     [1],
   );
+}
+
+/** SQL NULL is not settled; tombstones and absent sources still are. */
+export async function watcherNullExtractionScenario(h: ExtractionHarness): Promise<void> {
+  const ids = ['null', 'idle', 'pending', 'running', 'done', 'failed', 'deleted'];
+  for (const id of ids) await seedSource(h, `watch-${id}`);
+  await h.pool.query(`UPDATE owner_material SET extraction = NULL
+    WHERE id IN ('watch-null', 'watch-deleted')`);
+  for (const status of ['pending', 'running', 'done', 'failed']) {
+    await h.pool.query('UPDATE owner_material SET extraction = $2::jsonb WHERE id = $1', [
+      `watch-${status}`,
+      JSON.stringify({ status }),
+    ]);
+  }
+  await h.pool.query("UPDATE owner_material SET deleted_at = 1 WHERE id = 'watch-deleted'");
+  expect(
+    await readSettledSources(h.pool as never, [...ids.map((id) => `watch-${id}`), 'missing']),
+  ).toEqual(['watch-done', 'watch-failed', 'watch-deleted', 'missing']);
 }
 
 /** An old failed poll must not consume the watch registered by a new retry. */

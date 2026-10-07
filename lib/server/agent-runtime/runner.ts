@@ -1430,6 +1430,7 @@ export async function runSession(ctx: RunContext, meta: ClaimedAgentSession): Pr
     });
     // Organizing the knowledge base: the run's owner, never a parameter.
     const materialLibraryTools = buildMaterialLibraryTools({
+      sessionId: id,
       ownerId: meta.ownerId,
       onLibraryChanged: onMaterialLibraryChanged,
     });

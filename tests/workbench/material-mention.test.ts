@@ -155,6 +155,192 @@ describe('staging a picked material', () => {
     await mounted.dispose();
   });
 
+  it.each(['double pick', 'remove and repick', 'old send settlement'] as const)(
+    'tracks same-turn picks by current object: %s',
+    async (scenario) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => Response.json({ enabled: true })),
+      );
+      const sink: { current: ComposerMaterials | null } = { current: null };
+      const record = recorder(sink);
+      function Harness() {
+        record(useComposerMaterials());
+        return null;
+      }
+      const mounted = mount();
+      await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+      await act(async () => {
+        await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+      });
+      const material = (id: string): WorkbenchMaterial => ({ materialId: id, name: id, bytes: 1 });
+      const original = material('same');
+      const repicked = { ...original, name: 'Later pick' };
+      await act(async () => {
+        sink.current!.addExisting(original);
+        if (scenario === 'double pick') sink.current!.addExisting(material('same'));
+      });
+      const sent = sink.current!.materials;
+      if (scenario !== 'double pick') {
+        await act(async () => {
+          sink.current!.remove('same');
+          sink.current!.addExisting(repicked);
+          if (scenario === 'old send settlement') {
+            sink.current!.removeSent(sent);
+            sink.current!.removeSent(sent);
+          }
+          sink.current!.addExisting(material('same'));
+        });
+      }
+      expect(sink.current!.materials).toEqual([scenario === 'double pick' ? original : repicked]);
+      expect(sink.current!.materials[0]).toBe(scenario === 'double pick' ? original : repicked);
+      await act(async () => {
+        for (let index = 0; index < MAX_COMPOSER_MATERIALS; index += 1) {
+          sink.current!.addExisting(material(`fill-${index}`));
+        }
+      });
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+      expect(sink.current!.materials.at(-1)?.materialId).toBe(`fill-${MAX_COMPOSER_MATERIALS - 2}`);
+      await mounted.dispose();
+    },
+  );
+
+  it('allows repicking after clear while preserving a pending upload reservation', async () => {
+    let resolveUpload!: (response: Response) => void;
+    let started = false;
+    const response = new Promise<Response>((resolve) => {
+      resolveUpload = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === '/api/agent/runtime') return Response.json({ enabled: true });
+        if (String(input) === '/api/materials') {
+          started = true;
+          return response;
+        }
+        throw new Error(`unexpected fetch ${String(input)}`);
+      }),
+    );
+    const sink: { current: ComposerMaterials | null } = { current: null };
+    const record = recorder(sink);
+    function Harness() {
+      record(useComposerMaterials());
+      return null;
+    }
+    const mounted = mount();
+    try {
+      await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+      await act(async () => {
+        await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+      });
+      const original: WorkbenchMaterial = { materialId: 'same', name: 'original', bytes: 1 };
+      const repicked = { ...original, name: 'repicked' };
+      await act(async () => {
+        sink.current!.addExisting(original);
+        sink.current!.addFiles([new File(['pdf'], 'late.pdf', { type: 'application/pdf' })]);
+      });
+      await vi.waitFor(() => expect(started).toBe(true));
+      await act(async () => sink.current!.clear());
+      expect(sink.current!.materials).toEqual([]);
+      expect(sink.current!.uploading).toHaveLength(1);
+      await act(async () => sink.current!.addExisting(repicked));
+      expect(sink.current!.materials).toEqual([repicked]);
+      expect(sink.current!.materials[0]).toBe(repicked);
+      await act(async () => {
+        for (let i = 0; i < MAX_COMPOSER_MATERIALS; i++)
+          sink.current!.addExisting({ materialId: `after-clear-${i}`, name: 'fill', bytes: 1 });
+      });
+      // The in-flight upload still owns one slot after clearing completed picks.
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS - 1);
+      expect(sink.current!.materials.at(-1)?.materialId).toBe(
+        `after-clear-${MAX_COMPOSER_MATERIALS - 3}`,
+      );
+      await act(async () => {
+        resolveUpload(Response.json({ materialId: 'late-upload', originalName: 'late', bytes: 3 }));
+        await response;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sink.current!.uploading).toHaveLength(0);
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+      expect(sink.current!.materials.at(-1)?.materialId).toBe('late-upload');
+      await act(async () => {
+        sink.current!.addExisting({ materialId: 'late-upload', name: 'duplicate', bytes: 3 });
+      });
+      expect(sink.current!.materials).toHaveLength(MAX_COMPOSER_MATERIALS);
+    } finally {
+      await mounted.dispose();
+    }
+  });
+
+  it.each(['removeSent', 'remove'] as const)(
+    'releases both objects when a library pick precedes its upload response: %s',
+    async (cleanup) => {
+      let resolveUpload!: (response: Response) => void;
+      let started = false;
+      const response = new Promise<Response>((resolve) => {
+        resolveUpload = resolve;
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === '/api/agent/runtime') return Response.json({ enabled: true });
+          if (String(input) === '/api/materials') {
+            started = true;
+            return response;
+          }
+          throw new Error(`unexpected fetch ${String(input)}`);
+        }),
+      );
+      const sink: { current: ComposerMaterials | null } = { current: null };
+      const record = recorder(sink);
+      function Harness() {
+        record(useComposerMaterials());
+        return null;
+      }
+      const mounted = mount();
+      await mounted.render(createElement(StrictMode, null, createElement(Harness)));
+      await act(async () => {
+        await vi.waitFor(() => expect(sink.current?.enabled).toBe(true));
+      });
+      await act(async () => {
+        sink.current!.addFiles([new File(['pdf'], 'delayed.pdf', { type: 'application/pdf' })]);
+      });
+      await vi.waitFor(() => expect(started).toBe(true));
+      await act(async () =>
+        sink.current!.addExisting({ materialId: 'same-upload', name: 'library copy', bytes: 3 }),
+      );
+      await act(async () => {
+        resolveUpload(
+          Response.json({ materialId: 'same-upload', originalName: 'upload copy', bytes: 3 }),
+        );
+        await response;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(sink.current!.materials.map((m) => m.materialId)).toEqual([
+        'same-upload',
+        'same-upload',
+      ]);
+      const sent = sink.current!.materials;
+      await act(async () => {
+        if (cleanup === 'removeSent') sink.current!.removeSent(sent);
+        else sink.current!.remove('same-upload');
+      });
+      expect(sink.current!.materials).toEqual([]);
+      await act(async () => {
+        for (let i = 0; i < MAX_COMPOSER_MATERIALS; i++)
+          sink.current!.addExisting({
+            materialId: `after-upload-${i}`,
+            name: `after-upload-${i}`,
+            bytes: 1,
+          });
+      });
+      const count = sink.current!.materials.length;
+      await mounted.dispose();
+      expect(count).toBe(MAX_COMPOSER_MATERIALS);
+    },
+  );
+
   it('stages once, attaches nothing, and keeps the per-message cap', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/api/agent/runtime')) return Response.json({ enabled: true });
@@ -319,7 +505,9 @@ describe('listing for the menu', () => {
     await mounted.render(createElement(Harness, { open: true, query: 'cell' }));
     await settle();
     expect(sink.current).toHaveLength(1);
-    expect(urls).toEqual(['/api/materials/library?sources=1&limit=20&query=cell&sessionId=ses-1']);
+    expect(urls).toEqual([
+      '/api/materials/library?sources=1&limit=20&limits=0&query=cell&sessionId=ses-1',
+    ]);
     expect(sink.current![0]).toMatchObject({ attached: true, staged: true });
 
     // A material change of this run refetches.

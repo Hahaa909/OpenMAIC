@@ -129,6 +129,14 @@ function likeLiteral(text: string): string {
   return text.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
+/** The same live-ready-source count in listings and existing-folder answers. */
+function folderMaterialCountSql(): string {
+  return `(SELECT COUNT(*) FROM owner_material AS material
+              WHERE material.owner_id = folder.owner_id AND material.folder_id = folder.id
+                AND material.derived_from IS NULL AND material.deleted_at IS NULL
+                AND material.status = 'ready')::text AS material_count`;
+}
+
 /** The owner's folders by name, each with how many live sources it holds. */
 export async function listMaterialFolders(
   queryable: Queryable,
@@ -143,16 +151,26 @@ export async function listMaterialFolders(
   }
   const result = await queryable.query<FolderRow>(
     `SELECT folder.id, folder.name, folder.created_at, folder.updated_at,
-            (SELECT COUNT(*) FROM owner_material AS material
-              WHERE material.owner_id = folder.owner_id AND material.folder_id = folder.id
-                AND material.derived_from IS NULL AND material.deleted_at IS NULL
-                AND material.status = 'ready')::text AS material_count
+            ${folderMaterialCountSql()}
        FROM material_folders AS folder
       WHERE folder.owner_id = $1 ${filter}
       ORDER BY folder.normalized_name, folder.id`,
     params,
   );
   return result.rows.map(folderOf);
+}
+
+/** Folder names for material listings, without per-folder usage counts. */
+export async function listMaterialFolderNames(
+  queryable: Queryable,
+  ownerId: string,
+): Promise<Array<Pick<MaterialFolder, 'id' | 'name'>>> {
+  const result = await queryable.query<{ id: string; name: string }>(
+    `SELECT id, name FROM material_folders
+      WHERE owner_id = $1 ORDER BY normalized_name, id`,
+    [ownerId],
+  );
+  return result.rows;
 }
 
 export type FolderNameRefusal = { status: 'invalid_name'; reason: FolderNameValidationError };
@@ -181,8 +199,10 @@ export async function createMaterialFolder(
       folderCreationLockKey(ownerId),
     ]);
     const existing = await tx.query<FolderRow>(
-      `SELECT id, name, created_at, updated_at FROM material_folders
-        WHERE owner_id = $1 AND normalized_name = $2`,
+      `SELECT folder.id, folder.name, folder.created_at, folder.updated_at,
+              ${folderMaterialCountSql()}
+         FROM material_folders AS folder
+        WHERE folder.owner_id = $1 AND folder.normalized_name = $2`,
       [ownerId, normalizedFolderName(name)],
     );
     if (existing.rows[0]) {
@@ -229,17 +249,20 @@ export async function renameMaterialFolder(
         folderCreationLockKey(ownerId),
       ]);
       const current = await tx.query<FolderRow>(
-        `SELECT id, name, created_at, updated_at FROM material_folders
-          WHERE owner_id = $1 AND id = $2 FOR UPDATE`,
+        `SELECT folder.id, folder.name, folder.created_at, folder.updated_at,
+                ${folderMaterialCountSql()}
+           FROM material_folders AS folder
+          WHERE folder.owner_id = $1 AND folder.id = $2 FOR UPDATE`,
         [ownerId, input.folderId],
       );
       const row = current.rows[0];
       if (!row) return { status: 'not_found' as const };
       if (row.name === name) return { status: 'unchanged' as const, folder: folderOf(row) };
       const updated = await tx.query<FolderRow>(
-        `UPDATE material_folders SET name = $3, normalized_name = $4, updated_at = $5
-          WHERE owner_id = $1 AND id = $2
-          RETURNING id, name, created_at, updated_at`,
+        `UPDATE material_folders AS folder SET name = $3, normalized_name = $4, updated_at = $5
+          WHERE folder.owner_id = $1 AND folder.id = $2
+          RETURNING folder.id, folder.name, folder.created_at, folder.updated_at,
+                    ${folderMaterialCountSql()}`,
         [ownerId, input.folderId, name, normalizedFolderName(name), now],
       );
       return { status: 'renamed' as const, folder: folderOf(updated.rows[0]!) };

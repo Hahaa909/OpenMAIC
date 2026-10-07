@@ -7,8 +7,9 @@
  * `sources=1` (sources only: what a conversation attaches), `sessionId` (one
  * of the owner's conversations: each material says whether it is
  * `attached` there; another owner's or a missing one is 404), `before` and
- * `limit` (keyset paging, newest first, at most 200). The answer is
- * `{ materials, limits, nextBefore? }`, each material with its folder's name;
+ * `limit` (keyset paging, newest first, at most 200). Only `limits=0` skips
+ * usage calculation and omits limits; other values keep the default behavior.
+ * The answer is `{ materials, limits?, nextBefore? }`, each material with its folder's name;
  * a failed extraction carries its reason, a quota refusal included. The
  * composer's picker and `@`, and later the library page, read it.
  *
@@ -18,7 +19,7 @@
 import type { NextRequest } from 'next/server';
 
 import { isAgentRuntimeConfigured } from '@/lib/config/feature-flags';
-import { listMaterialFolders } from '@/lib/persistence/material-library';
+import { listMaterialFolderNames } from '@/lib/persistence/material-library';
 import { attachedMaterialIds, listOwnerLibrary } from '@/lib/persistence/session-material-links';
 import { ownerJson, ownerNotFound } from '@/lib/server/agent-runtime/route-response';
 import {
@@ -40,6 +41,7 @@ export async function GET(req: NextRequest) {
   const rawFolder = url.searchParams.get('folderId');
   const query = url.searchParams.get('query')?.trim() || undefined;
   const before = url.searchParams.get('before')?.trim() || undefined;
+  const includeLimits = url.searchParams.get('limits') !== '0';
   const sourcesOnly = url.searchParams.get('sources') === '1';
   const sessionId = url.searchParams.get('sessionId')?.trim() || undefined;
   const rawLimit = url.searchParams.get('limit');
@@ -68,8 +70,8 @@ export async function GET(req: NextRequest) {
         ...(sourcesOnly ? { sourcesOnly } : {}),
         limit,
       }),
-      libraryLimits(pool, ownerId),
-      listMaterialFolders(pool, ownerId),
+      includeLimits ? libraryLimits(pool, ownerId) : undefined,
+      listMaterialFolderNames(pool, ownerId),
     ]);
     const attached = sessionId
       ? await attachedMaterialIds(
@@ -86,7 +88,7 @@ export async function GET(req: NextRequest) {
         materials: entries.map((entry) =>
           libraryMaterialView(entry, { folderNames, ...(attached ? { attached } : {}) }),
         ),
-        limits,
+        ...(limits !== undefined ? { limits } : {}),
         ...(nextBefore ? { nextBefore } : {}),
       },
       200,

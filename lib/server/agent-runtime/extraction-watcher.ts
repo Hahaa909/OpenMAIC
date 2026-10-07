@@ -47,7 +47,8 @@ export async function readSettledSources(
   materialIds: readonly string[],
 ): Promise<string[]> {
   const found = await queryable.query<{ id: string; settled: boolean }>(
-    `SELECT id, ((extraction->>'status') IN ('done', 'failed') OR deleted_at IS NOT NULL)
+    `SELECT id, (COALESCE((extraction->>'status') IN ('done', 'failed'), false)
+                OR deleted_at IS NOT NULL)
               AS settled
        FROM owner_material WHERE id = ANY($1::text[])`,
     [[...materialIds]],

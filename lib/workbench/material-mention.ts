@@ -96,7 +96,11 @@ export async function fetchMaterialMentionListing(input: {
   sessionId?: string | null;
   signal?: AbortSignal;
 }): Promise<LibraryListing[]> {
-  const params = new URLSearchParams({ sources: '1', limit: String(MATERIAL_MENTION_LIMIT) });
+  const params = new URLSearchParams({
+    sources: '1',
+    limit: String(MATERIAL_MENTION_LIMIT),
+    limits: '0',
+  });
   if (input.query.trim()) params.set('query', input.query.trim());
   if (input.sessionId) params.set('sessionId', input.sessionId);
   try {
