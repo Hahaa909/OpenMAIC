@@ -2012,6 +2012,7 @@
         "list": "Danh sách"
       },
       "status": {
+        "uploading": "Đang tải lên",
         "stored": "Đã lưu · chưa phân tích",
         "parsing": "Đang phân tích",
         "searchable": "Có thể tìm kiếm",
@@ -2037,6 +2038,11 @@
         "folder": "Thư mục này chưa có tài liệu",
         "unfiled": "Không có tài liệu chưa phân loại",
         "query": "Không có tài liệu nào khớp với “{{query}}”"
+      },
+      "upload": {
+        "button": "Tải tài liệu lên",
+        "toUnfiled": "Tài liệu tải lên sẽ nằm trong “Chưa phân loại”",
+        "dismiss": "Bỏ qua"
       },
       "folderGone": {
         "message": "Thư mục này không còn tồn tại",

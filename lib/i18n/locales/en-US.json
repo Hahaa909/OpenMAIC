@@ -2012,6 +2012,7 @@
         "list": "List"
       },
       "status": {
+        "uploading": "Uploading",
         "stored": "Stored · not parsed",
         "parsing": "Parsing",
         "searchable": "Searchable",
@@ -2037,6 +2038,11 @@
         "folder": "No materials in this folder yet",
         "unfiled": "No unfiled materials",
         "query": "No materials match “{{query}}”"
+      },
+      "upload": {
+        "button": "Upload materials",
+        "toUnfiled": "Uploads go to Unfiled",
+        "dismiss": "Dismiss"
       },
       "folderGone": {
         "message": "This folder no longer exists",

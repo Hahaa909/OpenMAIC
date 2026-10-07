@@ -2012,6 +2012,7 @@
         "list": "Liste"
       },
       "status": {
+        "uploading": "Importation",
         "stored": "Enregistré · non analysé",
         "parsing": "Analyse en cours",
         "searchable": "Consultable",
@@ -2037,6 +2038,11 @@
         "folder": "Aucun document dans ce dossier pour l’instant",
         "unfiled": "Aucun document non classé",
         "query": "Aucun document ne correspond à « {{query}} »"
+      },
+      "upload": {
+        "button": "Importer des documents",
+        "toUnfiled": "Les fichiers importés vont dans « Non classés »",
+        "dismiss": "Masquer"
       },
       "folderGone": {
         "message": "Ce dossier n’existe plus",

@@ -119,6 +119,7 @@ describe('workbench copy covers every supported locale', () => {
       'material.fileTooLargeWithLimit',
       'material.unsupportedType',
       'material.quotaExceeded',
+      'material.storageFull',
     ] as const;
     const english = flatten(workbenchEn);
     const bases: Array<[string, Map<string, string>]> = [

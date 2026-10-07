@@ -63,6 +63,8 @@ type LibraryHandler = (params: URLSearchParams) => Promise<Response> | Response;
 let library: LibraryHandler;
 let folders: () => Promise<Response> | Response;
 const libraryCalls: URLSearchParams[] = [];
+let uploadMaterial: (file: File) => Promise<Response> | Response;
+const uploadCalls: { url: string; init: RequestInit }[] = [];
 
 function stubFetch() {
   vi.stubGlobal(
@@ -71,6 +73,10 @@ function stubFetch() {
       const url = new URL(input, 'http://x');
       if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
       if (url.pathname === '/api/materials/folders') return folders();
+      if (url.pathname === '/api/materials' && init?.method === 'POST') {
+        uploadCalls.push({ url: input, init });
+        return uploadMaterial(init.body as File);
+      }
       if (url.pathname === '/api/materials/library') {
         libraryCalls.push(url.searchParams);
         return library(url.searchParams);
@@ -121,6 +127,18 @@ function deferred<T>() {
 
 beforeEach(() => {
   libraryCalls.length = 0;
+  uploadCalls.length = 0;
+  uploadMaterial = (file) =>
+    json(
+      {
+        materialId: `stored-${file.name}`,
+        originalName: file.name,
+        bytes: file.size,
+        mime: file.type,
+        extraction: { status: 'idle' },
+      },
+      201,
+    );
   library = () => json({ materials: [source('a')], limits: LIMITS });
   folders = () =>
     json({ folders: [{ id: 'f1', name: 'Unit 1', materialCount: 2, createdAt: 1, updatedAt: 1 }] });
@@ -720,6 +738,152 @@ describe('staying fresh outside a run (option B)', () => {
     expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBe('page');
     expect(libraryCalls.at(-1)?.get('folderId')).toBeNull();
     await page.dispose();
+  });
+});
+
+describe('uploading from the page', () => {
+  const file = (name: string) => new File(['%PDF'], name, { type: 'application/pdf' });
+  async function choose(page: ReturnType<typeof mount>, files: File[]) {
+    const input = page.query('kb-upload-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: files });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  it('shows the file uploading, then reads the list again once it is stored', async () => {
+    const stored = deferred<Response>();
+    uploadMaterial = () => stored.promise;
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    const reads = libraryCalls.length;
+
+    await choose(page, [file('lesson.pdf')]);
+    await settle();
+    expect(page.query('kb-uploads')?.textContent).toContain('lesson.pdf');
+    expect(page.query('kb-uploads')?.textContent).toContain(
+      'workspace.knowledgeBase.status.uploading',
+    );
+
+    await act(async () =>
+      stored.resolve(json({ materialId: 'm1', originalName: 'lesson.pdf', bytes: 4 }, 201)),
+    );
+    await settle();
+    expect(page.query('kb-uploads')).toBeNull();
+    expect(libraryCalls.length).toBe(reads + 1);
+    await page.dispose();
+  });
+
+  it('uploads into Unfiled from a folder, and says so', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await page.click('kb-scope-folder-f1');
+    await settle();
+
+    await choose(page, [file('notes.pdf')]);
+    await settle();
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0]!.url).toBe('/api/materials');
+    expect(JSON.stringify(uploadCalls[0]!.init.headers)).not.toMatch(/folder/i);
+    expect(page.query('kb-upload-to-unfiled')?.textContent).toBe(
+      'workspace.knowledgeBase.upload.toUnfiled',
+    );
+    // The teacher stays in the folder; leaving it drops the note.
+    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
+    await page.click('kb-scope-unfiled');
+    expect(page.query('kb-upload-to-unfiled')).toBeNull();
+    await page.dispose();
+  });
+
+  it('says why an upload was refused, with the shared messages, until dismissed', async () => {
+    const pool = json(
+      { success: false, errorCode: 'ASSET_QUOTA_EXCEEDED', error: 'asset storage quota exceeded' },
+      507,
+    );
+    pool.headers.set('x-request-id', 'trace-507');
+    const refusals: Record<string, Response> = {
+      'big.pdf': json({ error: 'too large', maxBytes: 50 * 1024 * 1024 }, 413),
+      'quota.pdf': json({ error: 'quota' }, 429),
+      'odd.pdf': json({ error: 'type' }, 415),
+      'full.pdf': pool,
+    };
+    uploadMaterial = (chosen) => refusals[chosen.name]!;
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    const reads = libraryCalls.length;
+
+    await choose(page, [file('big.pdf'), file('quota.pdf'), file('odd.pdf'), file('full.pdf')]);
+    await settle();
+    const text = page.query('kb-uploads')?.textContent ?? '';
+    expect(text).toContain('workbench.material.fileTooLargeWithLimit{"limit":"50"}');
+    expect(text).toContain('workbench.material.quotaExceeded');
+    expect(text).toContain('workbench.material.unsupportedType');
+    // The pool quota has its own words; the trace stays out of the row.
+    expect(text).toContain('workbench.material.storageFull');
+    expect(text).not.toContain('trace-507');
+    expect(text).not.toContain('asset storage quota exceeded');
+    // Each file, once done, has the list read again.
+    expect(libraryCalls.length).toBe(reads + 4);
+
+    await page.click('kb-upload-1-dismiss');
+    expect(page.query('kb-upload-1')).toBeNull();
+    expect(page.query('kb-upload-2')).not.toBeNull();
+    await page.dispose();
+  });
+
+  it('shows a file the server stored even though its answer failed', async () => {
+    // The publication committed, then the reply was lost: the route answers
+    // 500 and the listing already has the source.
+    let stored = false;
+    uploadMaterial = () => {
+      stored = true;
+      return json({ success: false, errorCode: 'INTERNAL_ERROR', error: 'upload failed' }, 500);
+    };
+    library = () =>
+      json({ materials: stored ? [source('kept', { name: 'kept.pdf' })] : [], limits: LIMITS });
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+
+    await choose(page, [file('kept.pdf')]);
+    await settle();
+    expect(page.query('kb-material-kept')).not.toBeNull();
+    // The failure is still reported, not turned into a success.
+    expect(page.query('kb-upload-1')?.textContent).toContain('upload failed');
+    await page.dispose();
+  });
+
+  it('polls while an upload is in flight, though nothing shown is parsing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const stored = deferred<Response>();
+      uploadMaterial = () => stored.promise;
+      const tick = (milliseconds: number) =>
+        act(async () => {
+          await vi.advanceTimersByTimeAsync(milliseconds);
+        });
+      const page = mount();
+      await page.render(createElement(MaterialLibraryPage));
+      await tick(0);
+      await choose(page, [file('slow.pdf')]);
+      const reads = libraryCalls.length;
+
+      await tick(MATERIAL_LIBRARY_POLL_MS);
+      expect(libraryCalls.length).toBe(reads + 1);
+      await act(async () =>
+        stored.resolve(json({ materialId: 'm1', originalName: 'slow.pdf', bytes: 4 }, 201)),
+      );
+      await tick(0);
+      const settled = libraryCalls.length;
+      await tick(MATERIAL_LIBRARY_POLL_MS * 3);
+      expect(libraryCalls.length).toBe(settled);
+      await page.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

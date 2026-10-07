@@ -84,6 +84,7 @@ export const workbenchEn = {
     fileTooLargeWithLimit: 'File too large. Please select a file no larger than {{limit}} MB.',
     unsupportedType: 'Unsupported file type. Please choose a supported file.',
     quotaExceeded: 'Material upload limit reached.',
+    storageFull: 'Storage is full. This material could not be uploaded.',
   },
   /**
    * The installed skills, as the product names them.
@@ -426,6 +427,7 @@ export const workbenchZh = {
     fileTooLargeWithLimit: '文件过大，请选择不超过 {{limit}}MB 的文件。',
     unsupportedType: '不支持此文件类型，请选择受支持的文件。',
     quotaExceeded: '已达到材料上传限额。',
+    storageFull: '存储空间已达上限，无法上传这份资料。',
   },
   skill: {
     listFailed: 'Skill 列表加载失败',

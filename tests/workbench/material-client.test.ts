@@ -194,6 +194,33 @@ describe('workbench material client', () => {
     },
   );
 
+  it('names a full asset pool (507) apart from the upload quota, keeping the trace', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json(
+          {
+            success: false,
+            errorCode: 'ASSET_QUOTA_EXCEEDED',
+            error: 'asset storage quota exceeded',
+          },
+          { status: 507, headers: { 'x-request-id': 'trace-507' } },
+        ),
+      ),
+    );
+    const error = await uploadWorkbenchMaterial(new File(['x'], material.name)).catch((err) => err);
+    expect(error).toBeInstanceOf(WorkbenchMaterialUploadError);
+    expect(error.status).toBe(507);
+    expect(error.requestId).toBe('trace-507');
+    expect(error.message).toBe('asset storage quota exceeded [requestId=trace-507]');
+    expect(error.userMessage(createWorkbenchTranslator('en-US'), 'en-US')).toBe(
+      'Storage is full. This material could not be uploaded.',
+    );
+    expect(error.userMessage(createWorkbenchTranslator('zh-CN'), 'zh-CN')).toBe(
+      '存储空间已达上限，无法上传这份资料。',
+    );
+  });
+
   it('handles a proxy HTML 413 without exposing its body or a request ID', async () => {
     vi.stubGlobal(
       'fetch',

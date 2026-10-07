@@ -2012,6 +2012,7 @@
         "list": "목록"
       },
       "status": {
+        "uploading": "업로드 중",
         "stored": "저장됨 · 분석 전",
         "parsing": "분석 중",
         "searchable": "검색 가능",
@@ -2037,6 +2038,11 @@
         "folder": "이 폴더에는 아직 자료가 없습니다",
         "unfiled": "미분류 자료가 없습니다",
         "query": "“{{query}}”와 일치하는 자료가 없습니다"
+      },
+      "upload": {
+        "button": "자료 업로드",
+        "toUnfiled": "업로드한 자료는 ‘미분류’에 들어갑니다",
+        "dismiss": "닫기"
       },
       "folderGone": {
         "message": "이 폴더는 더 이상 없습니다",

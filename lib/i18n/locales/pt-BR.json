@@ -2012,6 +2012,7 @@
         "list": "Lista"
       },
       "status": {
+        "uploading": "Enviando",
         "stored": "Armazenado · não analisado",
         "parsing": "Analisando",
         "searchable": "Pesquisável",
@@ -2037,6 +2038,11 @@
         "folder": "Ainda não há materiais nesta pasta",
         "unfiled": "Nenhum material sem pasta",
         "query": "Nenhum material corresponde a “{{query}}”"
+      },
+      "upload": {
+        "button": "Enviar materiais",
+        "toUnfiled": "Os envios vão para “Sem pasta”",
+        "dismiss": "Dispensar"
       },
       "folderGone": {
         "message": "Esta pasta não existe mais",

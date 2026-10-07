@@ -12,8 +12,13 @@
  * each with its processing state (§1), and the limits an upload is held to
  * before one starts (§8). The folder being looked at is the teacher's: nothing
  * but the teacher changes it.
+ *
+ * Upload is ingest (§1): a file uploaded here becomes a source in Unfiled,
+ * whatever folder is open, through the same request and admission as the
+ * composer's paperclip. Without the composer's per-message cap: that bounds
+ * one message's picks, not the library (whose limits the server enforces).
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   File,
   FileAudio,
@@ -25,7 +30,10 @@ import {
   LayoutGrid,
   Library,
   List,
+  LoaderCircle,
   Search,
+  Upload,
+  X,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils/cn';
@@ -39,6 +47,17 @@ import {
   type MaterialExtractionStatus,
 } from '@/lib/workbench/material-library-client';
 import { useMaterialLibrary } from '@/lib/workbench/use-material-library';
+import { WORKBENCH_MATERIAL_ACCEPT } from '@/lib/workbench/material-upload-policy';
+import {
+  createMaterialUploadIdentityGate,
+  retryMaterialUpload,
+  scheduleMaterialUploadBatch,
+  type MaterialUploadIdentityGate,
+} from '@/lib/workbench/material-upload-scheduling';
+import {
+  uploadWorkbenchMaterial,
+  WorkbenchMaterialUploadError,
+} from '@/lib/workbench/session-store';
 
 /** How long typing settles before the listing is asked again. */
 const QUERY_DEBOUNCE_MS = 300;
@@ -344,13 +363,98 @@ function MaterialList({
   );
 }
 
+interface UploadEntry {
+  readonly id: string;
+  readonly name: string;
+  /** Why it failed; absent while it is still uploading. */
+  readonly error?: string;
+}
+
+/**
+ * The page's own uploads: each file is a row until it is stored (then the
+ * listing shows it) or fails (then the row says why, until dismissed). Either
+ * way the list is read again once the file is done.
+ * Uploads are not cancelled by leaving the page; their rows go with it.
+ */
+function useLibraryUploads(onUploaded: () => void) {
+  const { t, locale } = useI18n();
+  const [entries, setEntries] = useState<readonly UploadEntry[]>([]);
+  const gate = useRef<MaterialUploadIdentityGate | null>(null);
+  const sequence = useRef(0);
+
+  const start = (files: readonly File[]) => {
+    if (files.length === 0) return;
+    // The first upload of a fresh identity waits for its cookie (see
+    // `scheduleMaterialUploadBatch`), exactly as the composer's do.
+    gate.current ??= createMaterialUploadIdentityGate();
+    const jobs = files.map((file) => ({
+      file,
+      entry: { id: `upload-${(sequence.current += 1)}`, name: file.name },
+    }));
+    setEntries((current) => [...current, ...jobs.map((job) => job.entry)]);
+    void scheduleMaterialUploadBatch(gate.current, jobs, async ({ file, entry }) => {
+      try {
+        await retryMaterialUpload(() => uploadWorkbenchMaterial(file));
+        setEntries((current) => current.filter((item) => item.id !== entry.id));
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof WorkbenchMaterialUploadError
+            ? error.userMessage(t, locale)
+            : error instanceof Error
+              ? error.message
+              : t('workbench.material.uploadFailed', { name: file.name });
+        setEntries((current) =>
+          current.map((item) => (item.id === entry.id ? { ...item, error: message } : item)),
+        );
+        return false;
+      } finally {
+        // Once per file, after its last attempt (the 503 retries are inside
+        // `retryMaterialUpload`), whatever the answer: a failed answer can
+        // still follow a stored file -- the publication committed, then the
+        // reply was lost -- and only the listing can say which.
+        onUploaded();
+      }
+    });
+  };
+
+  return {
+    entries,
+    pending: entries.some((entry) => entry.error === undefined),
+    start,
+    dismiss: (id: string) => setEntries((current) => current.filter((item) => item.id !== id)),
+  };
+}
+
 export function MaterialLibraryPage() {
   const { t, locale } = useI18n();
   const [scope, setScope] = useState<LibraryScope>({ kind: 'all' });
   const [queryInput, setQueryInput] = useState('');
   const query = useDebounced(queryInput.trim(), QUERY_DEBOUNCE_MS);
   const [view, setView] = useState<'cards' | 'list'>('cards');
-  const library = useMaterialLibrary({ scope, query });
+  // Set by an upload started while a folder was open: it went to Unfiled.
+  const [uploadedToUnfiled, setUploadedToUnfiled] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  // A stored upload reads the list again (its own change, §7).
+  const reloadAfterUpload = useRef<() => void>(() => {});
+  const uploads = useLibraryUploads(() => reloadAfterUpload.current());
+  const library = useMaterialLibrary({ scope, query, uploading: uploads.pending });
+  useEffect(() => {
+    reloadAfterUpload.current = library.reload;
+    return () => {
+      reloadAfterUpload.current = () => {};
+    };
+  }, [library.reload]);
+
+  const selectScope = (next: LibraryScope) => {
+    setScope(next);
+    setUploadedToUnfiled(false);
+  };
+  const upload = (files: readonly File[]) => {
+    if (files.length === 0) return;
+    if (scope.kind === 'folder') setUploadedToUnfiled(true);
+    uploads.start(files);
+  };
 
   // The folder being looked at was deleted elsewhere. Refreshing never
   // navigates (RFC #1716 §7): say so, and let the teacher go back.
@@ -391,6 +495,28 @@ export function MaterialLibraryPage() {
                 className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
               />
             </label>
+            <button
+              type="button"
+              data-testid="kb-upload"
+              onClick={() => fileInput.current?.click()}
+              className="ws-new flex h-9 items-center gap-2 rounded-lg px-3 text-[13px] font-medium"
+            >
+              <Upload className="size-4 shrink-0 opacity-60" aria-hidden="true" />
+              {t('workspace.knowledgeBase.upload.button')}
+            </button>
+            <input
+              ref={fileInput}
+              data-testid="kb-upload-input"
+              type="file"
+              multiple
+              accept={WORKBENCH_MATERIAL_ACCEPT}
+              className="hidden"
+              onChange={(event) => {
+                upload(Array.from(event.target.files ?? []));
+                // The same file can be chosen again after a failure.
+                event.target.value = '';
+              }}
+            />
             <div
               role="group"
               aria-label={t('workspace.knowledgeBase.view.aria')}
@@ -424,9 +550,60 @@ export function MaterialLibraryPage() {
         </header>
 
         <div className="flex flex-col gap-6 md:flex-row">
-          <ScopeNav scope={scope} folders={library.folders} onSelect={setScope} t={t} />
+          <ScopeNav scope={scope} folders={library.folders} onSelect={selectScope} t={t} />
 
           <section className="min-w-0 flex-1" aria-live="polite">
+            {uploadedToUnfiled ? (
+              <p
+                data-testid="kb-upload-to-unfiled"
+                className="mb-3 text-[12px] text-[color:var(--ws-ink-soft)]"
+              >
+                {t('workspace.knowledgeBase.upload.toUnfiled')}
+              </p>
+            ) : null}
+            {uploads.entries.length > 0 ? (
+              <ul data-testid="kb-uploads" className="mb-4 flex flex-col gap-1">
+                {uploads.entries.map((entry) => (
+                  <li
+                    key={entry.id}
+                    data-testid={`kb-${entry.id}`}
+                    className="flex min-w-0 items-start gap-2 text-[13px]"
+                  >
+                    {entry.error === undefined ? (
+                      <LoaderCircle
+                        className="mt-0.5 size-4 shrink-0 animate-spin opacity-60"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <X className="mt-0.5 size-4 shrink-0 text-red-600" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1 break-words">
+                      {entry.name}
+                      {' · '}
+                      {entry.error === undefined ? (
+                        <span className="text-[color:var(--ws-ink-mute)]">
+                          {t('workspace.knowledgeBase.status.uploading')}
+                        </span>
+                      ) : (
+                        <span className="text-red-600 dark:text-red-400">{entry.error}</span>
+                      )}
+                    </span>
+                    {entry.error !== undefined ? (
+                      <button
+                        type="button"
+                        data-testid={`kb-${entry.id}-dismiss`}
+                        aria-label={t('workspace.knowledgeBase.upload.dismiss')}
+                        title={t('workspace.knowledgeBase.upload.dismiss')}
+                        onClick={() => uploads.dismiss(entry.id)}
+                        className="ws-quiet shrink-0 text-[12px] underline"
+                      >
+                        {t('workspace.knowledgeBase.upload.dismiss')}
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             {library.status === 'loading' ? (
               <p data-testid="kb-loading" className="text-[13px] text-[color:var(--ws-ink-mute)]">
                 {t('workspace.knowledgeBase.loading')}
@@ -441,7 +618,7 @@ export function MaterialLibraryPage() {
                 <button
                   type="button"
                   data-testid="kb-folder-gone-back"
-                  onClick={() => setScope({ kind: 'all' })}
+                  onClick={() => selectScope({ kind: 'all' })}
                   className="ws-quiet text-[13px] underline"
                 >
                   {t('workspace.knowledgeBase.folderGone.back')}

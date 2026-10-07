@@ -2012,6 +2012,7 @@
         "list": "Liste"
       },
       "status": {
+        "uploading": "Wird hochgeladen",
         "stored": "Gespeichert · nicht analysiert",
         "parsing": "Wird analysiert",
         "searchable": "Durchsuchbar",
@@ -2037,6 +2038,11 @@
         "folder": "In diesem Ordner sind noch keine Materialien",
         "unfiled": "Keine nicht abgelegten Materialien",
         "query": "Keine Materialien passen zu „{{query}}“"
+      },
+      "upload": {
+        "button": "Materialien hochladen",
+        "toUnfiled": "Hochgeladene Dateien landen in „Nicht abgelegt“",
+        "dismiss": "Ausblenden"
       },
       "folderGone": {
         "message": "Diesen Ordner gibt es nicht mehr",

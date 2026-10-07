@@ -2012,6 +2012,7 @@
         "list": "列表"
       },
       "status": {
+        "uploading": "上传中",
         "stored": "已存入 · 未解析",
         "parsing": "解析中",
         "searchable": "可检索",
@@ -2037,6 +2038,11 @@
         "folder": "这个文件夹里还没有资料",
         "unfiled": "没有未归档的资料",
         "query": "没有找到与“{{query}}”匹配的资料"
+      },
+      "upload": {
+        "button": "上传资料",
+        "toUnfiled": "上传的资料会放在“未归档”",
+        "dismiss": "移除"
       },
       "folderGone": {
         "message": "这个文件夹已不存在",

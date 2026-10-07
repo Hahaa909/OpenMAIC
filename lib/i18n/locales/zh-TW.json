@@ -1997,6 +1997,7 @@
         "list": "清單"
       },
       "status": {
+        "uploading": "上傳中",
         "stored": "已存入 · 未解析",
         "parsing": "解析中",
         "searchable": "可檢索",
@@ -2022,6 +2023,11 @@
         "folder": "這個資料夾裡還沒有資料",
         "unfiled": "沒有未歸檔的資料",
         "query": "找不到與「{{query}}」相符的資料"
+      },
+      "upload": {
+        "button": "上傳資料",
+        "toUnfiled": "上傳的資料會放在「未歸檔」",
+        "dismiss": "移除"
       },
       "folderGone": {
         "message": "這個資料夾已不存在",

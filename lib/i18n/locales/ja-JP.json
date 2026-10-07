@@ -2012,6 +2012,7 @@
         "list": "リスト"
       },
       "status": {
+        "uploading": "アップロード中",
         "stored": "保存済み · 未解析",
         "parsing": "解析中",
         "searchable": "検索可能",
@@ -2037,6 +2038,11 @@
         "folder": "このフォルダーにはまだ資料がありません",
         "unfiled": "未分類の資料はありません",
         "query": "「{{query}}」に一致する資料はありません"
+      },
+      "upload": {
+        "button": "資料をアップロード",
+        "toUnfiled": "アップロードした資料は「未分類」に入ります",
+        "dismiss": "閉じる"
       },
       "folderGone": {
         "message": "このフォルダーはもう存在しません",

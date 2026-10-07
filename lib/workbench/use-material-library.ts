@@ -25,7 +25,7 @@
  *   which may predate what changed meanwhile), when a run reports a material
  *   change
  *   (`materialLibraryRevision`), and every few seconds while the tab is
- *   visible and a shown source is still parsing. Polling stops once nothing
+ *   visible and an upload of the page's or a shown source is still pending. Polling stops once nothing
  *   shown is pending, while the tab is hidden, and with the page; a failed
  *   read does not end it. None of this ever changes the scope.
  */
@@ -76,7 +76,7 @@ const scopeKey = (scope: LibraryScope, query: string) =>
 
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError';
 
-/** How long after a read the list is read again while something is parsing. */
+/** How long after a read the list is read again while something is pending. */
 export const MATERIAL_LIBRARY_POLL_MS = 3_000;
 
 const tabVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
@@ -84,6 +84,8 @@ const tabVisible = () => typeof document === 'undefined' || document.visibilityS
 export function useMaterialLibrary(input: {
   readonly scope: LibraryScope;
   readonly query: string;
+  /** The page has uploads in flight (the listing never shows those). */
+  readonly uploading?: boolean;
 }): MaterialLibraryData {
   const key = scopeKey(input.scope, input.query);
   const request = useRef({ scope: input.scope, query: input.query, key });
@@ -279,20 +281,21 @@ export function useMaterialLibrary(input: {
     reload();
   }, [revision, reload]);
 
-  const parsing =
-    snapshot.key === key &&
-    snapshot.materials.some(
-      (material) =>
-        material.extraction.status === 'pending' || material.extraction.status === 'running',
-    );
+  const pending =
+    input.uploading === true ||
+    (snapshot.key === key &&
+      snapshot.materials.some(
+        (material) =>
+          material.extraction.status === 'pending' || material.extraction.status === 'running',
+      ));
   // One timer per settled read (`snapshot` changes with each), none while a
   // read is running, so polls never overlap. A failed read schedules the
   // next one too: a failure does not mean the parsing finished.
   useEffect(() => {
-    if (!parsing || !visible || snapshot.refreshing || snapshot.loadingMore) return;
+    if (!pending || !visible || snapshot.refreshing || snapshot.loadingMore) return;
     const timer = setTimeout(reload, MATERIAL_LIBRARY_POLL_MS);
     return () => clearTimeout(timer);
-  }, [parsing, visible, snapshot, reload]);
+  }, [pending, visible, snapshot, reload]);
 
   return useMemo(() => {
     // Between a scope change and its first answer, nothing from the old

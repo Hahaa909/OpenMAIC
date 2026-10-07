@@ -2012,6 +2012,7 @@
         "list": "Lista"
       },
       "status": {
+        "uploading": "Subiendo",
         "stored": "Guardado · sin analizar",
         "parsing": "Analizando",
         "searchable": "Consultable",
@@ -2037,6 +2038,11 @@
         "folder": "Esta carpeta aún no tiene materiales",
         "unfiled": "No hay materiales sin clasificar",
         "query": "Ningún material coincide con “{{query}}”"
+      },
+      "upload": {
+        "button": "Subir materiales",
+        "toUnfiled": "Lo que subas va a “Sin clasificar”",
+        "dismiss": "Descartar"
       },
       "folderGone": {
         "message": "Esta carpeta ya no existe",
