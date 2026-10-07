@@ -1055,6 +1055,127 @@ describe('organizing from the page', () => {
     await page.dispose();
   });
 
+  it('gives the focus back to the control that opened a dialog', async () => {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+
+    const newFolder = inDocument('kb-folder-new')!;
+    newFolder.focus();
+    await choose('kb-folder-new');
+    expect(inDocument('kb-name-dialog')?.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    await settle();
+    expect(inDocument('kb-name-dialog')).toBeNull();
+    expect(document.activeElement).toBe(newFolder);
+
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-rename');
+    await typeName('Chapter 1');
+    await submitName();
+    await settle();
+    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
+
+    // Moved, but still in All: its ⋯ stays.
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-move');
+    await choose('kb-move-to-f1');
+    await settle();
+    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
+    await page.dispose();
+  });
+
+  it('gives the focus to the heading when the source leaves the view', async () => {
+    let moved = false;
+    library = (params) =>
+      json({
+        materials:
+          params.get('folderId') === 'f1' && !moved
+            ? [source('in-f1', { folderId: 'f1', folderName: 'Unit 1' })]
+            : [],
+        limits: LIMITS,
+      });
+    writeMaterial = () => {
+      moved = true;
+      return json({ status: 'moved' });
+    };
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    await page.click('kb-scope-folder-f1');
+    await settle();
+
+    await openMenu('kb-material-menu-in-f1');
+    await choose('kb-material-menu-in-f1-move');
+    await choose('kb-move-to-unfiled');
+    await settle();
+    expect(document.activeElement?.id).toBe('pro-workspace-library-title');
+    await page.dispose();
+  });
+
+  describe('when the list read after a rename drops the source', () => {
+    // Searching its old name: renamed, it no longer matches. The dialog
+    // closes before that read answers.
+    let reread: ReturnType<typeof deferred<Response>>;
+    beforeEach(() => {
+      let renamed = false;
+      reread = deferred<Response>();
+      library = () =>
+        renamed
+          ? reread.promise
+          : json({ materials: [source('a', { name: 'Before' })], limits: LIMITS });
+      writeMaterial = () => {
+        renamed = true;
+        return json({ status: 'renamed' });
+      };
+    });
+    async function renameWhileSearching(page: ReturnType<typeof mount>) {
+      await page.render(createElement(MaterialLibraryPage));
+      await settle();
+      const search = page.query('kb-search') as HTMLInputElement;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+          search,
+          'Before',
+        );
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await settle(350);
+      expect(libraryCalls.at(-1)?.get('query')).toBe('Before');
+      await openMenu('kb-material-menu-a');
+      await choose('kb-material-menu-a-rename');
+      await typeName('After');
+      await submitName();
+      await settle(20);
+      expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
+    }
+
+    it('gives the focus to the heading once that read removes its ⋯', async () => {
+      const page = mount();
+      await renameWhileSearching(page);
+      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
+      await settle(20);
+      expect(inDocument('kb-material-menu-a')).toBeNull();
+      expect(document.activeElement?.id).toBe('pro-workspace-library-title');
+      await page.dispose();
+    });
+
+    it('leaves the focus alone once the teacher has moved it', async () => {
+      const page = mount();
+      await renameWhileSearching(page);
+      const search = page.query('kb-search')!;
+      search.focus();
+      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
+      await settle(20);
+      expect(document.activeElement).toBe(search);
+      await page.dispose();
+    });
+  });
+
   it('says why a move was refused, never as a success', async () => {
     writeMaterial = () =>
       json(
@@ -1273,6 +1394,20 @@ describe('deleting from the page', () => {
     await choose('kb-delete-dialog-cancel');
     expect(inDocument('kb-delete-dialog')).toBeNull();
     expect(deletes()).toEqual([]);
+    await settle();
+    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
+    await page.dispose();
+  });
+
+  it('gives the focus to the heading once the source is deleted', async () => {
+    writeMaterial = () => noContent();
+    const page = await openPage();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+    await confirm();
+    await settle();
+    expect(inDocument('kb-delete-dialog')).toBeNull();
+    expect(document.activeElement?.id).toBe('pro-workspace-library-title');
     await page.dispose();
   });
 

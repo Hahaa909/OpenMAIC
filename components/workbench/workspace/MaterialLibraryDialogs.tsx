@@ -50,12 +50,20 @@ import {
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+/**
+ * Where the focus goes when a dialog closes. The page opens them by state, not
+ * from a Radix trigger, so Radix has nothing to give it back to; the page knows
+ * the control each was opened from.
+ */
+type ReturnFocus = (event: Event) => void;
+
 /** One item of a ⋯ menu. */
 export interface LibraryMenuItem {
   readonly id: string;
   readonly label: string;
   readonly icon: ReactNode;
-  readonly onSelect: () => void;
+  /** Given the ⋯ button, for a dialog to give the focus back to. */
+  readonly onSelect: (trigger: HTMLElement | null) => void;
   readonly disabled?: boolean;
   readonly destructive?: boolean;
   /** A link instead of an action: opened in a new tab. */
@@ -73,10 +81,12 @@ export function LibraryItemMenu({
   readonly label: string;
   readonly items: readonly LibraryMenuItem[];
 }) {
+  const trigger = useRef<HTMLButtonElement>(null);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
+          ref={trigger}
           type="button"
           data-testid={testId}
           aria-label={label}
@@ -90,7 +100,7 @@ export function LibraryItemMenu({
       <DropdownMenuContent align="end" className="pro-popover w-44">
         {items.map((item) =>
           item.href ? (
-            <DropdownMenuItem key={item.id} asChild onSelect={item.onSelect}>
+            <DropdownMenuItem key={item.id} asChild onSelect={() => item.onSelect(trigger.current)}>
               <a
                 data-testid={`${testId}-${item.id}`}
                 href={item.href}
@@ -107,7 +117,7 @@ export function LibraryItemMenu({
               data-testid={`${testId}-${item.id}`}
               disabled={item.disabled}
               variant={item.destructive ? 'destructive' : 'default'}
-              onSelect={item.onSelect}
+              onSelect={() => item.onSelect(trigger.current)}
             >
               {item.icon}
               {item.label}
@@ -142,6 +152,7 @@ export function NameDialog({
   check,
   submit,
   onClose,
+  returnFocus,
   t,
 }: {
   readonly testId: string;
@@ -152,6 +163,7 @@ export function NameDialog({
   readonly check: (name: string) => string | null;
   readonly submit: (name: string) => Promise<string | null>;
   readonly onClose: () => void;
+  readonly returnFocus: ReturnFocus;
   readonly t: Translate;
 }) {
   const [name, setName] = useState(initialName);
@@ -174,7 +186,12 @@ export function NameDialog({
 
   return (
     <Dialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
-      <DialogContent data-testid={testId} aria-describedby={undefined} className="sm:max-w-[400px]">
+      <DialogContent
+        data-testid={testId}
+        aria-describedby={undefined}
+        onCloseAutoFocus={returnFocus}
+        className="sm:max-w-[400px]"
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -231,12 +248,14 @@ export function MoveDialog({
   folders,
   move,
   onClose,
+  returnFocus,
   t,
 }: {
   readonly material: LibraryMaterial;
   readonly folders: readonly LibraryFolder[];
   readonly move: (folderId: string | null) => Promise<string | null>;
   readonly onClose: () => void;
+  readonly returnFocus: ReturnFocus;
   readonly t: Translate;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -275,6 +294,7 @@ export function MoveDialog({
       <DialogContent
         data-testid="kb-move-dialog"
         aria-describedby={undefined}
+        onCloseAutoFocus={returnFocus}
         className="sm:max-w-[400px]"
       >
         <DialogHeader>
@@ -373,6 +393,7 @@ export function DeleteDialog({
   onSettled,
   onDeleted,
   onClose,
+  returnFocus,
   t,
 }: {
   readonly testId: string;
@@ -383,6 +404,7 @@ export function DeleteDialog({
   readonly onSettled: () => void;
   readonly onDeleted: () => void;
   readonly onClose: () => void;
+  readonly returnFocus: ReturnFocus;
   readonly t: Translate;
 }) {
   const [phase, setPhase] = useState<
@@ -418,7 +440,11 @@ export function DeleteDialog({
   const busy = phase.kind === 'busy';
   return (
     <AlertDialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
-      <AlertDialogContent data-testid={testId} className="sm:max-w-[420px]">
+      <AlertDialogContent
+        data-testid={testId}
+        onCloseAutoFocus={returnFocus}
+        className="sm:max-w-[420px]"
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription asChild>

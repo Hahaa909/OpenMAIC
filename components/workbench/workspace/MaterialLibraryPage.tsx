@@ -198,7 +198,7 @@ function ScopeNav({
   readonly scope: LibraryScope;
   readonly folders: readonly LibraryFolder[];
   readonly onSelect: (scope: LibraryScope) => void;
-  readonly onCreateFolder: () => void;
+  readonly onCreateFolder: (trigger: HTMLElement) => void;
   readonly folderMenu: (folder: LibraryFolder) => ReactNode;
   readonly t: Translate;
 }) {
@@ -258,7 +258,7 @@ function ScopeNav({
         <button
           type="button"
           data-testid="kb-folder-new"
-          onClick={onCreateFolder}
+          onClick={(event) => onCreateFolder(event.currentTarget)}
           aria-label={t('workspace.knowledgeBase.folder.new')}
           title={t('workspace.knowledgeBase.folder.new')}
           className="ws-util-btn inline-flex size-7 items-center justify-center rounded-md"
@@ -519,6 +519,41 @@ export function MaterialLibraryPage({
     | { readonly kind: 'material'; readonly material: LibraryMaterial }
     | { readonly kind: 'folder'; readonly folder: LibraryFolder };
   const [deleting, setDeleting] = useState<DeleteRequest | null>(null);
+  // The control a dialog was opened from: the focus goes back to it when the
+  // dialog closes, or to the heading once it is gone with its item -- at once
+  // for a deletion, or when the list read after the change drops it (a source
+  // moved or renamed out of the folder or search being looked at).
+  const opener = useRef<HTMLElement | null>(null);
+  const returnedTo = useRef<HTMLElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const openFrom = (open: () => void) => (trigger: HTMLElement | null) => {
+    opener.current = trigger;
+    open();
+  };
+  const returnFocus = (event: Event) => {
+    event.preventDefault();
+    const target = opener.current;
+    opener.current = null;
+    if (target?.isConnected) {
+      target.focus();
+      returnedTo.current = target;
+    } else {
+      heading.current?.focus();
+    }
+  };
+  useEffect(() => {
+    const target = returnedTo.current;
+    if (!target) return;
+    if (target.isConnected) {
+      // The teacher moved on: stop following it.
+      if (document.activeElement !== target) returnedTo.current = null;
+      return;
+    }
+    returnedTo.current = null;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      heading.current?.focus();
+    }
+  }, [library.materials, library.folders]);
 
   /** One write; the list is read again whatever it answered (§7). */
   const write = async (action: () => Promise<void>): Promise<string | null> => {
@@ -579,20 +614,20 @@ export function MaterialLibraryPage({
         id: 'rename',
         label: t('workspace.knowledgeBase.actions.rename'),
         icon: menuIcons.rename,
-        onSelect: () => setNaming({ kind: 'renameMaterial', material }),
+        onSelect: openFrom(() => setNaming({ kind: 'renameMaterial', material })),
       },
       {
         id: 'move',
         label: t('workspace.knowledgeBase.actions.move'),
         icon: menuIcons.move,
-        onSelect: () => setMoving(material),
+        onSelect: openFrom(() => setMoving(material)),
       },
       {
         id: 'delete',
         label: t('workspace.knowledgeBase.actions.delete'),
         icon: menuIcons.delete,
         destructive: true,
-        onSelect: () => setDeleting({ kind: 'material', material }),
+        onSelect: openFrom(() => setDeleting({ kind: 'material', material })),
       },
     ];
     return (
@@ -612,14 +647,14 @@ export function MaterialLibraryPage({
           id: 'rename',
           label: t('workspace.knowledgeBase.actions.rename'),
           icon: menuIcons.rename,
-          onSelect: () => setNaming({ kind: 'renameFolder', folder }),
+          onSelect: openFrom(() => setNaming({ kind: 'renameFolder', folder })),
         },
         {
           id: 'delete',
           label: t('workspace.knowledgeBase.actions.delete'),
           icon: menuIcons.delete,
           destructive: true,
-          onSelect: () => setDeleting({ kind: 'folder', folder }),
+          onSelect: openFrom(() => setDeleting({ kind: 'folder', folder })),
         },
       ]}
     />
@@ -649,7 +684,12 @@ export function MaterialLibraryPage({
       <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-5 px-5 pb-16 pt-8 sm:px-8">
         <header className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 id="pro-workspace-library-title" className="mr-auto text-[20px] font-semibold">
+            <h1
+              ref={heading}
+              id="pro-workspace-library-title"
+              tabIndex={-1}
+              className="mr-auto text-[20px] font-semibold outline-none"
+            >
               {t('workspace.knowledgeBase.title')}
             </h1>
             <label className="ws-find flex h-9 w-full items-center gap-2 rounded-lg px-3 sm:w-64">
@@ -723,7 +763,7 @@ export function MaterialLibraryPage({
             scope={scope}
             folders={library.folders}
             onSelect={selectScope}
-            onCreateFolder={() => setNaming({ kind: 'createFolder' })}
+            onCreateFolder={openFrom(() => setNaming({ kind: 'createFolder' }))}
             folderMenu={folderMenu}
             t={t}
           />
@@ -917,6 +957,7 @@ export function MaterialLibraryPage({
           check={naming.kind === 'renameMaterial' ? checkMaterialName : checkFolderName}
           submit={submitName}
           onClose={() => setNaming(null)}
+          returnFocus={returnFocus}
           t={t}
         />
       ) : null}
@@ -934,8 +975,11 @@ export function MaterialLibraryPage({
           ]}
           remove={() => deleteLibraryMaterial(deleting.material.materialId)}
           onSettled={() => reloadIfMounted.current()}
-          onDeleted={() => {}}
+          onDeleted={() => {
+            opener.current = null;
+          }}
           onClose={() => setDeleting(null)}
+          returnFocus={returnFocus}
           t={t}
         />
       ) : deleting?.kind === 'folder' ? (
@@ -947,12 +991,14 @@ export function MaterialLibraryPage({
           remove={() => deleteLibraryFolder(deleting.folder.id)}
           onSettled={() => reloadIfMounted.current()}
           onDeleted={() => {
+            opener.current = null;
             // The teacher deleted the folder being looked at: back to All.
             if (scope.kind === 'folder' && scope.folderId === deleting.folder.id) {
               selectScope({ kind: 'all' });
             }
           }}
           onClose={() => setDeleting(null)}
+          returnFocus={returnFocus}
           t={t}
         />
       ) : null}
@@ -963,6 +1009,7 @@ export function MaterialLibraryPage({
           folders={library.folders}
           move={(folderId) => write(() => moveLibraryMaterials([moving.materialId], folderId))}
           onClose={() => setMoving(null)}
+          returnFocus={returnFocus}
           t={t}
         />
       ) : null}
