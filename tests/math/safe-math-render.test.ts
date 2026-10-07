@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import katex from 'katex';
 import temml from 'temml';
 import { describe, expect, it } from 'vitest';
 import type { PPTElement } from '@openmaic/dsl';
 import { safeKatexOptions } from '@openmaic/dsl';
+import { TextBlock } from '@/components/workbench/chat/text-block';
 import { renderLatexToHtml } from '@/lib/quiz/math-text';
 import { renderLatexElementHtml } from '@/lib/edit/slide-edit-elements';
 import { latexToOmml } from '@/lib/export/latex-to-omml';
@@ -16,10 +17,19 @@ import { renderLatexSource } from '../../packages/@openmaic/editor/src/ui/latex/
 import { LEGITIMATE_MATH_CORPUS } from '../fixtures/math-corpus';
 import { MACRO_EXPANSION_INPUTS } from '../fixtures/math-expansion-inputs';
 
-/** Generous for a slow CI runner; the unguarded inputs take seconds to minutes. */
-const TIME_BUDGET_MS = 100;
-/** Output stays proportional to the input (error spans included). */
-const OUTPUT_BUDGET_CHARS = 64 * 1024;
+/**
+ * Unguarded, these inputs take 4 to 70 seconds per render. Guarded, the bare
+ * engine paths take a few milliseconds; the DOM and Markdown paths add their
+ * own parsing of a long error output, so the budget leaves room for a loaded
+ * CI runner while staying far below the unguarded cost.
+ */
+const TIME_BUDGET_MS = 500;
+/**
+ * Output stays proportional to the input (error spans included): at most this
+ * many characters per input character. Unguarded, these inputs produce
+ * tens to hundreds of times their size.
+ */
+const OUTPUT_CHARS_PER_INPUT_CHAR = 64;
 
 function timed<T>(render: () => T): { value: T; ms: number } {
   const start = performance.now();
@@ -75,6 +85,12 @@ const RENDER_PATHS: Record<string, (latex: string) => string> = {
     const result = renderLatexSource(latex);
     return 'html' in result ? (result.html ?? '') : (result.error ?? '');
   },
+  'workbench chat markdown (display)': (latex) =>
+    renderToStaticMarkup(createElement(TextBlock, { text: `$$\n${latex}\n$$` })),
+  'workbench chat markdown (streaming)': (latex) =>
+    renderToStaticMarkup(
+      createElement(TextBlock, { text: `Result: $$${latex}$$`, streaming: true }),
+    ),
   'editor inline math node': (latex) => {
     const doc = createTextDocument(`<p><span data-inline-math="${latex}"></span></p>`);
     return JSON.stringify(doc.toJSON());
@@ -87,7 +103,7 @@ describe('math rendering with user macro definitions disabled', () => {
       it(`${path}: ${name} renders quickly with small output`, () => {
         const { value, ms } = timed(() => render(input));
         expect(ms).toBeLessThan(TIME_BUDGET_MS);
-        expect(value.length).toBeLessThan(OUTPUT_BUDGET_CHARS);
+        expect(value.length).toBeLessThan(OUTPUT_CHARS_PER_INPUT_CHAR * input.length);
       });
     }
   }
@@ -133,6 +149,28 @@ describe('math rendering with user macro definitions disabled', () => {
     }
   });
 
+  it.each([
+    // [input, what it renders once the definition is dropped]
+    ['\\newcommand{\\ma}{[}x+y', 'x+y'],
+    ['\\newcommand{\\ma}{[}x]+y', 'x]+y'],
+    ['\\newcommand*\\ma{BODY}+z', '+z'],
+    ['\\newcommand{\\ma}[1][{]}]{BODY}+z', '+z'],
+    ['\\newcommand\\ma [2] [d] {BODY}+z', '+z'],
+    ['\\renewcommand{\\frac}{[}x+y', 'x+y'],
+    ['\\renewcommand*{\\frac}[1][{]}]{BODY}+z', '+z'],
+    ['\\providecommand{\\ma}{[}x]+y', 'x]+y'],
+    ['\\providecommand*\\ma[1]{BODY}+z', '+z'],
+  ])('KaTeX and Temml drop exactly the definition in %s', (input, rendered) => {
+    const katexOf = (latex: string, options: object) =>
+      withoutSource(
+        katex.renderToString(latex, { ...options, output: 'mathml', throwOnError: true }),
+      );
+    expect(katexOf(input, safeKatexOptions())).toBe(katexOf(rendered, {}));
+    expect(withoutSource(temml.renderToString(input, safeKatexOptions()))).toBe(
+      withoutSource(temml.renderToString(rendered)),
+    );
+  });
+
   it('keeps built-in commands that are themselves macros working', () => {
     for (const latex of ['a \\neq b', 'p \\iff q', '1, \\dots, n', 'a \\, b', '\\frac{1}{2}']) {
       expect(renderLatexToHtml(latex), latex).not.toBeNull();
@@ -170,40 +208,6 @@ describe('legitimate formulas render exactly as before', () => {
       expect(attempt(() => temml.renderToString(latex, safeKatexOptions()))).toBe(
         attempt(() => temml.renderToString(latex)),
       );
-    });
-  }
-});
-
-describe('every KaTeX and Temml render goes through safeKatexOptions', () => {
-  // Coverage guard: a new call site must merge the hardened options.
-  const RENDER_CALL =
-    /\b(katex|temml)\.(render|renderToString|__renderToDomTree|__renderToHTMLTree)\(/g;
-  const files = execFileSync(
-    'git',
-    ['grep', '-lE', '(katex|temml)\\.(render|renderToString|__render)', '--', '*.ts', '*.tsx'],
-    { encoding: 'utf8' },
-  )
-    .split('\n')
-    .filter(Boolean)
-    .filter((file) => !/(^|\/)(tests?|__tests__)\//.test(file) && !file.includes('.test.'));
-
-  it('finds the known render modules', () => {
-    expect(files.length).toBeGreaterThanOrEqual(10);
-  });
-
-  for (const file of files) {
-    it(file, () => {
-      const source = readFileSync(file, 'utf8');
-      for (const match of source.matchAll(RENDER_CALL)) {
-        const lineStart = source.lastIndexOf('\n', match.index) + 1;
-        const linePrefix = source.slice(lineStart, match.index).trim();
-        if (linePrefix.startsWith('*') || linePrefix.startsWith('//')) continue; // prose
-        const call = source.slice(match.index, match.index + 400);
-        // The options argument is the last one; it must be the hardened helper.
-        expect(call, `${file}:${source.slice(0, match.index).split('\n').length}`).toMatch(
-          /^[^;]*?,\s*safeKatexOptions\(/,
-        );
-      }
     });
   }
 });

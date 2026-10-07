@@ -106,6 +106,17 @@ describe('safeKatexOptions', () => {
       ).toBe('y');
       expect(expand('\\renewcommand', ['\\x', '{', 'b', '}', 'y'])).toBe('y');
     });
+    it('\\newcommand keeps a braced "[" body as the body', () => {
+      expect(expand('\\newcommand', ['{', '\\a', '}', '{', '[', '}', 'x', ']', '+', 'y'])).toBe(
+        'x]+y',
+      );
+    });
+    it('\\newcommand* and braced "]" inside an optional default', () => {
+      expect(expand('\\newcommand', ['*', '\\a', '{', 'B', '}', '+', 'z'])).toBe('+z');
+      expect(
+        expand('\\newcommand', ['\\a', '[', '1', ']', '[', '{', ']', '}', ']', '{', 'B', '}', 'z']),
+      ).toBe('z');
+    });
     it('\\let with and without "="', () => {
       expect(expand('\\let', ['\\x', ' ', '=', ' ', '\\frac', 'y'])).toBe('y');
       expect(expand('\\let', ['\\x', '\\frac', 'y'])).toBe('y');

@@ -19,6 +19,10 @@
  *   It must stay high enough for long formulas that lean on built-in macros
  *   (`\neq`, `\iff`, `\dots`, `\,`, ... each cost several expansions).
  *
+ * Caller-supplied macros are trusted code: a function macro receives the
+ * engine's macro context and could define macros through it. Never build
+ * `macros` from content (a document, a model response, user input).
+ *
  * The engines write `\gdef`-style results into the `macros` object they are
  * given, so a fresh object is built on every call and never shared.
  *
@@ -87,16 +91,39 @@ function swallowDef(raw: object): string {
   return '';
 }
 
-/** `\newcommand{<cs>}[<n>][<default>]{<body>}`: drop all of it. */
+/** Drop one `[...]` group from the input; braces inside it are balanced. */
+function skipBracketGroup(context: MacroContext): void {
+  context.popToken(); // `[`
+  let depth = 0;
+  while (!atEnd(context)) {
+    const text = context.future().text;
+    if (text === ']' && depth === 0) {
+      context.popToken();
+      return;
+    }
+    if (text === '{') depth += 1;
+    if (text === '}') depth = Math.max(0, depth - 1);
+    context.popToken();
+  }
+}
+
+/**
+ * `\newcommand*{<cs>}[<n>][<default>]{<body>}`: drop all of it.
+ *
+ * Optional groups are recognized only from an unconsumed `[` token, so a body
+ * written as `{[}` stays a body. Exactly one replacement body is consumed.
+ */
 function swallowNewcommand(raw: object): string {
   const context = raw as MacroContext;
-  context.consumeArg();
-  let next = context.consumeArg().tokens;
-  while (next.length === 1 && next[0].text === '[') {
-    while (!atEnd(context) && context.future().text !== ']') context.popToken();
-    if (!atEnd(context)) context.popToken();
-    next = context.consumeArg().tokens;
+  context.consumeSpaces();
+  if (context.future().text === '*') context.popToken();
+  context.consumeArg(); // the command name, braced or not
+  for (let groups = 0; groups < 2; groups += 1) {
+    context.consumeSpaces();
+    if (context.future().text !== '[') break;
+    skipBracketGroup(context);
   }
+  context.consumeArg(); // the replacement body
   return '';
 }
 
@@ -145,6 +172,8 @@ const INERT_DEFINITIONS: Readonly<
  * is kept. Caller-supplied `macros` are kept too, but cannot override the
  * inert definitions, and are copied into a fresh object so the caller's own
  * object is never written to. A caller may lower `maxExpand`, not raise it.
+ * Caller macros are trusted code (see the module note): never pass macros
+ * derived from content.
  */
 export function safeKatexOptions<const T extends object = Record<never, never>>(
   options?: T,
