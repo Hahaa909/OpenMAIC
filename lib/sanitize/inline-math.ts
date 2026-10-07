@@ -20,6 +20,14 @@
  * is capture, not a security boundary: whatever it emits still goes through
  * the sanitizer.
  *
+ * Rendering is bounded: KaTeX output is ~100-150x the size of its source, and
+ * this runs synchronously on every persistence read and write. A formula over
+ * the per-formula limit, or past the per-call budget, is kept as a source span
+ * showing its LaTeX as text instead of a render, so nothing is lost and the
+ * editor still recovers it. Limits count source characters in document order,
+ * never time, so the same input always renders the same formulas and repeated
+ * read/write passes stay stable.
+ *
  * Uses `parse5` (a spec-compliant parser with no DOM dependency) so the same
  * code runs at the server persistence boundary and in the browser export.
  */
@@ -42,11 +50,44 @@ export const INLINE_MATH_ATTRIBUTE = 'data-inline-math';
 const HTML_NAMESPACE = parse5Html.NS.HTML;
 
 /**
- * Cheap pre-check: prose without either word cannot contain a formula, so the
- * parse is skipped. Case-insensitive because the HTML parser lowercases
- * attribute names.
+ * Cheap pre-check: a formula is either a `data-inline-math` attribute or a
+ * KaTeX root with an `<annotation>` element. Names cannot be written as
+ * character references (unlike the `katex` class value), so prose without
+ * either word cannot contain a formula and the parse is skipped.
+ * Case-insensitive because the HTML parser lowercases names.
  */
-const MAY_CONTAIN_INLINE_MATH = /data-inline-math|katex/i;
+const MAY_CONTAIN_INLINE_MATH = /data-inline-math|annotation/i;
+
+/**
+ * Longest source rendered, in characters. Inline formulas are short (the
+ * longest in the repo's fixtures is under 30 characters); 2000 leaves room for
+ * matrices and aligned expressions while keeping one worst-case render (flat
+ * `x+x+…`, ~290 KB of markup) to tens of milliseconds.
+ */
+export const MAX_INLINE_MATH_SOURCE = 2_000;
+
+/**
+ * Rendering budget per sanitize call (one stage, scene or scene list). Cost
+ * tracks source size (markup is ~100-150x the source for typical and
+ * worst-case input alike), so the budget is in source characters, plus a
+ * formula count for the fixed per-formula cost. 16 000 characters / 1 000
+ * formulas holds a 40-slide course with 600 typical formulas (~12 000
+ * characters) and caps a hostile payload at well under a second per pass.
+ */
+export const INLINE_MATH_SOURCE_BUDGET = 16_000;
+
+/** Formulas rendered per sanitize call. */
+export const INLINE_MATH_COUNT_BUDGET = 1_000;
+
+/** What is left to render in one sanitize call. */
+export interface InlineMathBudget {
+  sourceChars: number;
+  formulas: number;
+}
+
+export function createInlineMathBudget(): InlineMathBudget {
+  return { sourceChars: INLINE_MATH_SOURCE_BUDGET, formulas: INLINE_MATH_COUNT_BUDGET };
+}
 
 function attribute(element: Element, name: string): string | null {
   return element.attrs.find((attr) => attr.name === name && !attr.namespace)?.value ?? null;
@@ -114,6 +155,13 @@ function sourceSpan(latex: string): Element {
   ]);
 }
 
+/** A source span that also shows its LaTeX as text, for a formula left unrendered. */
+function unrenderedSpan(latex: string): Element {
+  const span = sourceSpan(latex);
+  if (latex) defaultTreeAdapter.insertText(span, latex);
+  return span;
+}
+
 /**
  * Visit every element in document order, template contents included (the
  * sanitizer drops the template tag but keeps its permitted children). The
@@ -154,10 +202,24 @@ export function liftInlineMath(html: string): string | null {
 /**
  * Rendered formulas by source. Every persistence read and write re-renders
  * stored formulas, and the same source recurs across reads, so renders are
- * kept (bounded, least recently used first out) and cloned on use.
+ * kept (least recently used first out) and cloned on use. Bounded by the size
+ * of their markup; large renders are never kept.
  */
-const RENDER_CACHE_LIMIT = 256;
-const renderCache = new Map<string, Element | null>();
+const RENDER_CACHE_MAX_MARKUP = 1_000_000;
+const RENDER_CACHE_MAX_ENTRY = 32_000;
+
+interface CachedRender {
+  readonly root: Element | null;
+  readonly size: number;
+}
+
+const renderCache = new Map<string, CachedRender>();
+let renderCacheSize = 0;
+
+/** Markup characters currently held by the render cache (for tests). */
+export function inlineMathCacheSize(): number {
+  return renderCacheSize;
+}
 
 /** A deep copy of a generated KaTeX subtree (elements and text only). */
 function cloneRender(element: Element): Element {
@@ -176,9 +238,8 @@ function cloneRender(element: Element): Element {
   return copy;
 }
 
-/** A fresh, inert KaTeX render of one inline formula, or `null` if there is none. */
-function renderFormulaUncached(latex: string): Element | null {
-  if (!latex.trim()) return null;
+/** A fresh, inert KaTeX render of one inline formula, or `null` if KaTeX fails. */
+function renderFormulaUncached(latex: string): CachedRender {
   let markup: string;
   try {
     markup = katex.renderToString(
@@ -191,45 +252,65 @@ function renderFormulaUncached(latex: string): Element | null {
       }),
     );
   } catch {
-    // Keep the source span: the editor still recovers the formula from it.
-    return null;
+    return { root: null, size: 0 };
   }
-  const root = parseFragment(markup).childNodes.find(defaultTreeAdapter.isElementNode);
-  if (!root) return null;
-  // The editor's storage shape: the KaTeX root carries the source.
-  root.attrs = root.attrs.filter((attr) => attr.name !== INLINE_MATH_ATTRIBUTE);
-  root.attrs.push({ name: INLINE_MATH_ATTRIBUTE, value: latex });
-  return root;
+  const root = parseFragment(markup).childNodes.find(defaultTreeAdapter.isElementNode) ?? null;
+  if (root) {
+    // The editor's storage shape: the KaTeX root carries the source.
+    root.attrs = root.attrs.filter((attr) => attr.name !== INLINE_MATH_ATTRIBUTE);
+    root.attrs.push({ name: INLINE_MATH_ATTRIBUTE, value: latex });
+  }
+  return { root, size: markup.length + latex.length };
 }
 
 function renderFormula(latex: string): Element | null {
   let render = renderCache.get(latex);
-  if (render === undefined) {
-    render = renderFormulaUncached(latex);
-    if (renderCache.size >= RENDER_CACHE_LIMIT) {
-      renderCache.delete(renderCache.keys().next().value as string);
-    }
-  } else {
+  if (render) {
     // Refresh recency.
     renderCache.delete(latex);
+    renderCache.set(latex, render);
+  } else {
+    render = renderFormulaUncached(latex);
+    if (render.size <= RENDER_CACHE_MAX_ENTRY) {
+      renderCache.set(latex, render);
+      renderCacheSize += render.size;
+      for (const [key, entry] of renderCache) {
+        if (renderCacheSize <= RENDER_CACHE_MAX_MARKUP) break;
+        renderCache.delete(key);
+        renderCacheSize -= entry.size;
+      }
+    }
   }
-  renderCache.set(latex, render);
-  return render && cloneRender(render);
+  return render.root && cloneRender(render.root);
 }
 
 /**
  * Post-sanitize pass: replace each source span with a generated render of its
- * source. Anything else in the sanitized prose is left as parsed.
+ * source, within `budget` (shared by every prose string of one sanitize
+ * call). Anything else in the sanitized prose is left as parsed.
  */
-export function renderInlineMath(sanitizedHtml: string): string {
+export function renderInlineMath(
+  sanitizedHtml: string,
+  budget: InlineMathBudget = createInlineMathBudget(),
+): string {
   if (!sanitizedHtml.includes(INLINE_MATH_ATTRIBUTE)) return sanitizedHtml;
   const fragment = parseFragment(sanitizedHtml);
   walk(fragment, (element) => {
     if (!isHtmlSpan(element)) return null;
     const latex = attribute(element, INLINE_MATH_ATTRIBUTE);
     if (latex === null) return null;
-    // A source span the render cannot fill stays as an empty source span.
-    return renderFormula(latex) ?? sourceSpan(latex);
+    if (!latex.trim()) return sourceSpan(latex);
+    if (
+      latex.length > MAX_INLINE_MATH_SOURCE ||
+      latex.length > budget.sourceChars ||
+      budget.formulas < 1
+    ) {
+      return unrenderedSpan(latex);
+    }
+    budget.sourceChars -= latex.length;
+    budget.formulas -= 1;
+    // KaTeX failing outright: keep the source, as the editor does.
+    return renderFormula(latex) ?? unrenderedSpan(latex);
   });
   return serialize(fragment);
 }

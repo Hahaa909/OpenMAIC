@@ -166,6 +166,14 @@ describe('sanitizeSceneContent — inline formulas', () => {
     expect(empty).toBe('<p>Area: <span data-inline-math=""></span> units</p>');
   });
 
+  it('keeps a formula over the render limit recoverable by the editor', () => {
+    const latex = 'x+'.repeat(5_000);
+    const once = sanitizeProseHtml(editorHtmlFor(latex));
+    expect(once).not.toContain('class="katex"');
+    expect(editorFormulas(once)).toEqual([latex]);
+    expect(sanitizeProseHtml(once)).toBe(once);
+  });
+
   it('recovers the source from the KaTeX annotation when the attribute is missing', () => {
     const withAnnotation = katex.renderToString(LATEX, { output: 'htmlAndMathml' });
     const html = sanitizeProseHtml(`<p>${withAnnotation}</p>`);

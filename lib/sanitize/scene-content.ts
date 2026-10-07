@@ -33,7 +33,12 @@
  */
 import sanitizeHtml, { type IOptions } from 'sanitize-html';
 
-import { liftInlineMath, renderInlineMath } from './inline-math';
+import {
+  createInlineMathBudget,
+  liftInlineMath,
+  renderInlineMath,
+  type InlineMathBudget,
+} from './inline-math';
 
 // ---------------------------------------------------------------------------
 // Allowlist primitives
@@ -217,14 +222,18 @@ const PROSE_OPTIONS_WITH_MATH_SOURCE: IOptions = {
 /**
  * Sanitize one prose-HTML string (a text element's `content`, a shape's
  * `text.content`, or a table cell's `text`). Inline formulas keep their LaTeX
- * source and come back as a fresh KaTeX render; prose without a formula is
- * sanitized exactly as before, without the extra parse.
+ * source and come back as a fresh KaTeX render, within `budget` (see
+ * `./inline-math`); prose without a formula is sanitized exactly as before,
+ * without the extra parse.
  */
-export function sanitizeProseHtml(html: string): string {
+export function sanitizeProseHtml(
+  html: string,
+  budget: InlineMathBudget = createInlineMathBudget(),
+): string {
   try {
     const lifted = liftInlineMath(html);
     if (lifted !== null) {
-      return renderInlineMath(sanitizeHtml(lifted, PROSE_OPTIONS_WITH_MATH_SOURCE));
+      return renderInlineMath(sanitizeHtml(lifted, PROSE_OPTIONS_WITH_MATH_SOURCE), budget);
     }
   } catch {
     // Pathological markup (e.g. nesting deep enough to exhaust the stack in
@@ -286,11 +295,11 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sanitizeCell(row: unknown): unknown {
+function sanitizeCell(row: unknown, budget: InlineMathBudget): unknown {
   if (!Array.isArray(row)) return row;
   return row.map((cell) => {
     if (!isRecord(cell) || typeof cell.text !== 'string') return cell;
-    return { ...cell, text: sanitizeProseHtml(cell.text) };
+    return { ...cell, text: sanitizeProseHtml(cell.text, budget) };
   });
 }
 
@@ -301,25 +310,25 @@ function sanitizeCell(row: unknown): unknown {
  * latex uses the KaTeX snapshot policy. Code elements store plain text lines —
  * deliberately NOT treated as HTML, so code like `a < b` is never escaped.
  */
-function sanitizeValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sanitizeValue);
+function sanitizeValue(value: unknown, budget: InlineMathBudget): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, budget));
   if (!isRecord(value)) return value;
 
   const out: JsonRecord = {};
   for (const [key, child] of Object.entries(value)) {
-    out[key] = sanitizeValue(child);
+    out[key] = sanitizeValue(child, budget);
   }
 
   if (typeof out.type !== 'string') return out;
 
   if (out.type === 'text' && typeof out.content === 'string') {
-    out.content = sanitizeProseHtml(out.content);
+    out.content = sanitizeProseHtml(out.content, budget);
   } else if (out.type === 'shape') {
     if (isRecord(out.text) && typeof out.text.content === 'string') {
-      out.text = { ...out.text, content: sanitizeProseHtml(out.text.content) };
+      out.text = { ...out.text, content: sanitizeProseHtml(out.text.content, budget) };
     }
   } else if (out.type === 'table' && Array.isArray(out.data)) {
-    out.data = out.data.map(sanitizeCell);
+    out.data = out.data.map((row) => sanitizeCell(row, budget));
   } else if (out.type === 'latex' && typeof out.html === 'string') {
     out.html = sanitizeLatexHtml(out.html);
   }
@@ -334,5 +343,6 @@ function sanitizeValue(value: unknown): unknown {
  * change existed, and the write path applies it to new payloads.
  */
 export function sanitizeSceneContent<T>(payload: T): T {
-  return sanitizeValue(payload) as T;
+  // One inline-formula rendering budget for the whole payload.
+  return sanitizeValue(payload, createInlineMathBudget()) as T;
 }
