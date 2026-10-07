@@ -28,6 +28,7 @@ import {
   GET as sessionMaterialRoute,
   PATCH as renameMaterialRoute,
 } from '@/app/api/materials/[id]/route';
+import { GET as originalRoute } from '@/app/api/materials/[id]/original/route';
 import { GET as sessionMaterialsRoute } from '@/app/api/materials/route';
 import {
   DELETE as deleteFolderRoute,
@@ -50,6 +51,7 @@ import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import { startExtractionWatcher } from '@/lib/server/agent-runtime/extraction-watcher';
 import { runNextOwnerExtraction } from '@/lib/server/material-extraction/owner-extraction';
 import { buildMaterialLibraryTools } from '@/lib/server/agent-runtime/material-library-tools';
+import { contentDisposition } from '@/lib/server/materials/original-response';
 import { presentTool } from '@/components/workbench/chat/tool-presentation';
 import { createWorkbenchTranslator } from '@/lib/i18n/workbench';
 import type { ChatNode } from '@/lib/workbench/session-store';
@@ -61,6 +63,7 @@ import {
   bootLibraryHarness,
   seedCopy,
   seedDerivative,
+  seedPoolSource,
   seedSession,
   type ExtractionScenarioPool,
   type LibraryHarness,
@@ -920,8 +923,9 @@ describe('material library routes and tools (PGlite)', () => {
       renameMaterialRoute(request('PATCH', '/api/materials/m', { name: 'X' }), params('m')),
       deleteMaterialRoute(request('DELETE', '/api/materials/m'), params('m')),
       libraryRoute(request('GET', '/api/materials/library')),
+      originalRoute(request('GET', '/api/materials/m/original'), params('m')),
     ]);
-    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404, 404]);
+    expect(answers.map((answer) => answer.status)).toEqual([404, 404, 404, 404, 404, 404, 404]);
   });
   it('deletes only a ready source for the request owner, with an empty 204', async () => {
     const h = await boot();
@@ -1000,5 +1004,101 @@ describe('material library routes and tools (PGlite)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('serves a source’s original to its owner, inline only for media the pool serves inline', async () => {
+    const h = await boot();
+    const video = Buffer.from('fake-mp4');
+    await seedPoolSource(h, 'src-pool', video, 'video/mp4');
+    // From before the pool: read from the byte store, checked against its digest.
+    await seedSource(h, 'src-old', { bytes: Buffer.from('%PDF-old') });
+    await h.pool.query('UPDATE owner_material SET original_name = $2 WHERE id = $1', [
+      'src-old',
+      '教案 "第1课"\r\n.pdf',
+    ]);
+    const open = (id: string) =>
+      originalRoute(request('GET', `/api/materials/${id}/original`), params(id));
+
+    const pooled = await open('src-pool');
+    expect(pooled.status).toBe(200);
+    expect(Buffer.from(await pooled.arrayBuffer())).toEqual(video);
+    expect(pooled.headers.get('content-type')).toBe('video/mp4');
+    expect(pooled.headers.get('content-length')).toBe(String(video.byteLength));
+    expect(pooled.headers.get('content-disposition')).toMatch(/^inline; /);
+    expect(pooled.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(pooled.headers.get('cache-control')).toBe('private, no-store');
+
+    // A PDF is never inline: it downloads under its uploaded name, CR/LF dropped.
+    const old = await open('src-old');
+    expect(old.status).toBe(200);
+    expect(Buffer.from(await old.arrayBuffer())).toEqual(Buffer.from('%PDF-old'));
+    expect(old.headers.get('content-type')).toBe('application/octet-stream');
+    expect(old.headers.get('content-disposition')).toBe(
+      `attachment; filename="__ __1__.pdf"; filename*=UTF-8''${encodeURIComponent('教案 "第1课".pdf')}`,
+    );
+
+    // An anonymous owner reads its own; the account does not reach it.
+    await seedSource(h, 'src-anon', { owner: ANON });
+    expect((await open('src-anon')).status).toBe(404);
+    mocks.ownerId = ANON;
+    expect((await open('src-anon')).status).toBe(200);
+  });
+
+  it('answers the plain 404 for another owner’s, a deleted, a derived, an uploading or a missing material', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-theirs', { owner: OTHER });
+    await seedSource(h, 'src-mine');
+    await seedDerivative(h, 'img-1', 'src-mine');
+    await seedSource(h, 'src-gone');
+    await h.pool.query('UPDATE owner_material SET deleted_at = 1 WHERE id = $1', ['src-gone']);
+    // An upload reservation that has not finished is not readable yet.
+    await registerOwnerMaterial(
+      h.pool as never,
+      {
+        id: 'src-uploading',
+        ownerId: ACCOUNT,
+        kind: 'source',
+        bytes: 3,
+        originalName: 'uploading.pdf',
+        mime: 'application/pdf',
+        ossKey: 'pending-upload',
+      },
+      { maxCount: 100, maxTotalBytes: 1_000_000 },
+    );
+    for (const id of ['src-theirs', 'img-1', 'src-gone', 'src-uploading', 'src-missing']) {
+      const answer = await originalRoute(
+        request('GET', `/api/materials/${id}/original`),
+        params(id),
+      );
+      expect(answer.status, id).toBe(404);
+      expect(await answer.text(), id).toBe('Not found');
+    }
+  });
+
+  it('answers 503 unavailable, without storage details, when no trusted bytes can be read', async () => {
+    const h = await boot();
+    await seedSource(h, 'src-bad', { bytes: Buffer.from('%PDF-bad') });
+    // The stored object no longer matches the digest recorded at upload.
+    h.sources.set('src-bad', Buffer.from('tampered'));
+    const answer = await originalRoute(
+      request('GET', '/api/materials/src-bad/original'),
+      params('src-bad'),
+    );
+    expect(answer.status).toBe(503);
+    const body = await answer.text();
+    expect(JSON.parse(body)).toMatchObject({ success: false, reason: 'unavailable' });
+    expect(body).not.toContain('objects/');
+  });
+
+  it('names the file safely whatever the uploaded name holds', () => {
+    expect(contentDisposition('attachment', '../a\\b/c.txt', 'mat-1')).toBe(
+      `attachment; filename=".._a_b_c.txt"; filename*=UTF-8''.._a_b_c.txt`,
+    );
+    expect(contentDisposition('inline', ' \r\n ', 'mat-1')).toBe(
+      `inline; filename="mat-1"; filename*=UTF-8''mat-1`,
+    );
+    expect(contentDisposition('attachment', "it's (1)*.png", 'mat-1')).toBe(
+      `attachment; filename="it's (1)*.png"; filename*=UTF-8''it%27s%20%281%29%2A.png`,
+    );
   });
 });
