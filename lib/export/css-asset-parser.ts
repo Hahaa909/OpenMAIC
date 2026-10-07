@@ -124,6 +124,18 @@ export function splitCssCommaList(value: string): string[] {
   return entries;
 }
 
+/** Lower-cased font formats named by the top-level `format()` hints of a value. */
+export function cssFormatHints(value: string): string[] {
+  const hints: string[] = [];
+  for (const node of valueParser(value).nodes) {
+    if (node.type !== 'function' || node.value.toLowerCase() !== 'format') continue;
+    for (const arg of node.nodes) {
+      if (arg.type === 'string' || arg.type === 'word') hints.push(arg.value.toLowerCase());
+    }
+  }
+  return hints;
+}
+
 export function cssImportReference(rule: AtRule): { url: string; conditions: string } | null {
   const parsed = valueParser(rule.params);
   const node = parsed.nodes.find(

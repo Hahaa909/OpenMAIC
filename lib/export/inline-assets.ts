@@ -19,10 +19,11 @@ import {
   type SourcePatch,
 } from './html-asset-inventory';
 import parseSrcset, { type SrcsetCandidate } from 'parse-srcset';
-import type { AtRule, Declaration, Root } from 'postcss';
+import type { AtRule, Root } from 'postcss';
 import {
   collectCssAssetReferencesByRegex,
   cssImportReference,
+  cssFormatHints,
   cssUrlReferences,
   parseCss,
   rewriteCssValue,
@@ -211,46 +212,51 @@ function guessMime(url: string): string {
 const NON_WOFF2_FONT_EXT = /\.(woff|ttf|otf|eot)(\?|#|$)/i;
 const WOFF2_EXT = /\.woff2(\?|#|$)/i;
 
-function isWoff2Ref(raw: string): boolean {
-  return WOFF2_EXT.test(raw) || /^data:font\/woff2/i.test(raw);
+/** A `src` entry that names a woff2 by URL extension, data URI or format() hint. */
+function isWoff2Entry(entry: string): boolean {
+  return (
+    cssFormatHints(entry).includes('woff2') ||
+    cssUrlReferences(entry).some(
+      (ref) => WOFF2_EXT.test(ref.raw.trim()) || /^data:font\/woff2/i.test(ref.raw.trim()),
+    )
+  );
 }
 
-/** A remote (non-`data:`) woff/ttf/otf/eot reference. */
-function isNonWoff2FontRef(raw: string): boolean {
-  return !/^data:/i.test(raw) && NON_WOFF2_FONT_EXT.test(raw);
+/** A non-woff2 `src` entry referencing a remote woff/ttf/otf/eot file. */
+function isNonWoff2FontEntry(entry: string): boolean {
+  return (
+    !isWoff2Entry(entry) &&
+    cssUrlReferences(entry).some(
+      (ref) => !/^data:/i.test(ref.raw.trim()) && NON_WOFF2_FONT_EXT.test(ref.raw.trim()),
+    )
+  );
 }
 
 /**
- * Woff2-preference optimisation. In an @font-face whose `src` offers a woff2,
- * every browser that can run the exported page picks the woff2, so the
- * woff/ttf/otf/eot fallback entries are removed from the `src` list instead
- * of being inlined. They are removed, not pointed at a placeholder URL:
- * Chromium and WebKit check every `src` URL against the page's `font-src`
- * CSP when the rule is parsed, whether or not the face is ever used, so any
- * non-`data:` placeholder logs a CSP violation per entry in the standalone
- * HTML export. `local()` entries and @font-face rules without a woff2 are left
- * as they are; a `src` declaration left with no entries is removed.
+ * Woff2-preference optimisation. In an @font-face `src` declaration that
+ * offers a woff2, every browser that can run the exported page picks the
+ * woff2, so that declaration's woff/ttf/otf/eot fallback entries are removed
+ * instead of being inlined. They are removed, not pointed at a placeholder
+ * URL: Chromium and WebKit check every `src` URL against the page's
+ * `font-src` CSP when the rule is parsed, whether or not the face is ever
+ * used, so any non-`data:` placeholder logs a CSP violation per entry in the
+ * standalone HTML export.
+ *
+ * Each `src` declaration is judged on its own: the last valid one wins the
+ * cascade, so a declaration without a woff2 of its own is left whole (and
+ * inlined as usual) even when another `src` in the rule offers one.
+ * `local()` entries are always kept.
  */
 function pruneNonWoff2FontFallbacks(root: Root): void {
   root.walkAtRules((rule) => {
     if (rule.name.toLowerCase() !== 'font-face') return;
-    const sources: Declaration[] = [];
     rule.each((node) => {
-      if (node.type === 'decl' && node.prop.toLowerCase() === 'src') sources.push(node);
+      if (node.type !== 'decl' || node.prop.toLowerCase() !== 'src') return;
+      const entries = splitCssCommaList(node.value);
+      if (!entries.some(isWoff2Entry)) return;
+      const kept = entries.filter((entry) => !isNonWoff2FontEntry(entry));
+      if (kept.length !== entries.length) node.value = kept.join(',');
     });
-    const hasWoff2 = sources.some((declaration) =>
-      cssUrlReferences(declaration.value).some((ref) => isWoff2Ref(ref.raw.trim())),
-    );
-    if (!hasWoff2) return;
-    for (const declaration of sources) {
-      const entries = splitCssCommaList(declaration.value);
-      const kept = entries.filter(
-        (entry) => !cssUrlReferences(entry).some((ref) => isNonWoff2FontRef(ref.raw.trim())),
-      );
-      if (kept.length === entries.length) continue;
-      if (kept.length === 0) declaration.remove();
-      else declaration.value = kept.join(',');
-    }
   });
 }
 

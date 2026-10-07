@@ -445,13 +445,34 @@ describe('inlineCssUrls', () => {
     );
   });
 
-  it('removes a src declaration left empty and keeps the one offering woff2', async () => {
+  it('judges each src declaration on its own: an earlier non-woff2 src stays whole', async () => {
     const css =
       '@font-face{font-family:K;src:url(K.eot);src:url(K.woff2) format("woff2"),url(K.woff) format("woff")}';
     const calls: string[] = [];
     const { css: out } = await inlineCssUrls(css, 'https://x/base.css', fontFetcher(calls));
-    expect(out).toBe(`@font-face{font-family:K;src:url(${W2}) format("woff2")}`);
-    expect(calls).toEqual(['https://x/K.woff2']);
+    expect(out).toBe(
+      `@font-face{font-family:K;src:url(data:font/eot;base64,AQ==);src:url(${W2}) format("woff2")}`,
+    );
+    expect(calls.sort()).toEqual(['https://x/K.eot', 'https://x/K.woff2']);
+  });
+
+  it('keeps a later non-woff2 src declaration so it still wins the cascade', async () => {
+    const css = '@font-face{font-family:K;src:url(A.woff2);src:url(B.ttf) format("truetype")}';
+    const { css: out, failed } = await inlineCssUrls(css, 'https://x/base.css', fontFetcher());
+    expect(out).toBe(
+      `@font-face{font-family:K;src:url(${W2});src:url(data:font/ttf;base64,AQ==) format("truetype")}`,
+    );
+    expect(failed).toEqual([]);
+  });
+
+  it('honours format("woff2") hints on extensionless and mis-named font URLs', async () => {
+    const css =
+      "@font-face{font-family:K;src:url(https://fonts.example/k?id=1) format('woff2'),url(K-legacy.woff) format(\"woff2\"),url(K.ttf) format('truetype')}";
+    const calls: string[] = [];
+    const { css: out } = await inlineCssUrls(css, 'https://x/base.css', fontFetcher(calls));
+    expect(out).not.toContain('truetype');
+    expect(out.match(/format\(['"]woff2['"]\)/g)).toHaveLength(2);
+    expect(calls.sort()).toEqual(['https://fonts.example/k?id=1', 'https://x/K-legacy.woff']);
   });
 
   it('prunes fallbacks next to an already-inlined woff2 data URI', async () => {
