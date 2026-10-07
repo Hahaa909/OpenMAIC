@@ -9,7 +9,7 @@ import { useElementFill } from '../shared/useElementFill';
 import { GradientDefs } from './GradientDefs';
 import { PatternDefs } from './PatternDefs';
 import { preservesPlainTextLineBreaks } from '../../utils/richText';
-import { useInlineMath } from '../../utils/inlineMath';
+import { useInlineMath, useInnerHtml } from '../../utils/inlineMath';
 
 export interface BaseShapeElementProps {
   elementInfo: PPTShapeElement;
@@ -108,6 +108,7 @@ export function BaseShapeElement({ elementInfo, renderLabel }: BaseShapeElementP
   };
 
   const proseRef = useRef<HTMLDivElement>(null);
+  const innerHtml = useInnerHtml(text.content);
   useInlineMath(proseRef, text.content);
 
   const justifyContent =
@@ -132,13 +133,14 @@ export function BaseShapeElement({ elementInfo, renderLabel }: BaseShapeElementP
     >
       <div
         ref={proseRef}
+        data-inline-math-root=""
         className="ProseMirror-static slide-renderer-prose"
         style={{
           // @ts-expect-error CSS custom properties
           '--paragraphSpace': `${text.paragraphSpace === undefined ? 5 : text.paragraphSpace}px`,
           whiteSpace: preservesPlainTextLineBreaks(text.content) ? 'pre-line' : undefined,
         }}
-        dangerouslySetInnerHTML={{ __html: text.content }}
+        dangerouslySetInnerHTML={innerHtml}
       />
     </div>
   );

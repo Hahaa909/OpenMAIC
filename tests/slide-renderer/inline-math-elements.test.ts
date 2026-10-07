@@ -138,4 +138,43 @@ describe('app slide renderer — inline formulas', () => {
       host = null;
     }
   });
+
+  it('keeps progress through repeated commits with formulas too large to cache', async () => {
+    // A ~1360-character matrix renders to ~170 KB of markup: over the cache's
+    // per-entry limit, so every re-typeset is full price.
+    const matrix = (index: number) =>
+      `\\begin{pmatrix}${Array.from({ length: 160 }, (_, k) => `a_{${index}${k}}`).join('&')}\\end{pmatrix}`;
+    const content = Array.from(
+      { length: 6 },
+      (_, index) => `<p>${stored(matrix(index + 300))}</p>`,
+    ).join('');
+    const cases = [
+      [BaseTextElement, (left: number) => text(content, left)],
+      [StaticTable, (left: number) => table(content, 400 + left)],
+    ] as const;
+    for (const [component, make] of cases) {
+      const update = mount(component as ComponentType<{ elementInfo: unknown }>, {
+        elementInfo: make(0),
+      });
+      const typeset = () => host!.querySelectorAll('.katex[data-inline-math]');
+      let previous = typeset().length;
+      const first = typeset()[0];
+      for (let commit = 1; commit <= 5; commit += 1) {
+        update({ elementInfo: make(commit * 10) });
+        expect(typeset().length).toBeGreaterThanOrEqual(previous);
+        expect(typeset()[0]).toBe(first);
+        previous = typeset().length;
+      }
+      for (let index = 0; index < 20 && typeset().length < 6; index += 1) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        });
+      }
+      expect(typeset()).toHaveLength(6);
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      host = null;
+    }
+  });
 });

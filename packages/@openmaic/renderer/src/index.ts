@@ -38,9 +38,13 @@ export { getElementRange, getLineElementPath, getTableSubThemeColor } from './ut
 export { createTextProseStyles } from './styles';
 export {
   INLINE_MATH_ATTRIBUTE,
+  INLINE_MATH_ROOT_ATTRIBUTE,
   MAX_INLINE_MATH_SOURCE,
+  completeInlineMath,
   renderInlineMath,
   useInlineMath,
+  useInnerHtml,
+  useInnerHtmlGrid,
 } from './utils/inlineMath';
 
 export * from './types';

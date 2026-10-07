@@ -28,7 +28,7 @@ import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { SlideCanvas } from '../SlideCanvas';
 import type { Slide } from '@openmaic/dsl';
-import { renderInlineMath } from '../utils/inlineMath';
+import { completeInlineMath } from '../utils/inlineMath';
 
 /** Percentage geometry (0–100) — mirrors the compiler's `PercentageGeometry`. */
 export interface MeasuredGeometry {
@@ -105,9 +105,10 @@ export async function measureSlideElementGeometry(
     flushSync(() => {
       root!.render(createElement(SlideCanvas, { slide, chrome: false }));
     });
-    // Typeset every inline formula now: the live renderer leaves what its
-    // per-pass budget does not cover to idle time, after this capture.
-    renderInlineMath(container, { complete: true });
+    // Typeset every inline formula now, root by root: the live renderer
+    // leaves what its per-pass budget does not cover to idle time, after this
+    // capture.
+    completeInlineMath(container);
 
     // Let the ResizeObserver-driven fit settle, then settle fonts before we read
     // rects. Auto-height text only reaches its final extent once the real faces

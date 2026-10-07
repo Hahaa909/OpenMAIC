@@ -1,6 +1,6 @@
 'use client';
 
-import { useLayoutEffect, type RefObject } from 'react';
+import { useLayoutEffect, useMemo, type RefObject } from 'react';
 import katex, { type KatexOptions } from 'katex';
 
 /**
@@ -10,6 +10,13 @@ import katex, { type KatexOptions } from 'katex';
  * renderer typesets every such span in the browser from its source.
  */
 export const INLINE_MATH_ATTRIBUTE = 'data-inline-math';
+
+/**
+ * Marks an element whose injected prose is one typesetting root (a text box,
+ * a shape label, a table), so callers that typeset a whole slide at once use
+ * the same roots, budgets and caps as the live elements.
+ */
+export const INLINE_MATH_ROOT_ATTRIBUTE = 'data-inline-math-root';
 
 /** Longest source typeset; longer sources are shown as plain LaTeX text. */
 export const MAX_INLINE_MATH_SOURCE = 2_000;
@@ -68,7 +75,8 @@ const handled = new WeakSet<Element>();
 /**
  * Typeset formulas by source, cloned on use: React may rewrite the injected
  * markup on any re-render, and re-typesetting the same source must stay
- * cheap. Bounded by the size of the cached markup; large renders are not kept.
+ * cheap. Bounded by the size of the cached markup, counted in serialized
+ * characters (an estimate, not heap bytes); large renders are not kept.
  */
 const TYPESET_CACHE_MAX_MARKUP = 2_000_000;
 const TYPESET_CACHE_MAX_ENTRY = 64_000;
@@ -125,9 +133,23 @@ export interface RenderInlineMathOptions {
   readonly complete?: boolean;
 }
 
+/** Formulas shown as text because they fell past a root's hard cap. */
+const capped = new WeakSet<Element>();
+
 function showSource(element: Element, latex: string): void {
   element.textContent = latex;
   handled.add(element);
+}
+
+/** Show a formula past the hard cap as its source text, whatever it shows now. */
+function showCapped(element: Element, latex: string): void {
+  if (capped.has(element)) return;
+  const span = (element.ownerDocument ?? document).createElement('span');
+  span.setAttribute(INLINE_MATH_ATTRIBUTE, latex);
+  span.textContent = latex;
+  handled.add(span);
+  capped.add(span);
+  element.replaceWith(span);
 }
 
 /**
@@ -149,11 +171,13 @@ export function renderInlineMath(root: ParentNode, options: RenderInlineMathOpti
     const latex = element.getAttribute(INLINE_MATH_ATTRIBUTE) ?? '';
     rootSource += latex.length;
     rootFormulas += 1;
-    if (handled.has(element)) continue;
+    // The cap depends only on document order within the root, so a formula
+    // ends up the same whatever earlier passes did with it.
     if (rootSource > INLINE_MATH_MAX_ROOT_SOURCE || rootFormulas > INLINE_MATH_MAX_ROOT_FORMULAS) {
-      showSource(element, latex);
+      showCapped(element, latex);
       continue;
     }
+    if (handled.has(element) && !capped.has(element)) continue;
     if (!typesetCache.has(latex)) {
       if (
         !options.complete &&
@@ -176,6 +200,37 @@ export function renderInlineMath(root: ParentNode, options: RenderInlineMathOpti
     element.replaceWith(formula);
   }
   return pending;
+}
+
+/**
+ * Typeset every formula under `container` now, root by root (each element
+ * marked with {@link INLINE_MATH_ROOT_ATTRIBUTE}), so each root keeps its own
+ * hard cap exactly as the live elements apply it. For snapshots, which
+ * capture right away instead of waiting for idle time.
+ */
+export function completeInlineMath(container: Element): void {
+  const roots = [...container.querySelectorAll(`[${INLINE_MATH_ROOT_ATTRIBUTE}]`)];
+  if (container.hasAttribute(INLINE_MATH_ROOT_ATTRIBUTE)) roots.unshift(container);
+  for (const root of roots) renderInlineMath(root, { complete: true });
+}
+
+/**
+ * A `dangerouslySetInnerHTML` value that keeps its identity while `html` is
+ * unchanged. React rewrites injected markup whenever it receives a new value
+ * object, which would discard typeset formulas and any idle progress on each
+ * re-render; a stable value leaves the DOM alone.
+ */
+export function useInnerHtml(html: string): { __html: string } {
+  return useMemo(() => ({ __html: html }), [html]);
+}
+
+/** {@link useInnerHtml} for a grid of cells (table text), keyed on every cell's markup. */
+export function useInnerHtmlGrid(cells: readonly (readonly string[])[]): { __html: string }[][] {
+  const key = JSON.stringify(cells);
+  return useMemo(
+    () => (JSON.parse(key) as string[][]).map((row) => row.map((html) => ({ __html: html }))),
+    [key],
+  );
 }
 
 type IdleHandle = { cancel(): void };

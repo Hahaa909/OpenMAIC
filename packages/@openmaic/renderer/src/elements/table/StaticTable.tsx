@@ -4,7 +4,7 @@ import { useMemo, useRef, type CSSProperties } from 'react';
 import type { PPTTableElement, TableCellBorder } from '@openmaic/dsl';
 import { getTableSubThemeColor } from '../../utils/element';
 import { getTextStyle } from './tableUtils';
-import { useInlineMath } from '../../utils/inlineMath';
+import { useInlineMath, useInnerHtmlGrid } from '../../utils/inlineMath';
 
 function cellBorderCss(b?: TableCellBorder): string | undefined {
   if (!b || b.width <= 0) return undefined;
@@ -19,11 +19,10 @@ interface StaticTableProps {
 export function StaticTable({ elementInfo }: StaticTableProps) {
   const { width, data, colWidths, cellMinHeight, rowHeights, outline, theme } = elementInfo;
   const tableRef = useRef<HTMLTableElement>(null);
-  // Re-typeset whenever any cell's markup changes (React rewrites it then).
-  useInlineMath(
-    tableRef,
-    data.map((row) => row.map((cell) => cell?.text ?? '').join('\u0000')).join('\u0001'),
-  );
+  const cellText = data.map((row) => row.map((cell) => cell?.text ?? ''));
+  // Stable per-cell values: React then leaves unchanged cell markup alone.
+  const cellHtml = useInnerHtmlGrid(cellText);
+  useInlineMath(tableRef, cellText.flat().join(''));
 
   const [subThemeDark, subThemeLight] = useMemo(() => {
     if (!theme) return ['', ''];
@@ -71,6 +70,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
   return (
     <table
       ref={tableRef}
+      data-inline-math-root=""
       className="slide-renderer-prose"
       style={{
         width: '100%',
@@ -148,7 +148,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
                     // replacement corrupts style attributes like
                     // `margin-left: calc(42px + 0.25em)` → the title indent is
                     // lost and collides with the cell's left icon (slide 5).
-                    dangerouslySetInnerHTML={{ __html: cell.text }}
+                    dangerouslySetInnerHTML={cellHtml[rowIdx][colIdx]}
                   />
                 </td>
               );

@@ -2,7 +2,7 @@
 
 import { useMemo, useRef } from 'react';
 import type { PPTTableElement } from '@openmaic/dsl';
-import { useInlineMath } from '@openmaic/renderer';
+import { useInlineMath, useInnerHtmlGrid } from '@openmaic/renderer';
 import { getTableSubThemeColor } from '@/lib/utils/element';
 import { getTextStyle, formatText, getHiddenCells } from './tableUtils';
 
@@ -28,15 +28,12 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
 
   const hiddenCells = useMemo(() => getHiddenCells(tableData), [tableData]);
   const tableRef = useRef<HTMLTableElement>(null);
-  // Re-typeset whenever any cell's markup changes (React rewrites it then).
-  useInlineMath(
-    tableRef,
-    tableData
-      .map((row) =>
-        Array.isArray(row) ? row.map((cell) => formatText(cell?.text)).join('\u0000') : '',
-      )
-      .join('\u0001'),
+  const cellText = tableData.map((row) =>
+    Array.isArray(row) ? row.map((cell) => formatText(cell?.text)) : [],
   );
+  // Stable per-cell values: React then leaves unchanged cell markup alone.
+  const cellHtml = useInnerHtmlGrid(cellText);
+  useInlineMath(tableRef, cellText.flat().join(''));
 
   const [subThemeDark, subThemeLight] = useMemo(() => {
     if (!theme) return ['', ''];
@@ -95,6 +92,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
   return (
     <table
       ref={tableRef}
+      data-inline-math-root=""
       className="w-full h-full"
       style={{
         borderCollapse: 'collapse',
@@ -157,7 +155,7 @@ export function StaticTable({ elementInfo }: StaticTableProps) {
                               ? 'flex-end'
                               : 'center',
                       }}
-                      dangerouslySetInnerHTML={{ __html: formatText(cell.text) }}
+                      dangerouslySetInnerHTML={cellHtml[rowIdx][colIdx]}
                     />
                   </td>
                 );
