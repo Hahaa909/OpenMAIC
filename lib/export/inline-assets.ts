@@ -23,9 +23,9 @@ import type { AtRule, Root } from 'postcss';
 import {
   collectCssAssetReferencesByRegex,
   cssImportReference,
-  cssFormatHints,
   cssUrlReferences,
   parseCss,
+  parseFontSrcEntry,
   rewriteCssValue,
   splitCssCommaList,
 } from './css-asset-parser';
@@ -212,40 +212,55 @@ function guessMime(url: string): string {
 const NON_WOFF2_FONT_EXT = /\.(woff|ttf|otf|eot)(\?|#|$)/i;
 const WOFF2_EXT = /\.woff2(\?|#|$)/i;
 
-/** A `src` entry that names a woff2 by URL extension, data URI or format() hint. */
-function isWoff2Entry(entry: string): boolean {
-  return (
-    cssFormatHints(entry).includes('woff2') ||
-    cssUrlReferences(entry).some(
-      (ref) => WOFF2_EXT.test(ref.raw.trim()) || /^data:font\/woff2/i.test(ref.raw.trim()),
-    )
-  );
+const isWoff2Url = (url: string) => WOFF2_EXT.test(url) || /^data:font\/woff2/i.test(url);
+
+/** `format()` hints of the fallback formats this optimisation may remove. */
+const NON_WOFF2_FORMAT =
+  /^(?:woff|truetype|opentype|embedded-opentype|collection|svg)(?:-variations)?$/;
+
+/**
+ * A `src` entry every browser that can run the exported page will load: a
+ * single woff2 url() whose only hint is a plain `format("woff2")` /
+ * `format(woff2)` (or none, with a woff2 URL). Anything that makes support
+ * conditional (a `tech()` condition, `supports` inside `format()`, a
+ * `woff2-variations` or multi-format hint, `local()`) disqualifies it, since a
+ * browser that skips the entry still needs the fallbacks behind it.
+ */
+function isUnconditionalWoff2Entry(entry: string): boolean {
+  const { urls, format, extra } = parseFontSrcEntry(entry);
+  if (extra || urls.length !== 1) return false;
+  if (format === null) return isWoff2Url(urls[0]);
+  return format.length === 1 && format[0] === 'woff2';
 }
 
-/** A non-woff2 `src` entry referencing a remote woff/ttf/otf/eot file. */
+/** A remote woff/ttf/otf/eot `src` entry, by URL extension or `format()` hint. */
 function isNonWoff2FontEntry(entry: string): boolean {
+  const { urls, format } = parseFontSrcEntry(entry);
+  if (format?.some((hint) => hint.startsWith('woff2'))) return false;
+  const remote = urls.filter((url) => !/^data:/i.test(url));
+  if (remote.length === 0 || remote.some(isWoff2Url)) return false;
   return (
-    !isWoff2Entry(entry) &&
-    cssUrlReferences(entry).some(
-      (ref) => !/^data:/i.test(ref.raw.trim()) && NON_WOFF2_FONT_EXT.test(ref.raw.trim()),
-    )
+    remote.some((url) => NON_WOFF2_FONT_EXT.test(url)) ||
+    !!format?.some((hint) => NON_WOFF2_FORMAT.test(hint))
   );
 }
 
 /**
- * Woff2-preference optimisation. In an @font-face `src` declaration that
- * offers a woff2, every browser that can run the exported page picks the
- * woff2, so that declaration's woff/ttf/otf/eot fallback entries are removed
- * instead of being inlined. They are removed, not pointed at a placeholder
- * URL: Chromium and WebKit check every `src` URL against the page's
- * `font-src` CSP when the rule is parsed, whether or not the face is ever
- * used, so any non-`data:` placeholder logs a CSP violation per entry in the
- * standalone HTML export.
+ * Woff2-preference optimisation. A browser uses the first `src` entry it
+ * supports and never reaches the ones after it, so once an entry is an
+ * unconditional woff2 (see `isUnconditionalWoff2Entry`) the woff/ttf/otf/eot
+ * fallbacks that follow it in the same list are removed instead of being
+ * inlined. Entries before it, `local()` entries and every entry of a list
+ * whose woff2 sources are all conditional are kept (and inlined as usual).
+ *
+ * Fallbacks are removed, not pointed at a placeholder URL: Chromium and
+ * WebKit check every `src` URL against the page's `font-src` CSP when the
+ * rule is parsed, whether or not the face is ever used, so any non-`data:`
+ * placeholder logs a CSP violation per entry in the standalone HTML export.
  *
  * Each `src` declaration is judged on its own: the last valid one wins the
- * cascade, so a declaration without a woff2 of its own is left whole (and
- * inlined as usual) even when another `src` in the rule offers one.
- * `local()` entries are always kept.
+ * cascade, so a declaration without an unconditional woff2 of its own is
+ * left whole even when another `src` in the rule offers one.
  */
 function pruneNonWoff2FontFallbacks(root: Root): void {
   root.walkAtRules((rule) => {
@@ -253,8 +268,9 @@ function pruneNonWoff2FontFallbacks(root: Root): void {
     rule.each((node) => {
       if (node.type !== 'decl' || node.prop.toLowerCase() !== 'src') return;
       const entries = splitCssCommaList(node.value);
-      if (!entries.some(isWoff2Entry)) return;
-      const kept = entries.filter((entry) => !isNonWoff2FontEntry(entry));
+      const first = entries.findIndex(isUnconditionalWoff2Entry);
+      if (first < 0) return;
+      const kept = entries.filter((entry, i) => i <= first || !isNonWoff2FontEntry(entry));
       if (kept.length !== entries.length) node.value = kept.join(',');
     });
   });
@@ -306,10 +322,10 @@ async function inlineParsedCssUrls(
 
 /** Inline every url(...) inside a CSS text, resolving relative URLs against cssUrl.
  *
- * Within an @font-face that offers a woff2, only the woff2 is inlined; the
- * woff/ttf/otf/eot fallbacks are removed from `src` (see
- * `pruneNonWoff2FontFallbacks`). @font-face rules with NO woff2 keep the
- * normal inline-everything behaviour.
+ * In an @font-face `src` list with an unconditional woff2, the woff/ttf/otf/eot
+ * fallbacks after it are removed instead of inlined (see
+ * `pruneNonWoff2FontFallbacks`); every other source keeps the normal
+ * inline-everything behaviour.
  */
 export async function inlineCssUrls(
   css: string,

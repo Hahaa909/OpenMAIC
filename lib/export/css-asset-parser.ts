@@ -124,16 +124,43 @@ export function splitCssCommaList(value: string): string[] {
   return entries;
 }
 
-/** Lower-cased font formats named by the top-level `format()` hints of a value. */
-export function cssFormatHints(value: string): string[] {
-  const hints: string[] = [];
-  for (const node of valueParser(value).nodes) {
-    if (node.type !== 'function' || node.value.toLowerCase() !== 'format') continue;
-    for (const arg of node.nodes) {
-      if (arg.type === 'string' || arg.type === 'word') hints.push(arg.value.toLowerCase());
+/** The parts of one `@font-face` `src` entry that decide whether a browser will use it. */
+export interface FontSrcEntry {
+  /** Raw values of the entry's url() references. */
+  urls: string[];
+  /**
+   * Lower-cased arguments of the entry's `format()` hint (strings and
+   * keywords, so `format("woff2" supports variations)` yields three); `null`
+   * when the entry has no `format()`.
+   */
+  format: string[] | null;
+  /**
+   * The entry has top-level parts beyond one url() and at most one format():
+   * a `tech()` condition, `local()`, repeated functions or stray tokens.
+   */
+  extra: boolean;
+}
+
+export function parseFontSrcEntry(entry: string): FontSrcEntry {
+  let urlCount = 0;
+  let format: string[] | null = null;
+  let extra = false;
+  for (const node of valueParser(entry).nodes) {
+    if (node.type === 'space' || node.type === 'comment') continue;
+    const name = node.type === 'function' ? node.value.toLowerCase() : '';
+    if (name === 'url' && urlCount === 0) {
+      urlCount++;
+    } else if (name === 'format' && format === null && node.type === 'function') {
+      format = [];
+      for (const arg of node.nodes) {
+        if (arg.type === 'space' || arg.type === 'comment' || arg.type === 'div') continue;
+        format.push(arg.type === 'string' || arg.type === 'word' ? arg.value.toLowerCase() : '');
+      }
+    } else {
+      extra = true;
     }
   }
-  return hints;
+  return { urls: cssUrlReferences(entry).map((ref) => ref.raw.trim()), format, extra };
 }
 
 export function cssImportReference(rule: AtRule): { url: string; conditions: string } | null {
