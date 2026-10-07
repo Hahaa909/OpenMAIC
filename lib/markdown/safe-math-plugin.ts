@@ -9,9 +9,12 @@ import { safeKatexOptions } from '@openmaic/dsl';
  * This keeps its remark side and its `rehype-katex` instance, and replaces the
  * rehype options with `safeKatexOptions(...)` of what it configured.
  *
- * `rehype-katex` spreads these options into every render, so the `macros`
- * object is shared by the formulas of one plugin instance. That is safe only
- * because every definition command is inert: no formula can write to it.
+ * `rehype-katex` holds one options object per plugin instance and spreads it
+ * into each render (`{ ...options, displayMode, throwOnError }`), including
+ * its error retry. KaTeX writes built-in state into `macros` while rendering
+ * (an `align` environment sets `\@eqnsw`, for example), so a shared object
+ * would leak between formulas and between messages. `macros` is therefore an
+ * enumerable getter: every spread, and so every render, gets a fresh one.
  */
 export function createSafeMathPlugin(options?: MathPluginOptions): MathPlugin {
   const base = createMathPlugin(options);
@@ -27,5 +30,14 @@ export function createSafeMathPlugin(options?: MathPluginOptions): MathPlugin {
     throw new Error('@streamdown/math: unexpected rehypePlugin shape');
   }
   const [rehypeKatex, katexOptions] = rehype;
-  return { ...base, rehypePlugin: [rehypeKatex, safeKatexOptions(katexOptions as object)] };
+  return { ...base, rehypePlugin: [rehypeKatex, freshMacrosOptions(katexOptions as object)] };
+}
+
+/** Hardened options whose `macros` is rebuilt on every read. */
+export function freshMacrosOptions(options: object): object {
+  const { macros: _shared, ...hardened } = safeKatexOptions(options);
+  return Object.defineProperty(hardened, 'macros', {
+    enumerable: true,
+    get: () => safeKatexOptions(options).macros,
+  });
 }

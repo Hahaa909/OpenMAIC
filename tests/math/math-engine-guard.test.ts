@@ -132,9 +132,20 @@ describe('render-call check rejects every bypass', () => {
     expect(
       findUnsafeRenderUses(
         'ok.ts',
-        `${header}katex.renderToString(a, safeKatexOptions({ displayMode: true }));\n` +
+        `${header}import temml from 'temml';\nkatex.renderToString(a, safeKatexOptions({ displayMode: true }));\n` +
           'katex.render(a, host, safeKatexOptions());\n' +
+          'temml.renderToString(a, safeKatexOptions());\n' +
           'let t: typeof katex;\n',
+      ),
+    ).toEqual([]);
+  });
+
+  it('accepts an aliased import of the helper', () => {
+    expect(
+      findUnsafeRenderUses(
+        'ok.ts',
+        "import * as K from 'katex';\nimport { safeKatexOptions as safe } from '@openmaic/dsl';\n" +
+          'K.renderToString(a, safe());',
       ),
     ).toEqual([]);
   });
@@ -151,6 +162,31 @@ describe('render-call check rejects every bypass', () => {
     ['aliased default', "import { default as kk } from 'katex';\nkk.renderToString(a, {});"],
     ['other engine module', "import renderMath from 'katex/contrib/auto-render';"],
     ['temml without helper', "import temml from 'temml';\ntemml.renderToString(a);"],
+    [
+      'require binding',
+      `${header}const k = require('katex');\nk.renderToString(a, safeKatexOptions());`,
+    ],
+    [
+      'dynamic import binding',
+      `${header}const k = await import('katex');\nk.default.renderToString(a, safeKatexOptions());`,
+    ],
+    ['re-export', `${header}export { default as k } from 'katex';`],
+    ['import = require', `import k = require('katex');\nk.renderToString(a, {});`],
+    ['side-effect import', `${header}import 'katex/contrib/auto-render';`],
+    ['helper in the wrong position (render)', `${header}katex.render(a, safeKatexOptions(), {});`],
+    [
+      'helper after the options (renderToString)',
+      `${header}katex.renderToString(a, {}, safeKatexOptions());`,
+    ],
+    ['element passed as options', `${header}katex.render(a, safeKatexOptions());`],
+    [
+      'helper not imported from the dsl',
+      "import katex from 'katex';\nconst safeKatexOptions = (o) => o;\nkatex.renderToString(a, safeKatexOptions({}));",
+    ],
+    [
+      'helper shadowed locally',
+      `${header}function f(safeKatexOptions) { return katex.renderToString(a, safeKatexOptions({})); }`,
+    ],
   ])('%s', (_name, source) => {
     expect(findUnsafeRenderUses('bad.ts', source)).not.toEqual([]);
   });

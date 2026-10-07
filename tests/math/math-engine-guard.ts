@@ -6,6 +6,12 @@
  * side-effect imports, `import x = require()`, re-exports, dynamic `import()`
  * and `require()`. Type-only imports and asset subpaths (CSS, fonts,
  * `package.json`) are ignored because they cannot render anything.
+ *
+ * Scope and known limits: the guard covers module imports of math engines,
+ * plus KaTeX auto-render injected as script text. It does not see indirect or
+ * global access: an engine reached through `globalThis.katex` / `window.katex`,
+ * engine script URLs or code inside other HTML strings, or paths obtained with
+ * `require.resolve`. Those need review.
  */
 import ts from 'typescript';
 
@@ -16,12 +22,6 @@ const ASSET_SUBPATH_RE = /\.(?:css|json|woff2?|ttf|otf)$/;
 /** Browser-global KaTeX auto-render, injected as script text rather than imported. */
 const AUTO_RENDER_TEXT_RE = /renderMathInElement|contrib\/auto-render/;
 
-const RENDER_METHODS = new Set([
-  'render',
-  'renderToString',
-  '__renderToDomTree',
-  '__renderToHTMLTree',
-]);
 const DIRECT_RENDER_ENGINES = new Set(['katex', 'temml']);
 
 export interface EngineImport {
@@ -104,65 +104,107 @@ export function usesAutoRenderText(source: string): boolean {
   return AUTO_RENDER_TEXT_RE.test(source);
 }
 
-function isSafeOptionsCall(node: ts.Expression | undefined): boolean {
-  return (
-    !!node &&
-    ts.isCallExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    node.expression.text === 'safeKatexOptions'
-  );
-}
+/** Where each render method takes its options. */
+const OPTIONS_POSITION: Record<string, number> = {
+  render: 2, // render(source, element, options)
+  renderToString: 1, // renderToString(source, options)
+  __renderToDomTree: 1,
+  __renderToHTMLTree: 1,
+};
 
 /**
- * For a file allowed to import KaTeX/Temml directly: every use of the engine
- * must be `engine.<render method>(..., safeKatexOptions(...))`, and the engine
- * may only be bound through a default or namespace import. Returns violations.
+ * For a file allowed to import KaTeX/Temml directly. The engine may only be
+ * bound through a static default or namespace import, and every use must be
+ * `engine.<render method>(...)` whose options argument (at that method's own
+ * position, with nothing after it) is a call to `safeKatexOptions` imported
+ * from `@openmaic/dsl`. Returns violations.
  */
 export function findUnsafeRenderUses(fileName: string, source: string): string[] {
   const file = parse(fileName, source);
   const violations: string[] = [];
-  const bindings = new Set<string>();
+  const engineBindings = new Set<string>();
+  const safeBindings = new Set<string>();
+  const at = (node: ts.Node) => `${fileName}:${lineOf(file, node)}`;
+
+  for (const entry of findEngineImports(fileName, source)) {
+    if (entry.shape !== 'import') {
+      violations.push(
+        `${fileName}:${entry.line} reaches ${entry.specifier} by ${entry.shape}; use a static default import`,
+      );
+    }
+  }
 
   for (const statement of file.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
     const specifier = statement.moduleSpecifier.text;
-    if (!isEngine(specifier)) continue;
     const clause = statement.importClause;
-    if (!DIRECT_RENDER_ENGINES.has(specifier) || !clause || clause.isTypeOnly) {
+    if (specifier === '@openmaic/dsl' && clause && !clause.isTypeOnly) {
+      const named = clause.namedBindings;
+      if (named && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          const imported = (element.propertyName ?? element.name).text;
+          if (!element.isTypeOnly && imported === 'safeKatexOptions') {
+            safeBindings.add(element.name.text);
+          }
+        }
+      }
+      continue;
+    }
+    if (!isEngine(specifier) || !clause || clause.isTypeOnly) continue;
+    if (!DIRECT_RENDER_ENGINES.has(specifier)) {
       violations.push(
-        `${fileName}:${lineOf(file, statement)} imports ${specifier} in an unsupported form`,
+        `${at(statement)} imports ${specifier}; only katex and temml may be used here`,
       );
       continue;
     }
-    if (clause.name) bindings.add(clause.name.text);
+    if (clause.name) engineBindings.add(clause.name.text);
     const named = clause.namedBindings;
-    if (named && ts.isNamespaceImport(named)) bindings.add(named.name.text);
+    if (named && ts.isNamespaceImport(named)) engineBindings.add(named.name.text);
     if (named && ts.isNamedImports(named)) {
       for (const element of named.elements) {
         if (element.isTypeOnly) continue;
         violations.push(
-          `${fileName}:${lineOf(file, element)} binds ${element.getText(file)} from ${specifier}; use the default import`,
+          `${at(element)} binds ${element.getText(file)} from ${specifier}; use the default import`,
         );
       }
     }
   }
 
+  const isSafeOptionsCall = (node: ts.Expression | undefined): boolean =>
+    !!node &&
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    safeBindings.has(node.expression.text);
+
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && bindings.has(node.text) && !isDeclarationName(node)) {
+    // A local declaration shadowing the helper's name would not be the helper.
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      safeBindings.has(node.name.text)
+    ) {
+      violations.push(`${at(node)} redeclares ${node.name.text}`);
+    }
+    if (ts.isIdentifier(node) && engineBindings.has(node.text) && !isDeclarationName(node)) {
       const access = node.parent;
       const call = access?.parent;
-      const ok =
+      let ok = false;
+      if (
         ts.isPropertyAccessExpression(access) &&
         access.expression === node &&
-        RENDER_METHODS.has(access.name.text) &&
+        access.name.text in OPTIONS_POSITION &&
         ts.isCallExpression(call) &&
-        call.expression === access &&
-        isSafeOptionsCall(call.arguments[call.arguments.length - 1]);
+        call.expression === access
+      ) {
+        const position = OPTIONS_POSITION[access.name.text];
+        ok = call.arguments.length === position + 1 && isSafeOptionsCall(call.arguments[position]);
+      }
       if (!ok) {
         violations.push(
-          `${fileName}:${lineOf(file, node)} uses ${node.text} other than as a render call with safeKatexOptions(...)`,
+          `${at(node)} uses ${node.text} other than as a render call with safeKatexOptions(...) options`,
         );
       }
     }

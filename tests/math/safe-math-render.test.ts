@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { PPTElement } from '@openmaic/dsl';
 import { safeKatexOptions } from '@openmaic/dsl';
 import { TextBlock } from '@/components/workbench/chat/text-block';
+import { freshMacrosOptions } from '@/lib/markdown/safe-math-plugin';
 import { renderLatexToHtml } from '@/lib/quiz/math-text';
 import { renderLatexElementHtml } from '@/lib/edit/slide-edit-elements';
 import { latexToOmml } from '@/lib/export/latex-to-omml';
@@ -107,6 +108,38 @@ describe('math rendering with user macro definitions disabled', () => {
       });
     }
   }
+
+  describe('workbench chat math does not share engine state', () => {
+    const chat = (text: string) => renderToStaticMarkup(createElement(TextBlock, { text }));
+    const ALIGN = '$$\n\\begin{align}x&=y\\end{align}\n$$';
+    const PROBE = '$$\n\\@eqnsw\n$$';
+    // `\@eqnsw` is undefined until an align environment sets it to "1".
+    const visibleText = (html: string) => html.replace(/<[^>]*>/g, '');
+
+    it('across messages', () => {
+      const before = chat(PROBE);
+      expect(visibleText(before)).toContain('\\@eqnsw');
+      chat(ALIGN);
+      expect(chat(PROBE)).toBe(before);
+    });
+
+    it('across formulas in one message', () => {
+      // Undefined, the probe renders its source (in the HTML and the
+      // annotation); leaked, it renders the digit 1 instead.
+      const both = visibleText(chat(`${ALIGN}\n\n${PROBE}`));
+      expect(both).toContain('\\@eqnsw\\@eqnsw');
+      expect(both).not.toContain('1\\@eqnsw1');
+    });
+
+    it('gives every spread of the plugin options a fresh macros object', () => {
+      const options = freshMacrosOptions({ errorColor: 'red' }) as { macros: object };
+      const first = { ...options };
+      const second = { ...options };
+      expect(first.macros).not.toBe(second.macros);
+      expect(first).toMatchObject({ errorColor: 'red', trust: false });
+      expect(first.macros).toHaveProperty(['\\def']);
+    });
+  });
 
   it('does not carry a \\gdef from one render into the next', () => {
     expect(renderLatexToHtml('\\gdef\\leaked{LEAK}x')).not.toBeNull();
