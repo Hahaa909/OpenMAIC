@@ -2060,13 +2060,15 @@
         "folderLimit": "文件夹数量已达上限",
         "notMovable": "这份资料不能移动",
         "gone": "它已经不存在了",
-        "save": "操作没有成功，请重试"
+        "save": "操作没有成功，请重试",
+        "notEmpty": "文件夹里还有资料，请先移走"
       },
       "actions": {
         "more": "{{name}} 的更多操作",
         "rename": "改名",
         "move": "移动到…",
-        "column": "操作"
+        "column": "操作",
+        "delete": "删除"
       },
       "folder": {
         "new": "新建文件夹"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "重命名文件夹",
         "renameMaterialTitle": "重命名资料",
         "moveTitle": "移动“{{name}}”",
-        "noFolders": "还没有可以移入的文件夹，请先新建一个。"
+        "noFolders": "还没有可以移入的文件夹，请先新建一个。",
+        "close": "关闭"
+      },
+      "delete": {
+        "materialTitle": "删除“{{name}}”？",
+        "materialLinks": "删除后，对话里再读取这份资料会失败，对话里已有的文字保留。",
+        "materialCourses": "已保存到课程中的内容不受影响。",
+        "cannotUndo": "此操作不能撤销。",
+        "folderTitle": "删除文件夹“{{name}}”？",
+        "folderOnlyEmpty": "只能删除空文件夹。里面还有资料时，请先把它们移走。"
       }
     },
     "untitledCourse": "未命名课堂",

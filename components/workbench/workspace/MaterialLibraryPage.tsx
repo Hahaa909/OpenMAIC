@@ -40,6 +40,8 @@ import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils/cn';
 import {
   createLibraryFolder,
+  deleteLibraryFolder,
+  deleteLibraryMaterial,
   formatMaterialBytes,
   MATERIAL_NAME_MAX_LENGTH,
   materialLibraryErrorKey,
@@ -56,6 +58,7 @@ import {
 import { useMaterialLibrary } from '@/lib/workbench/use-material-library';
 import { validateFolderName } from '@/lib/utils/folder-name-validation';
 import {
+  DeleteDialog,
   LibraryItemMenu,
   menuIcons,
   MoveDialog,
@@ -504,6 +507,11 @@ export function MaterialLibraryPage() {
     | { readonly kind: 'createFolder' };
   const [naming, setNaming] = useState<NameRequest | null>(null);
   const [moving, setMoving] = useState<LibraryMaterial | null>(null);
+  // Deletion is page-only, after confirmation (RFC #1716 §5, §4).
+  type DeleteRequest =
+    | { readonly kind: 'material'; readonly material: LibraryMaterial }
+    | { readonly kind: 'folder'; readonly folder: LibraryFolder };
+  const [deleting, setDeleting] = useState<DeleteRequest | null>(null);
 
   /** One write; the list is read again whatever it answered (§7). */
   const write = async (action: () => Promise<void>): Promise<string | null> => {
@@ -557,6 +565,13 @@ export function MaterialLibraryPage() {
         icon: menuIcons.move,
         onSelect: () => setMoving(material),
       },
+      {
+        id: 'delete',
+        label: t('workspace.knowledgeBase.actions.delete'),
+        icon: menuIcons.delete,
+        destructive: true,
+        onSelect: () => setDeleting({ kind: 'material', material }),
+      },
     ];
     return (
       <LibraryItemMenu
@@ -576,6 +591,13 @@ export function MaterialLibraryPage() {
           label: t('workspace.knowledgeBase.actions.rename'),
           icon: menuIcons.rename,
           onSelect: () => setNaming({ kind: 'renameFolder', folder }),
+        },
+        {
+          id: 'delete',
+          label: t('workspace.knowledgeBase.actions.delete'),
+          icon: menuIcons.delete,
+          destructive: true,
+          onSelect: () => setDeleting({ kind: 'folder', folder }),
         },
       ]}
     />
@@ -873,6 +895,42 @@ export function MaterialLibraryPage() {
           check={naming.kind === 'renameMaterial' ? checkMaterialName : checkFolderName}
           submit={submitName}
           onClose={() => setNaming(null)}
+          t={t}
+        />
+      ) : null}
+      {deleting?.kind === 'material' ? (
+        <DeleteDialog
+          key={`material-${deleting.material.materialId}`}
+          testId="kb-delete-dialog"
+          title={t('workspace.knowledgeBase.delete.materialTitle', {
+            name: deleting.material.name,
+          })}
+          lines={[
+            t('workspace.knowledgeBase.delete.materialLinks'),
+            t('workspace.knowledgeBase.delete.materialCourses'),
+            t('workspace.knowledgeBase.delete.cannotUndo'),
+          ]}
+          remove={() => deleteLibraryMaterial(deleting.material.materialId)}
+          onSettled={() => reloadIfMounted.current()}
+          onDeleted={() => {}}
+          onClose={() => setDeleting(null)}
+          t={t}
+        />
+      ) : deleting?.kind === 'folder' ? (
+        <DeleteDialog
+          key={`folder-${deleting.folder.id}`}
+          testId="kb-delete-dialog"
+          title={t('workspace.knowledgeBase.delete.folderTitle', { name: deleting.folder.name })}
+          lines={[t('workspace.knowledgeBase.delete.folderOnlyEmpty')]}
+          remove={() => deleteLibraryFolder(deleting.folder.id)}
+          onSettled={() => reloadIfMounted.current()}
+          onDeleted={() => {
+            // The teacher deleted the folder being looked at: back to All.
+            if (scope.kind === 'folder' && scope.folderId === deleting.folder.id) {
+              selectScope({ kind: 'all' });
+            }
+          }}
+          onClose={() => setDeleting(null)}
           t={t}
         />
       ) : null}

@@ -322,3 +322,22 @@ export async function moveLibraryMaterials(
 ): Promise<void> {
   await libraryWrite('/api/materials/move', 'POST', { materialIds, folderId });
 }
+
+async function libraryDelete(url: string): Promise<void> {
+  const response = await fetch(url, { method: 'DELETE' });
+  if (!response.ok) throw await materialLibraryErrorOf(response);
+}
+
+/**
+ * Delete a source and its derivatives (the page-only route, §5). A 204 is the
+ * only success here; how a 404 after a failed attempt is read is
+ * `deleteOutcomeOf`'s (MaterialLibraryDialogs).
+ */
+export async function deleteLibraryMaterial(materialId: string): Promise<void> {
+  await libraryDelete(`/api/materials/${encodeURIComponent(materialId)}`);
+}
+
+/** Delete a folder; refused (409 `not_empty`) while anything is filed in it. */
+export async function deleteLibraryFolder(folderId: string): Promise<void> {
+  await libraryDelete(`/api/materials/folders/${encodeURIComponent(folderId)}`);
+}

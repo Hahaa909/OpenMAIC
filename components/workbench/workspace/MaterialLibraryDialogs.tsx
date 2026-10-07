@@ -7,8 +7,17 @@
  * each, whatever the answer, and a refusal stays in its dialog in the
  * server's own terms, never as a success.
  */
-import { useState, type ReactNode } from 'react';
-import { FolderInput, Inbox, MoreHorizontal, Pencil, Folder } from 'lucide-react';
+import { useRef, useState, type ReactNode } from 'react';
+import { FolderInput, Inbox, MoreHorizontal, Pencil, Folder, Trash2 } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -24,7 +33,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils/cn';
-import type { LibraryFolder, LibraryMaterial } from '@/lib/workbench/material-library-client';
+import {
+  MaterialLibraryRequestError,
+  type LibraryFolder,
+  type LibraryMaterial,
+} from '@/lib/workbench/material-library-client';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -35,6 +48,7 @@ export interface LibraryMenuItem {
   readonly icon: ReactNode;
   readonly onSelect: () => void;
   readonly disabled?: boolean;
+  readonly destructive?: boolean;
 }
 
 /** A ⋯ button and its menu, for a source or a folder. */
@@ -68,6 +82,7 @@ export function LibraryItemMenu({
             key={item.id}
             data-testid={`${testId}-${item.id}`}
             disabled={item.disabled}
+            variant={item.destructive ? 'destructive' : 'default'}
             onSelect={item.onSelect}
           >
             {item.icon}
@@ -82,6 +97,7 @@ export function LibraryItemMenu({
 export const menuIcons = {
   rename: <Pencil className="size-3.5" aria-hidden="true" />,
   move: <FolderInput className="size-3.5" aria-hidden="true" />,
+  delete: <Trash2 className="size-3.5" aria-hidden="true" />,
 };
 
 /**
@@ -270,5 +286,154 @@ export function MoveDialog({
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * How one delete attempt ended.
+ *
+ * - `deleted`: a 204 -- or a 404 after an attempt that FAILED: the deletion
+ *   can commit and its reply still be lost (a 500), and the retry then finds
+ *   nothing left to delete (#1805 review, notes for the confirmation UI).
+ * - `gone`: a 404 on the first attempt. It was already deleted, elsewhere;
+ *   not something this dialog did, so it is not reported as done.
+ * - `notEmpty`: the folder still holds materials. The server decides, not
+ *   the count the page shows.
+ * - `identity`: the sign-in changed (401/403).
+ * - `retry`: anything else -- busy (503), a server error, no answer. The
+ *   deletion may or may not have happened; trying again settles it.
+ */
+export type DeleteOutcome =
+  | { readonly outcome: 'deleted' }
+  | {
+      readonly outcome: 'gone' | 'notEmpty' | 'identity' | 'retry';
+      readonly messageKey: string;
+    };
+
+export function deleteOutcomeOf(error: unknown, failedBefore: boolean): DeleteOutcome {
+  if (error === null) return { outcome: 'deleted' };
+  if (error instanceof MaterialLibraryRequestError) {
+    if (error.status === 404) {
+      return failedBefore
+        ? { outcome: 'deleted' }
+        : { outcome: 'gone', messageKey: 'workspace.knowledgeBase.error.gone' };
+    }
+    if (error.reason === 'not_empty') {
+      return { outcome: 'notEmpty', messageKey: 'workspace.knowledgeBase.error.notEmpty' };
+    }
+    if (error.status === 401 || error.status === 403) {
+      return { outcome: 'identity', messageKey: 'workspace.knowledgeBase.error.identity' };
+    }
+    if (error.status === 503) {
+      return { outcome: 'retry', messageKey: 'workspace.knowledgeBase.error.busy' };
+    }
+  }
+  return { outcome: 'retry', messageKey: 'workspace.knowledgeBase.error.save' };
+}
+
+/**
+ * Confirm a deletion, say what it means, and see it through: a failed
+ * attempt keeps the dialog open with a retry; a final refusal says why and
+ * leaves only "Close". `onSettled` runs after every attempt (the page reads
+ * the list again); `onDeleted` only once the deletion is known to be done.
+ * Mounted per request (the page keys it).
+ */
+export function DeleteDialog({
+  testId,
+  title,
+  lines,
+  remove,
+  onSettled,
+  onDeleted,
+  onClose,
+  t,
+}: {
+  readonly testId: string;
+  readonly title: string;
+  /** What the deletion means, one sentence per line. */
+  readonly lines: readonly string[];
+  readonly remove: () => Promise<void>;
+  readonly onSettled: () => void;
+  readonly onDeleted: () => void;
+  readonly onClose: () => void;
+  readonly t: Translate;
+}) {
+  const [phase, setPhase] = useState<
+    | { readonly kind: 'confirm' | 'busy' }
+    | { readonly kind: 'retry' | 'final'; readonly messageKey: string }
+  >({ kind: 'confirm' });
+  const failedBefore = useRef(false);
+
+  const attempt = async () => {
+    if (phase.kind === 'busy' || phase.kind === 'final') return;
+    setPhase({ kind: 'busy' });
+    let error: unknown = null;
+    try {
+      await remove();
+    } catch (caught) {
+      error = caught;
+    }
+    onSettled();
+    const result = deleteOutcomeOf(error, failedBefore.current);
+    if (result.outcome === 'deleted') {
+      onDeleted();
+      onClose();
+      return;
+    }
+    if (result.outcome === 'retry') {
+      failedBefore.current = true;
+      setPhase({ kind: 'retry', messageKey: result.messageKey });
+      return;
+    }
+    setPhase({ kind: 'final', messageKey: result.messageKey });
+  };
+
+  const busy = phase.kind === 'busy';
+  return (
+    <AlertDialog open onOpenChange={(next) => (!next && !busy ? onClose() : undefined)}>
+      <AlertDialogContent data-testid={testId} className="sm:max-w-[420px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="flex flex-col gap-1">
+              {lines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {phase.kind === 'retry' || phase.kind === 'final' ? (
+          <p data-testid={`${testId}-message`} role="alert" className="text-[12px] text-red-600">
+            {t(phase.messageKey)}
+          </p>
+        ) : null}
+        <AlertDialogFooter>
+          {/* Radix's own cancel: it takes the focus when the dialog opens, and
+              closes through `onOpenChange` (refused while an attempt runs). */}
+          <AlertDialogCancel data-testid={`${testId}-cancel`} disabled={busy}>
+            {t(
+              phase.kind === 'final'
+                ? 'workspace.knowledgeBase.dialog.close'
+                : 'workspace.knowledgeBase.dialog.cancel',
+            )}
+          </AlertDialogCancel>
+          {phase.kind === 'final' ? null : (
+            <Button
+              type="button"
+              variant="destructive"
+              data-testid={`${testId}-confirm`}
+              disabled={busy}
+              onClick={() => void attempt()}
+            >
+              {t(
+                phase.kind === 'retry'
+                  ? 'workspace.knowledgeBase.retry'
+                  : 'workspace.knowledgeBase.actions.delete',
+              )}
+            </Button>
+          )}
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

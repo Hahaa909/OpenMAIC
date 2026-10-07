@@ -2060,13 +2060,15 @@
         "folderLimit": "Vous avez atteint le nombre maximal de dossiers",
         "notMovable": "Ce document ne peut pas être déplacé",
         "gone": "Il n’existe plus",
-        "save": "L’opération a échoué. Réessayez"
+        "save": "L’opération a échoué. Réessayez",
+        "notEmpty": "Ce dossier contient encore des documents. Déplacez-les d’abord"
       },
       "actions": {
         "more": "Autres actions pour {{name}}",
         "rename": "Renommer",
         "move": "Déplacer vers…",
-        "column": "Actions"
+        "column": "Actions",
+        "delete": "Supprimer"
       },
       "folder": {
         "new": "Nouveau dossier"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "Renommer le dossier",
         "renameMaterialTitle": "Renommer le document",
         "moveTitle": "Déplacer « {{name}} »",
-        "noFolders": "Aucun dossier où le déplacer pour l’instant. Créez-en un d’abord."
+        "noFolders": "Aucun dossier où le déplacer pour l’instant. Créez-en un d’abord.",
+        "close": "Fermer"
+      },
+      "delete": {
+        "materialTitle": "Supprimer « {{name}} » ?",
+        "materialLinks": "Les conversations qui l’utilisent ne pourront plus le lire ; le texte déjà présent dans ces conversations est conservé.",
+        "materialCourses": "Le contenu déjà enregistré dans un cours n’est pas concerné.",
+        "cannotUndo": "Cette action est irréversible.",
+        "folderTitle": "Supprimer le dossier « {{name}} » ?",
+        "folderOnlyEmpty": "Seul un dossier vide peut être supprimé. Déplacez d’abord ses documents."
       }
     },
     "untitledCourse": "未命名课堂",

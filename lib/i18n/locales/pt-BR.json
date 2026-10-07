@@ -2060,13 +2060,15 @@
         "folderLimit": "Você atingiu o limite de pastas",
         "notMovable": "Este material não pode ser movido",
         "gone": "Ele não existe mais",
-        "save": "Não deu certo. Tente novamente"
+        "save": "Não deu certo. Tente novamente",
+        "notEmpty": "Esta pasta ainda tem materiais. Mova-os primeiro"
       },
       "actions": {
         "more": "Mais ações para {{name}}",
         "rename": "Renomear",
         "move": "Mover para…",
-        "column": "Ações"
+        "column": "Ações",
+        "delete": "Excluir"
       },
       "folder": {
         "new": "Nova pasta"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "Renomear pasta",
         "renameMaterialTitle": "Renomear material",
         "moveTitle": "Mover “{{name}}”",
-        "noFolders": "Ainda não há pastas para onde movê-lo. Crie uma primeiro."
+        "noFolders": "Ainda não há pastas para onde movê-lo. Crie uma primeiro.",
+        "close": "Fechar"
+      },
+      "delete": {
+        "materialTitle": "Excluir “{{name}}”?",
+        "materialLinks": "As conversas que o usam não poderão mais lê-lo; o texto que já está nessas conversas permanece.",
+        "materialCourses": "O conteúdo já salvo em um curso não é afetado.",
+        "cannotUndo": "Esta ação não pode ser desfeita.",
+        "folderTitle": "Excluir a pasta “{{name}}”?",
+        "folderOnlyEmpty": "Só é possível excluir uma pasta vazia. Mova os materiais dela primeiro."
       }
     },
     "untitledCourse": "未命名课堂",

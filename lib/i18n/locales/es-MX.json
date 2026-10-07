@@ -2060,13 +2060,15 @@
         "folderLimit": "Llegaste al límite de carpetas",
         "notMovable": "Este material no se puede mover",
         "gone": "Ya no existe",
-        "save": "No funcionó. Inténtalo de nuevo"
+        "save": "No funcionó. Inténtalo de nuevo",
+        "notEmpty": "Esta carpeta aún tiene materiales. Muévelos primero"
       },
       "actions": {
         "more": "Más acciones para {{name}}",
         "rename": "Cambiar nombre",
         "move": "Mover a…",
-        "column": "Acciones"
+        "column": "Acciones",
+        "delete": "Eliminar"
       },
       "folder": {
         "new": "Nueva carpeta"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "Cambiar nombre de la carpeta",
         "renameMaterialTitle": "Cambiar nombre del material",
         "moveTitle": "Mover “{{name}}”",
-        "noFolders": "Aún no hay carpetas a donde moverlo. Crea una primero."
+        "noFolders": "Aún no hay carpetas a donde moverlo. Crea una primero.",
+        "close": "Cerrar"
+      },
+      "delete": {
+        "materialTitle": "¿Eliminar “{{name}}”?",
+        "materialLinks": "Las conversaciones que lo usan ya no podrán leerlo; el texto que ya está en esas conversaciones se conserva.",
+        "materialCourses": "El contenido ya guardado en un curso no se ve afectado.",
+        "cannotUndo": "Esta acción no se puede deshacer.",
+        "folderTitle": "¿Eliminar la carpeta “{{name}}”?",
+        "folderOnlyEmpty": "Solo se puede eliminar una carpeta vacía. Mueve primero sus materiales."
       }
     },
     "untitledCourse": "未命名课堂",

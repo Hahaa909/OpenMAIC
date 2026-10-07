@@ -23,8 +23,10 @@ import {
   type MaterialLibraryData,
 } from '@/lib/workbench/use-material-library';
 import { useWorkbenchStore } from '@/lib/workbench/session-store';
+import { deleteOutcomeOf } from '@/components/workbench/workspace/MaterialLibraryDialogs';
 import {
   formatMaterialBytes,
+  MaterialLibraryRequestError,
   materialLibraryErrorOf,
   type LibraryScope,
 } from '@/lib/workbench/material-library-client';
@@ -82,10 +84,15 @@ function stubFetch() {
       const method = init?.method ?? 'GET';
       const organizing =
         method === 'PATCH' ||
+        method === 'DELETE' ||
         url.pathname === '/api/materials/move' ||
         (url.pathname === '/api/materials/folders' && method === 'POST');
       if (organizing) {
-        const call = { method, path: url.pathname, body: JSON.parse(String(init!.body)) };
+        const call = {
+          method,
+          path: url.pathname,
+          body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+        };
         writeCalls.push(call);
         return writeMaterial(call);
       }
@@ -1173,6 +1180,209 @@ describe('organizing from the page', () => {
       'workspace.knowledgeBase.error.busy',
     ]);
     await page.dispose();
+  });
+});
+
+describe('deleting from the page', () => {
+  const inDocument = (testId: string) =>
+    document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  const openMenu = async (testId: string) => {
+    const trigger = inDocument(testId)!;
+    await act(async () => {
+      trigger.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
+      );
+      trigger.click();
+    });
+  };
+  const choose = (testId: string) =>
+    act(async () => {
+      inDocument(testId)!.click();
+    });
+  const confirm = async () => {
+    await choose('kb-delete-dialog-confirm');
+    await settle();
+  };
+  const deletes = () => writeCalls.filter((call) => call.method === 'DELETE');
+  const noContent = () => new Response(null, { status: 204 });
+
+  async function openPage() {
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage));
+    await settle();
+    return page;
+  }
+
+  it('says what deleting a source means, then deletes it and reads the list again', async () => {
+    writeMaterial = () => noContent();
+    const page = await openPage();
+    const reads = libraryCalls.length;
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+
+    const text = inDocument('kb-delete-dialog')?.textContent ?? '';
+    expect(text).toContain('workspace.knowledgeBase.delete.materialTitle{"name":"a.pdf"}');
+    expect(text).toContain('workspace.knowledgeBase.delete.materialLinks');
+    expect(text).toContain('workspace.knowledgeBase.delete.materialCourses');
+    expect(text).toContain('workspace.knowledgeBase.delete.cannotUndo');
+    expect(deletes()).toEqual([]);
+
+    await confirm();
+    expect(deletes()).toEqual([{ method: 'DELETE', path: '/api/materials/a', body: undefined }]);
+    expect(inDocument('kb-delete-dialog')).toBeNull();
+    expect(libraryCalls.length).toBe(reads + 1);
+    await page.dispose();
+  });
+
+  it('moves the focus into the confirmation, onto cancel, and closes from there', async () => {
+    writeMaterial = () => noContent();
+    const page = await openPage();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+    await settle();
+    const dialog = inDocument('kb-delete-dialog')!;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(inDocument('kb-delete-dialog-cancel'));
+
+    await choose('kb-delete-dialog-cancel');
+    expect(inDocument('kb-delete-dialog')).toBeNull();
+    expect(deletes()).toEqual([]);
+    await page.dispose();
+  });
+
+  it('takes a 404 on the retry after a failed delete as done', async () => {
+    // The deletion committed, its reply was lost (500); the retry finds nothing.
+    const answers = [
+      json({ success: false, errorCode: 'INTERNAL_ERROR', error: 'lost' }, 500),
+      new Response('Not found', { status: 404 }),
+    ];
+    writeMaterial = () => answers.shift()!;
+    const page = await openPage();
+    const reads = libraryCalls.length;
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+
+    await confirm();
+    expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
+      'workspace.knowledgeBase.error.save',
+    );
+    expect(inDocument('kb-delete-dialog-confirm')?.textContent).toBe(
+      'workspace.knowledgeBase.retry',
+    );
+    await confirm();
+    expect(deletes()).toHaveLength(2);
+    expect(inDocument('kb-delete-dialog')).toBeNull();
+    expect(libraryCalls.length).toBe(reads + 2);
+    await page.dispose();
+  });
+
+  it('says a source deleted elsewhere is gone, on a first 404, without a retry', async () => {
+    writeMaterial = () => new Response('Not found', { status: 404 });
+    const page = await openPage();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+    await confirm();
+    expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
+      'workspace.knowledgeBase.error.gone',
+    );
+    expect(inDocument('kb-delete-dialog-confirm')).toBeNull();
+    expect(inDocument('kb-delete-dialog')?.textContent).toContain(
+      'workspace.knowledgeBase.dialog.close',
+    );
+    await page.dispose();
+  });
+
+  it('retries a busy owner (503) until the delete goes through', async () => {
+    const answers = [json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503), noContent()];
+    writeMaterial = () => answers.shift()!;
+    const page = await openPage();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-delete');
+    await confirm();
+    expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
+      'workspace.knowledgeBase.error.busy',
+    );
+    await confirm();
+    expect(inDocument('kb-delete-dialog')).toBeNull();
+    await page.dispose();
+  });
+
+  it('refuses to delete a folder that still holds materials, in the server’s word', async () => {
+    writeMaterial = () =>
+      json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'not_empty' }, 409);
+    const page = await openPage();
+    const reads = libraryCalls.length;
+    await openMenu('kb-folder-menu-f1');
+    await choose('kb-folder-menu-f1-delete');
+    expect(inDocument('kb-delete-dialog')?.textContent).toContain(
+      'workspace.knowledgeBase.delete.folderOnlyEmpty',
+    );
+    await confirm();
+    expect(deletes()).toEqual([
+      { method: 'DELETE', path: '/api/materials/folders/f1', body: undefined },
+    ]);
+    expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
+      'workspace.knowledgeBase.error.notEmpty',
+    );
+    expect(inDocument('kb-delete-dialog-confirm')).toBeNull();
+    expect(libraryCalls.length).toBe(reads + 1);
+    await page.dispose();
+  });
+
+  it('goes back to All after deleting the folder being looked at, and only then', async () => {
+    writeMaterial = () => noContent();
+    const page = await openPage();
+    await page.click('kb-scope-folder-f1');
+    await settle();
+    folders = () => json({ folders: [] });
+    await openMenu('kb-folder-menu-f1');
+    await choose('kb-folder-menu-f1-delete');
+    await confirm();
+    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBe('page');
+    expect(page.query('kb-folder-gone')).toBeNull();
+    await page.dispose();
+  });
+
+  it('stays in the open folder after deleting another one', async () => {
+    writeMaterial = () => noContent();
+    folders = () =>
+      json({
+        folders: [
+          { id: 'f1', name: 'Unit 1', materialCount: 2 },
+          { id: 'f2', name: 'Unit 2', materialCount: 0 },
+        ],
+      });
+    const page = await openPage();
+    await page.click('kb-scope-folder-f1');
+    await settle();
+    await openMenu('kb-folder-menu-f2');
+    await choose('kb-folder-menu-f2-delete');
+    await confirm();
+    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
+    await page.dispose();
+  });
+});
+
+describe('reading a delete attempt', () => {
+  const refusal = (status: number, reason?: string) =>
+    new MaterialLibraryRequestError(status, reason);
+
+  it('is done on a 204, or on a 404 that follows a failed attempt', () => {
+    expect(deleteOutcomeOf(null, false)).toEqual({ outcome: 'deleted' });
+    expect(deleteOutcomeOf(refusal(404), true)).toEqual({ outcome: 'deleted' });
+    expect(deleteOutcomeOf(refusal(404), false)).toMatchObject({ outcome: 'gone' });
+  });
+
+  it('retries what may or may not have happened, and stops on what cannot', () => {
+    expect(deleteOutcomeOf(refusal(500), false)).toMatchObject({ outcome: 'retry' });
+    expect(deleteOutcomeOf(refusal(503), false)).toMatchObject({ outcome: 'retry' });
+    expect(deleteOutcomeOf(new TypeError('Failed to fetch'), false)).toMatchObject({
+      outcome: 'retry',
+    });
+    expect(deleteOutcomeOf(refusal(409, 'not_empty'), true)).toMatchObject({
+      outcome: 'notEmpty',
+    });
+    expect(deleteOutcomeOf(refusal(403), true)).toMatchObject({ outcome: 'identity' });
   });
 });
 

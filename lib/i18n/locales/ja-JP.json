@@ -2060,13 +2060,15 @@
         "folderLimit": "フォルダー数の上限に達しました",
         "notMovable": "この資料は移動できません",
         "gone": "すでに存在しません",
-        "save": "うまくいきませんでした。もう一度お試しください"
+        "save": "うまくいきませんでした。もう一度お試しください",
+        "notEmpty": "このフォルダーにはまだ資料があります。先に移動してください"
       },
       "actions": {
         "more": "{{name}} のその他の操作",
         "rename": "名前を変更",
         "move": "移動…",
-        "column": "操作"
+        "column": "操作",
+        "delete": "削除"
       },
       "folder": {
         "new": "新しいフォルダー"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "フォルダー名を変更",
         "renameMaterialTitle": "資料名を変更",
         "moveTitle": "「{{name}}」を移動",
-        "noFolders": "移動先のフォルダーがまだありません。先に作成してください。"
+        "noFolders": "移動先のフォルダーがまだありません。先に作成してください。",
+        "close": "閉じる"
+      },
+      "delete": {
+        "materialTitle": "「{{name}}」を削除しますか？",
+        "materialLinks": "削除すると、会話からこの資料を読み込めなくなります。会話にすでにある文章は残ります。",
+        "materialCourses": "コースに保存済みの内容には影響しません。",
+        "cannotUndo": "この操作は元に戻せません。",
+        "folderTitle": "フォルダー「{{name}}」を削除しますか？",
+        "folderOnlyEmpty": "削除できるのは空のフォルダーだけです。資料がある場合は先に移動してください。"
       }
     },
     "untitledCourse": "未命名课堂",

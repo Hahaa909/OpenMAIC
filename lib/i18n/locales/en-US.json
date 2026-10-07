@@ -2060,13 +2060,15 @@
         "folderLimit": "You have reached the folder limit",
         "notMovable": "This material cannot be moved",
         "gone": "It no longer exists",
-        "save": "That did not work. Try again"
+        "save": "That did not work. Try again",
+        "notEmpty": "This folder still holds materials. Move them out first"
       },
       "actions": {
         "more": "More actions for {{name}}",
         "rename": "Rename",
         "move": "Move to…",
-        "column": "Actions"
+        "column": "Actions",
+        "delete": "Delete"
       },
       "folder": {
         "new": "New folder"
@@ -2080,7 +2082,16 @@
         "renameFolderTitle": "Rename folder",
         "renameMaterialTitle": "Rename material",
         "moveTitle": "Move “{{name}}”",
-        "noFolders": "There are no folders to move it to yet. Create one first."
+        "noFolders": "There are no folders to move it to yet. Create one first.",
+        "close": "Close"
+      },
+      "delete": {
+        "materialTitle": "Delete “{{name}}”?",
+        "materialLinks": "Conversations that use it can no longer read it; text already in those conversations stays.",
+        "materialCourses": "Content already saved into a course is not affected.",
+        "cannotUndo": "This cannot be undone.",
+        "folderTitle": "Delete the folder “{{name}}”?",
+        "folderOnlyEmpty": "Only an empty folder can be deleted. Move its materials out first."
       }
     },
     "untitledCourse": "Untitled course",
