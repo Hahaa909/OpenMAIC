@@ -45,11 +45,21 @@ function inlineMathKatexOptions(): KatexOptions {
   };
 }
 
-/** Formula elements this module rendered, so a repeated pass skips them. */
-const rendered = new WeakSet<Element>();
+/** Formula elements this module already handled, so a repeated pass skips them. */
+const handled = new WeakSet<Element>();
+
+/**
+ * Typeset formulas by source, cloned on use: React may rewrite the injected
+ * markup on any re-render, and re-typesetting the same source must stay
+ * cheap. Bounded by the size of the cached markup; large renders are not kept.
+ */
+const TYPESET_CACHE_MAX_MARKUP = 2_000_000;
+const TYPESET_CACHE_MAX_ENTRY = 64_000;
+const typesetCache = new Map<string, { readonly formula: Element | null; readonly size: number }>();
+let typesetCacheSize = 0;
 
 /** Typeset one formula, or `null` to keep its source as text. */
-function typeset(doc: Document, latex: string): Element | null {
+function typesetUncached(doc: Document, latex: string): Element | null {
   if (!latex.trim() || latex.length > MAX_INLINE_MATH_SOURCE) return null;
   const host = doc.createElement('span');
   try {
@@ -57,7 +67,34 @@ function typeset(doc: Document, latex: string): Element | null {
   } catch {
     return null;
   }
-  return host.firstElementChild;
+  const formula = host.firstElementChild;
+  formula?.setAttribute(INLINE_MATH_ATTRIBUTE, latex);
+  return formula;
+}
+
+function typeset(doc: Document, latex: string): Element | null {
+  let entry = typesetCache.get(latex);
+  if (entry) {
+    // Refresh recency.
+    typesetCache.delete(latex);
+    typesetCache.set(latex, entry);
+  } else {
+    const formula = typesetUncached(doc, latex);
+    entry = { formula, size: latex.length + (formula?.outerHTML.length ?? 0) };
+    if (entry.size <= TYPESET_CACHE_MAX_ENTRY) {
+      typesetCache.set(latex, entry);
+      typesetCacheSize += entry.size;
+      for (const [key, value] of typesetCache) {
+        if (typesetCacheSize <= TYPESET_CACHE_MAX_MARKUP) break;
+        typesetCache.delete(key);
+        typesetCacheSize -= value.size;
+      }
+    }
+  }
+  if (!entry.formula) return null;
+  return entry.formula.ownerDocument === doc
+    ? (entry.formula.cloneNode(true) as Element)
+    : (doc.importNode(entry.formula, true) as Element);
 }
 
 /**
@@ -68,27 +105,29 @@ function typeset(doc: Document, latex: string): Element | null {
 export function renderInlineMath(root: ParentNode): void {
   const doc = (root as Node).ownerDocument ?? (root as Document);
   for (const element of root.querySelectorAll(`span[${INLINE_MATH_ATTRIBUTE}]`)) {
-    // Already typeset, or inside a formula replaced earlier in this pass.
-    if (rendered.has(element) || !(root as Node).contains(element)) continue;
+    // Already handled, or inside a formula replaced earlier in this pass.
+    if (handled.has(element) || !(root as Node).contains(element)) continue;
     const latex = element.getAttribute(INLINE_MATH_ATTRIBUTE) ?? '';
     const formula = typeset(doc, latex);
     if (!formula) {
       element.textContent = latex;
+      handled.add(element);
       continue;
     }
-    formula.setAttribute(INLINE_MATH_ATTRIBUTE, latex);
-    rendered.add(formula);
+    handled.add(formula);
     element.replaceWith(formula);
   }
 }
 
 /**
  * Typeset the inline formulas of prose injected into `ref` as `html`. Runs
- * after React writes the markup and before paint; React only rewrites the
- * markup when `html` changes, which re-runs this.
+ * after every commit, before paint: React may rewrite the injected markup on
+ * any re-render (not only when `html` changes), which would put the stored
+ * source spans back. Formulas already typeset are skipped, so a commit that
+ * left the markup alone costs one query. Never updates React state.
  */
 export function useInlineMath(ref: RefObject<Element | null>, html: string): void {
   useLayoutEffect(() => {
     if (ref.current && html.includes(INLINE_MATH_ATTRIBUTE)) renderInlineMath(ref.current);
-  }, [ref, html]);
+  });
 }

@@ -167,4 +167,58 @@ describe('slide elements typeset inline formulas', () => {
     rerender(<StaticTable elementInfo={table(`<p>${stored('y^2')}</p>`)} />);
     expectTypeset(container, 'y^2');
   });
+
+  const textElement = (content: string, left = 0) =>
+    ({
+      ...box,
+      left,
+      id: 't',
+      type: 'text',
+      content,
+      defaultFontName: '',
+      defaultColor: '#000',
+    }) as PPTTextElement;
+  const shapeElement = (content: string, left = 0) =>
+    ({
+      ...box,
+      left,
+      id: 's',
+      type: 'shape',
+      viewBox: [200, 200],
+      path: 'M 0 0 L 200 0 L 200 200 Z',
+      fixedRatio: false,
+      fill: '#fff',
+      text: { content, defaultFontName: '', defaultColor: '#000', align: 'middle' },
+    }) as PPTShapeElement;
+  const tableElement = (text: string, width = 400) =>
+    ({
+      ...box,
+      width,
+      id: 'tb',
+      type: 'table',
+      outline: { width: 1, style: 'solid', color: '#000' },
+      colWidths: [1],
+      cellMinHeight: 20,
+      data: [[{ id: 'c', colspan: 1, rowspan: 1, text }]],
+    }) as PPTTableElement;
+
+  it('stay typeset when only geometry changes, and follow content changes', () => {
+    const text = render(<BaseTextElement elementInfo={textElement(html)} />);
+    text.rerender(<BaseTextElement elementInfo={textElement(html, 120)} />);
+    expectTypeset(text.container, LATEX);
+    text.rerender(<BaseTextElement elementInfo={textElement(`<p>${stored('z_1')}</p>`, 120)} />);
+    expectTypeset(text.container, 'z_1');
+
+    const shape = render(<BaseShapeElement elementInfo={shapeElement(html)} />);
+    shape.rerender(<BaseShapeElement elementInfo={shapeElement(html, 120)} />);
+    expectTypeset(shape.container, LATEX);
+    shape.rerender(<BaseShapeElement elementInfo={shapeElement(`<p>${stored('z_2')}</p>`, 120)} />);
+    expectTypeset(shape.container, 'z_2');
+
+    const table = render(<StaticTable elementInfo={tableElement(html)} />);
+    table.rerender(<StaticTable elementInfo={tableElement(html, 500)} />);
+    expectTypeset(table.container, LATEX);
+    table.rerender(<StaticTable elementInfo={tableElement(`<p>${stored('z_3')}</p>`, 500)} />);
+    expectTypeset(table.container, 'z_3');
+  });
 });
