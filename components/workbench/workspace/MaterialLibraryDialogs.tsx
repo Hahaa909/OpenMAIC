@@ -8,7 +8,16 @@
  * server's own terms, never as a success.
  */
 import { useRef, useState, type ReactNode } from 'react';
-import { FolderInput, Inbox, MoreHorizontal, Pencil, Folder, Trash2 } from 'lucide-react';
+import {
+  ExternalLink,
+  FolderInput,
+  Inbox,
+  MessageSquarePlus,
+  MoreHorizontal,
+  Pencil,
+  Folder,
+  Trash2,
+} from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -49,6 +58,8 @@ export interface LibraryMenuItem {
   readonly onSelect: () => void;
   readonly disabled?: boolean;
   readonly destructive?: boolean;
+  /** A link instead of an action: opened in a new tab. */
+  readonly href?: string;
 }
 
 /** A ⋯ button and its menu, for a source or a folder. */
@@ -77,18 +88,32 @@ export function LibraryItemMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="pro-popover w-44">
-        {items.map((item) => (
-          <DropdownMenuItem
-            key={item.id}
-            data-testid={`${testId}-${item.id}`}
-            disabled={item.disabled}
-            variant={item.destructive ? 'destructive' : 'default'}
-            onSelect={item.onSelect}
-          >
-            {item.icon}
-            {item.label}
-          </DropdownMenuItem>
-        ))}
+        {items.map((item) =>
+          item.href ? (
+            <DropdownMenuItem key={item.id} asChild onSelect={item.onSelect}>
+              <a
+                data-testid={`${testId}-${item.id}`}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {item.icon}
+                {item.label}
+              </a>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              key={item.id}
+              data-testid={`${testId}-${item.id}`}
+              disabled={item.disabled}
+              variant={item.destructive ? 'destructive' : 'default'}
+              onSelect={item.onSelect}
+            >
+              {item.icon}
+              {item.label}
+            </DropdownMenuItem>
+          ),
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -98,6 +123,8 @@ export const menuIcons = {
   rename: <Pencil className="size-3.5" aria-hidden="true" />,
   move: <FolderInput className="size-3.5" aria-hidden="true" />,
   delete: <Trash2 className="size-3.5" aria-hidden="true" />,
+  open: <ExternalLink className="size-3.5" aria-hidden="true" />,
+  chat: <MessageSquarePlus className="size-3.5" aria-hidden="true" />,
 };
 
 /**

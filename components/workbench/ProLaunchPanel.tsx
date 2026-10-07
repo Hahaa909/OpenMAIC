@@ -44,7 +44,9 @@ import {
   SkillSlashMenu,
   useComposerMaterials,
   useMaterialMentions,
+  useMaterialSeed,
   type AgentSkillInfo,
+  type MaterialSeed,
 } from '@/components/workbench/compose-extras';
 import { insertSkillHandle, seedSlashQuery } from '@/lib/workbench/composer-skills';
 import { resolveComposerMenu } from '@/lib/workbench/composer-menus';
@@ -75,6 +77,8 @@ export function ProLaunchPanel({
   variant = 'default',
   courseOptions = NO_COURSE_OPTIONS,
   onSessionCreated,
+  materialSeed,
+  onMaterialSeedConsumed,
 }: {
   autoFocus?: boolean;
   /** Increment to clear the draft/attachments and focus this existing composer. */
@@ -93,6 +97,9 @@ export function ProLaunchPanel({
   courseOptions?: readonly CourseMentionSource[];
   /** Opens the new conversation through the workspace's client-owned pane controller. */
   onSessionCreated: (sessionId: string) => void;
+  /** A knowledge base hand-over; this composer takes the ones for `home`. */
+  materialSeed?: MaterialSeed | null;
+  onMaterialSeedConsumed?: (key: number) => void;
 }) {
   const { t } = useI18n();
   const [prompt, setPrompt] = useState('');
@@ -311,11 +318,24 @@ export function ProLaunchPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSignal]);
 
-  const canSend = !!prompt.trim() && !submitting && !materials.busy && openMenu === null;
+  // After the reset above: arriving from the knowledge base remounts this
+  // composer with a non-zero `focusSignal`, and that reset runs in the same
+  // commit -- declared first, it clears before the material is staged.
+  // While the material handed over is waiting for the gate, a send would
+  // leave without it: the button and Enter (via `submit`) both wait.
+  const awaitingMaterial = useMaterialSeed({
+    seed: materialSeed,
+    targeted: materialSeed?.target.kind === 'home',
+    materials,
+    onConsumed: onMaterialSeedConsumed,
+  });
+
+  const canSend =
+    !!prompt.trim() && !submitting && !materials.busy && !awaitingMaterial && openMenu === null;
 
   async function submit() {
     const text = prompt.trim();
-    if (!text || submitting || materials.busy) return;
+    if (!text || submitting || materials.busy || awaitingMaterial) return;
     setMentionOpen(false);
     setSubmitting(true);
     const generation = ++requestGeneration.current;

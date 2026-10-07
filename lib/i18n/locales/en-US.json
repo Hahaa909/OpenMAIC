@@ -2068,7 +2068,9 @@
         "rename": "Rename",
         "move": "Move to…",
         "column": "Actions",
-        "delete": "Delete"
+        "delete": "Delete",
+        "open": "Open original",
+        "chat": "Chat with this material"
       },
       "folder": {
         "new": "New folder"

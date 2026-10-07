@@ -49,6 +49,7 @@ import {
   moveLibraryMaterials,
   renameLibraryFolder,
   renameLibraryMaterial,
+  stagedMaterialOfView,
   type LibraryFolder,
   type LibraryLimits,
   type LibraryMaterial,
@@ -75,6 +76,7 @@ import {
 import {
   uploadWorkbenchMaterial,
   WorkbenchMaterialUploadError,
+  type WorkbenchMaterial,
 } from '@/lib/workbench/session-store';
 
 /** How long typing settles before the listing is asked again. */
@@ -468,7 +470,12 @@ function useLibraryUploads(onUploaded: () => void) {
   };
 }
 
-export function MaterialLibraryPage() {
+export function MaterialLibraryPage({
+  onChatWithMaterial,
+}: {
+  /** Start a conversation with this source staged (the shell decides where). */
+  readonly onChatWithMaterial: (material: WorkbenchMaterial) => void;
+}) {
   const { t, locale } = useI18n();
   const [scope, setScope] = useState<LibraryScope>({ kind: 'all' });
   const [queryInput, setQueryInput] = useState('');
@@ -553,6 +560,21 @@ export function MaterialLibraryPage() {
   };
   const materialMenu = (material: LibraryMaterial) => {
     const items: LibraryMenuItem[] = [
+      {
+        // Inline types open in the tab; everything else downloads (the
+        // route's headers decide, RFC #1716: "opens in a new tab or downloads").
+        id: 'open',
+        label: t('workspace.knowledgeBase.actions.open'),
+        icon: menuIcons.open,
+        href: `/api/materials/${encodeURIComponent(material.materialId)}/original`,
+        onSelect: () => {},
+      },
+      {
+        id: 'chat',
+        label: t('workspace.knowledgeBase.actions.chat'),
+        icon: menuIcons.chat,
+        onSelect: () => onChatWithMaterial(stagedMaterialOfView(material)),
+      },
       {
         id: 'rename',
         label: t('workspace.knowledgeBase.actions.rename'),

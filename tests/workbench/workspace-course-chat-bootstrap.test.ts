@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   courses: null as Record<string, unknown> | null,
   railProps: null as Record<string, unknown> | null,
   homeProps: null as Record<string, unknown> | null,
+  libraryProps: null as Record<string, unknown> | null,
   store: {
     playbackOn: false,
     sessionId: null as string | null,
@@ -230,6 +231,12 @@ vi.mock('@/components/workbench/workspace/WorkspaceClassroomPane', async () => {
   };
 });
 vi.mock('@/components/workbench/workspace/PaneTab', () => ({ PaneTab: () => null }));
+vi.mock('@/components/workbench/workspace/MaterialLibraryPage', () => ({
+  MaterialLibraryPage: (props: Record<string, unknown>) => {
+    mocks.libraryProps = props;
+    return createElement('main', { 'data-testid': 'pro-workspace-library' });
+  },
+}));
 vi.mock('@/components/workbench/workspace/ResizeHandle', () => ({ ResizeHandle: () => null }));
 
 import { WorkspaceShell } from '@/components/workbench/workspace/WorkspaceShell';
@@ -303,6 +310,7 @@ beforeEach(() => {
   mocks.chatPaneProps = null;
   mocks.railProps = null;
   mocks.homeProps = null;
+  mocks.libraryProps = null;
   mocks.searchParams = new URLSearchParams('course=stage-1');
   mocks.sessionRows = [];
   mocks.sessionListState = 'ready';
@@ -1432,5 +1440,181 @@ describe('the knowledge base page', () => {
     );
     expect(libraryShown()).toBe(true);
     expect(container?.querySelector('[data-testid="classroom-pane"]')).not.toBeNull();
+  });
+
+  describe('chatting with a material from the page', () => {
+    const lesson = {
+      materialId: 'src-lesson',
+      name: 'lesson.pdf',
+      bytes: 3,
+      mimeType: 'application/pdf',
+      extractionStatus: 'done' as const,
+    };
+    const chatWith = async () => {
+      const onChat = mocks.libraryProps?.onChatWithMaterial as (material: unknown) => void;
+      expect(onChat).toBeTypeOf('function');
+      await act(async () => onChat(lesson));
+    };
+    const seedOf = (props: Record<string, unknown> | null) =>
+      props?.materialSeed as { key: number; material: unknown; target: unknown } | null | undefined;
+
+    it('hands it to the home composer when no classroom is open, and its own navigation keeps it', async () => {
+      mocks.searchParams = new URLSearchParams('session=session-1');
+      mocks.store.sessionId = 'session-1';
+      mocks.sessionRows = [{ id: 'session-1', stageId: 'stage-1', updatedAt: 9 }];
+      await render();
+      await openLibrary();
+      await chatWith();
+
+      expect(mocks.routerPush).toHaveBeenLastCalledWith('/workspace');
+      expect(libraryShown()).toBe(false);
+      // The new conversation the hand-over itself started did not drop it.
+      const seed = seedOf(mocks.homeProps);
+      expect(seed).toMatchObject({ material: lesson, target: { kind: 'home' } });
+
+      const consume = mocks.homeProps?.onMaterialSeedConsumed as (key: number) => void;
+      await act(async () => consume(seed!.key));
+      expect(seedOf(mocks.homeProps)).toBeNull();
+    });
+
+    it('hands it to the new conversation beside the open classroom', async () => {
+      mocks.searchParams = new URLSearchParams('session=session-1&course=stage-1');
+      mocks.store.sessionId = 'session-1';
+      mocks.sessionRows = [{ id: 'session-1', stageId: 'stage-1', updatedAt: 9 }];
+      await render();
+      await openLibrary();
+      await chatWith();
+
+      expect(mocks.routerPush).toHaveBeenLastCalledWith('/workspace?course=stage-1');
+      expect(seedOf(mocks.chatPaneProps)).toMatchObject({
+        material: lesson,
+        target: { kind: 'chat', ownerKey: 'draft:stage-1' },
+      });
+    });
+
+    it('drops the hand-over once the teacher goes somewhere else', async () => {
+      mocks.searchParams = new URLSearchParams('session=session-1&course=stage-1');
+      mocks.store.sessionId = 'session-1';
+      mocks.sessionRows = [
+        { id: 'session-1', stageId: 'stage-1', updatedAt: 9 },
+        { id: 'session-2', stageId: 'stage-1', updatedAt: 8 },
+      ];
+      await render();
+      await openLibrary();
+      await chatWith();
+      expect(seedOf(mocks.chatPaneProps)).not.toBeNull();
+
+      await act(async () => (mocks.railProps?.onOpenSession as (id: string) => void)('session-2'));
+      expect(seedOf(mocks.chatPaneProps)).toBeNull();
+    });
+
+    it('drops the hand-over on browser Back, so Forward cannot bring it back', async () => {
+      vi.mocked(window.history.pushState).mockImplementation((state, unused, next) => {
+        History.prototype.pushState.call(window.history, state, unused, next);
+        mocks.routerPush(String(next));
+      });
+      vi.mocked(window.history.replaceState).mockImplementation((state, unused, next) => {
+        History.prototype.replaceState.call(window.history, state, unused, next);
+        mocks.routerReplace(String(next));
+      });
+      History.prototype.replaceState.call(window.history, null, '', '/workspace');
+      const travel = (direction: 'back' | 'forward') =>
+        act(async () => {
+          const popped = new Promise<void>((resolve) =>
+            window.addEventListener('popstate', () => resolve(), { once: true }),
+          );
+          window.history[direction]();
+          await popped;
+        });
+      mocks.searchParams = new URLSearchParams();
+      await render();
+      await openLibrary();
+      await chatWith();
+      expect(seedOf(mocks.homeProps)).toMatchObject({ target: { kind: 'home' } });
+
+      await travel('back');
+      expect(window.location.search).toBe('?view=library');
+      await travel('forward');
+      expect(window.location.search).toBe('');
+      expect(seedOf(mocks.homeProps)).toBeNull();
+    });
+
+    it.each(['activate', 'close'] as const)(
+      'drops the hand-over when the teacher acts on a classroom tab (%s)',
+      async (action) => {
+        mocks.courses = {
+          ...mocks.courses!,
+          classrooms: [classroom('stage-1'), classroom('stage-2')],
+        };
+        localStorage.setItem(
+          COURSE_TABS_STORAGE_KEY,
+          JSON.stringify({ courseIds: ['stage-1', 'stage-2'], activeCourseId: 'stage-1' }),
+        );
+        mocks.searchParams = new URLSearchParams('course=stage-1');
+        await render();
+        await openLibrary();
+        await chatWith();
+        expect(seedOf(mocks.chatPaneProps)).toMatchObject({
+          target: { kind: 'chat', ownerKey: 'draft:stage-1' },
+        });
+        const browser = mocks.classroomProps?.browser as {
+          onActivateCourse: (id: string) => void;
+          onCloseCourse: (id: string) => void;
+        };
+        await act(async () =>
+          action === 'activate'
+            ? browser.onActivateCourse('stage-2')
+            : browser.onCloseCourse('stage-2'),
+        );
+        expect(seedOf(mocks.chatPaneProps)).toBeNull();
+      },
+    );
+
+    it('keeps the hand-over when a deletion confirmed in the background closes a tab', async () => {
+      const pending = deferred<boolean>();
+      mocks.courses = {
+        ...mocks.courses!,
+        classrooms: [classroom('stage-1'), classroom('stage-2')],
+        deleteCourse: vi.fn(() => pending.promise),
+      };
+      localStorage.setItem(
+        COURSE_TABS_STORAGE_KEY,
+        JSON.stringify({ courseIds: ['stage-1', 'stage-2'], activeCourseId: 'stage-1' }),
+      );
+      mocks.searchParams = new URLSearchParams('course=stage-1');
+      await render();
+      let deleted!: Promise<void>;
+      await act(async () => {
+        deleted = (mocks.railProps?.onDeleteCourse as (id: string) => Promise<void>)('stage-2');
+      });
+      await openLibrary();
+      await chatWith();
+      const seed = seedOf(mocks.chatPaneProps);
+      expect(seed).toMatchObject({ target: { kind: 'chat', ownerKey: 'draft:stage-1' } });
+
+      await act(async () => {
+        pending.resolve(true);
+        await deleted;
+      });
+      const browser = mocks.classroomProps?.browser as { tabs: readonly { id: string }[] };
+      expect(browser.tabs.map((tab) => tab.id)).toEqual(['stage-1']);
+      expect(seedOf(mocks.chatPaneProps)?.key).toBe(seed!.key);
+    });
+
+    it('leaves a newer hand-over alone when an older key is reported', async () => {
+      mocks.searchParams = new URLSearchParams();
+      await render();
+      await openLibrary();
+      await chatWith();
+      const first = seedOf(mocks.homeProps)!.key;
+      await openLibrary();
+      await chatWith();
+      const second = seedOf(mocks.homeProps)!.key;
+      expect(second).not.toBe(first);
+
+      const consume = mocks.homeProps?.onMaterialSeedConsumed as (key: number) => void;
+      await act(async () => consume(first));
+      expect(seedOf(mocks.homeProps)?.key).toBe(second);
+    });
   });
 });

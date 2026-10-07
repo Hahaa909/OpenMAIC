@@ -119,6 +119,7 @@ import { WorkspaceClassroomPane } from './WorkspaceClassroomPane';
 import { PaneTab } from './PaneTab';
 import { ResizeHandle } from './ResizeHandle';
 import { MaterialLibraryPage } from './MaterialLibraryPage';
+import type { MaterialSeed, MaterialSeedTarget } from '@/components/workbench/compose-extras';
 
 const EMPTY_SESSIONS: ProHomeSessionItem[] = [];
 
@@ -194,6 +195,24 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
    * conversation back in the column.
    */
   const [newConversationRequested, setNewConversationRequested] = useState(false);
+  /**
+   * "Chat with this material" from the knowledge base: the material on its
+   * way to the one composer it names. Any navigation the teacher makes after
+   * it drops it, so it can never land in a conversation they went to instead.
+   */
+  const [materialSeed, setMaterialSeed] = useState<MaterialSeed | null>(null);
+  // Back and Forward are the teacher's navigation too. Nothing in the
+  // workspace raises `popstate` itself, so this is never the hand-over's own
+  // navigation (a push) or a background change (a replace).
+  useEffect(() => {
+    const dropMaterialSeed = () => setMaterialSeed(null);
+    window.addEventListener('popstate', dropMaterialSeed);
+    return () => window.removeEventListener('popstate', dropMaterialSeed);
+  }, []);
+  const materialSeedKeys = useRef(0);
+  const consumeMaterialSeed = useCallback((key: number) => {
+    setMaterialSeed((current) => (current?.key === key ? null : current));
+  }, []);
   const ownerSessionClient = useRef<OwnerSessionClient | null>(null);
   const shellGeneration = useRef(0);
 
@@ -491,6 +510,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       setCourseTabs(next);
       persistCourseTabs(next);
       collapse.expandClassroom();
+      setMaterialSeed(null);
       goTo(withLibrary(withCourse(panes, next.activeCourseId), false));
     },
     [collapse, courseTabs, goTo, panes, persistCourseTabs],
@@ -525,6 +545,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     (sessionId: string) => {
       setNewConversationRequested(false);
       collapse.expandChat();
+      setMaterialSeed(null);
       goTo(withLibrary(withSession(panes, sessionId), false));
     },
     [collapse, goTo, panes],
@@ -552,6 +573,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     (courseId: string) => {
       const next = activateCourseTab(courseTabs, courseId);
       if (next === courseTabs) return;
+      setMaterialSeed(null);
       setCourseTabs(next);
       persistCourseTabs(next);
       goTo(withCourse(panes, next.activeCourseId));
@@ -598,6 +620,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
 
   /** The rail's knowledge base row: the page takes the main area. */
   const openLibrary = useCallback(() => {
+    setMaterialSeed(null);
     goTo(withLibrary(panes, true));
   }, [goTo, panes]);
 
@@ -713,6 +736,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     setCourseTabs(NO_COURSE_TABS);
     persistCourseTabs(NO_COURSE_TABS);
     setNewConversationRequested(false);
+    setMaterialSeed(null);
     setComposerReset((value) => value + 1);
   };
 
@@ -732,6 +756,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   const startNewConversation = () => {
     setNewConversationRequested(true);
     collapse.expandChat();
+    setMaterialSeed(null);
     // The teacher's own choice, so it also leaves the knowledge base page.
     if (panes.courseId) {
       if (panes.sessionId || panes.library) {
@@ -743,6 +768,22 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       persistCourseTabs(NO_COURSE_TABS);
     }
     setComposerReset((value) => value + 1);
+  };
+
+  /**
+   * The knowledge base page's "chat with this material": a new conversation
+   * -- beside the open classroom, or on the home composer -- with the
+   * material staged in it (RFC #1716 §7). The target is decided now, from the
+   * panes the teacher is looking at; the hand-over is set only AFTER
+   * `startNewConversation`, which drops any earlier one.
+   */
+  const chatWithMaterial = (material: WorkbenchMaterial) => {
+    const target: MaterialSeedTarget = panes.courseId
+      ? { kind: 'chat', ownerKey: `draft:${panes.courseId}` }
+      : { kind: 'home' };
+    startNewConversation();
+    materialSeedKeys.current += 1;
+    setMaterialSeed({ key: materialSeedKeys.current, material, target });
   };
 
   // ── The session wires ─────────────────────────────────────────────────
@@ -1041,7 +1082,12 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       tabs: courseTabItems,
       activeCourseId: panes.courseId as string,
       onActivateCourse: activateCourse,
-      onCloseCourse: closeCourse,
+      // The teacher closing a tab; `closeCourse` alone is also the end of a
+      // course deletion, which is not a navigation of theirs.
+      onCloseCourse: (courseId: string) => {
+        setMaterialSeed(null);
+        closeCourse(courseId);
+      },
     }),
     [activateCourse, closeCourse, courseTabItems, panes.courseId],
   );
@@ -1125,6 +1171,8 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           fill={chatFills}
           width={chatWidth.value}
           navigation={courseNavigation}
+          materialSeed={materialSeed}
+          onMaterialSeedConsumed={consumeMaterialSeed}
           draftConversation={draftConversation}
           onRename={
             // Only a conversation that exists can be named. A draft one has no
@@ -1186,6 +1234,8 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           courseOptions={courseOptions}
           onOpenSession={openCreatedSession}
           onExitPro={exitPro}
+          materialSeed={materialSeed}
+          onMaterialSeedConsumed={consumeMaterialSeed}
         />
       ) : null}
 
@@ -1193,7 +1243,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           classroom panes above stay mounted, hidden (`render` turns both off),
           so leaving the page finds them as they were and the run's stream is
           never detached. */}
-      {render.library ? <MaterialLibraryPage /> : null}
+      {render.library ? <MaterialLibraryPage onChatWithMaterial={chatWithMaterial} /> : null}
     </div>
   );
 }

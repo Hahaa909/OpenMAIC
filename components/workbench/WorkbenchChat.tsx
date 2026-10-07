@@ -80,7 +80,9 @@ import {
   SkillSlashMenu,
   useComposerMaterials,
   useMaterialMentions,
+  useMaterialSeed,
   type AgentSkillInfo,
+  type MaterialSeed,
 } from './compose-extras';
 import { insertSkillHandle, seedSlashQuery } from '@/lib/workbench/composer-skills';
 import { useSkillHandleBackspace } from './use-skill-handle-backspace';
@@ -113,6 +115,8 @@ const NO_COURSE_REFS: CourseRef[] = [];
 export function WorkbenchChat({
   hosted = false,
   adjacentPanelOpen = false,
+  materialSeed,
+  onMaterialSeedConsumed,
 }: {
   /**
    * Rendered inside the workspace's conversation pane, which supplies the
@@ -127,6 +131,9 @@ export function WorkbenchChat({
    * changes, so a hosted chat must not use that value to size its transcript.
    */
   adjacentPanelOpen?: boolean;
+  /** A knowledge base hand-over; this composer takes the ones for its own owner key. */
+  materialSeed?: MaterialSeed | null;
+  onMaterialSeedConsumed?: (key: number) => void;
 }) {
   const { t } = useI18n();
   const sessionId = useWorkbenchStore((s) => s.sessionId);
@@ -251,6 +258,15 @@ export function WorkbenchChat({
   const [pendingStop, setPendingStop] = useState(false);
   // Durable material assets can be attached mid-conversation too.
   const materials = useComposerMaterials();
+  // While the material handed over is waiting for the gate, a send would
+  // leave without it: the button and Enter (via `send`) both wait.
+  const awaitingMaterial = useMaterialSeed({
+    seed: materialSeed,
+    targeted:
+      materialSeed?.target.kind === 'chat' && materialSeed.target.ownerKey === composerOwnerId,
+    materials,
+    onConsumed: onMaterialSeedConsumed,
+  });
   // Slide elements the user pointed at on the canvas (the edit dock's lasso).
   // The staging lives in its own store because the picker is on the other side
   // of the workspace; this surface only reads it and clears it on send.
@@ -714,6 +730,7 @@ export function WorkbenchChat({
       busy ||
       !canSend ||
       materials.busy ||
+      awaitingMaterial ||
       // A click on the send button must respect an open menu exactly as Enter
       // does (onKeyDown returns early) — sending a half-typed `/query` is the
       // alternative.
@@ -1076,7 +1093,10 @@ export function WorkbenchChat({
                       data-mention-keep-open=""
                       onClick={() => void send()}
                       disabled={
-                        busy || (!draft.trim() && materials.materials.length === 0) || !canSend
+                        busy ||
+                        (!draft.trim() && materials.materials.length === 0) ||
+                        !canSend ||
+                        awaitingMaterial
                       }
                       title={t('workbench.common.send')}
                       aria-label={t('workbench.common.send')}

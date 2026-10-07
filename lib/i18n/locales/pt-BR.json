@@ -2068,7 +2068,9 @@
         "rename": "Renomear",
         "move": "Mover para…",
         "column": "Ações",
-        "delete": "Excluir"
+        "delete": "Excluir",
+        "open": "Abrir o original",
+        "chat": "Conversar sobre este material"
       },
       "folder": {
         "new": "Nova pasta"

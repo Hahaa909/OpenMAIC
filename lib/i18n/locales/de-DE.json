@@ -2068,7 +2068,9 @@
         "rename": "Umbenennen",
         "move": "Verschieben nach…",
         "column": "Aktionen",
-        "delete": "Löschen"
+        "delete": "Löschen",
+        "open": "Original öffnen",
+        "chat": "Mit diesem Material chatten"
       },
       "folder": {
         "new": "Neuer Ordner"

@@ -2068,7 +2068,9 @@
         "rename": "이름 변경",
         "move": "이동…",
         "column": "작업",
-        "delete": "삭제"
+        "delete": "삭제",
+        "open": "원본 파일 열기",
+        "chat": "이 자료로 대화하기"
       },
       "folder": {
         "new": "새 폴더"

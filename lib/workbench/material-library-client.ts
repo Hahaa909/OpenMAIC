@@ -1,12 +1,14 @@
 /**
- * The knowledge base page's reads (RFC #1716 §5, §8): one page of the owner's
- * library sources, the folders, and the limits uploads are held to, from the
- * routes the composer's picker already reads. Pure apart from `fetch`, so the
- * rules are testable without a DOM.
+ * The knowledge base page's requests (RFC #1716 §5, §8): one page of the
+ * owner's library sources, the folders and the limits uploads are held to,
+ * and the organizing writes, all over the routes that already exist. Pure
+ * apart from `fetch`, so the rules are testable without a DOM.
  *
  * The page lists SOURCES only: a source's images and keyframes are reached
  * through it, never organized on their own.
  */
+
+import type { WorkbenchMaterial } from '@/lib/workbench/session-store';
 
 /** How many sources one listing request asks for: the route's ceiling. */
 export const MATERIAL_LIBRARY_PAGE_SIZE = 200;
@@ -245,6 +247,17 @@ export async function fetchMaterialLibraryFolders(
       },
     ];
   });
+}
+
+/** A source as a composer stages it: the same shape a finished upload or an `@` pick stages. */
+export function stagedMaterialOfView(material: LibraryMaterial): WorkbenchMaterial {
+  return {
+    materialId: material.materialId,
+    name: material.name,
+    bytes: material.bytes,
+    ...(material.mime ? { mimeType: material.mime } : {}),
+    extractionStatus: material.extraction.status,
+  };
 }
 
 /** Pages joined in order, a material listed twice kept at its first place. */

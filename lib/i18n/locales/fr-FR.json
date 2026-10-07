@@ -2068,7 +2068,9 @@
         "rename": "Renommer",
         "move": "Déplacer vers…",
         "column": "Actions",
-        "delete": "Supprimer"
+        "delete": "Supprimer",
+        "open": "Ouvrir l’original",
+        "chat": "Discuter de ce document"
       },
       "folder": {
         "new": "Nouveau dossier"

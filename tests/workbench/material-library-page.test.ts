@@ -1157,6 +1157,32 @@ describe('organizing from the page', () => {
     }
   });
 
+  it('opens the original in a new tab, and hands the source to a conversation', async () => {
+    const onChat = vi.fn();
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage, { onChatWithMaterial: onChat }));
+    await settle();
+    await openMenu('kb-material-menu-a');
+    const link = inDocument('kb-material-menu-a-open') as HTMLAnchorElement;
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('/api/materials/a/original');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+
+    await choose('kb-material-menu-a-chat');
+    expect(onChat).toHaveBeenCalledWith({
+      materialId: 'a',
+      name: 'a.pdf',
+      bytes: 1024,
+      mimeType: 'application/pdf',
+      extractionStatus: 'done',
+    });
+    // Choosing it uploads, attaches and posts nothing by itself.
+    expect(writeCalls).toEqual([]);
+    expect(uploadCalls).toEqual([]);
+    await page.dispose();
+  });
+
   it('names the folder limit, a vanished item and a busy owner', async () => {
     const answers = [
       json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'limit' }, 409),

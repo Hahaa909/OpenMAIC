@@ -2068,7 +2068,9 @@
         "rename": "改名",
         "move": "移动到…",
         "column": "操作",
-        "delete": "删除"
+        "delete": "删除",
+        "open": "打开原文件",
+        "chat": "用这份资料对话"
       },
       "folder": {
         "new": "新建文件夹"

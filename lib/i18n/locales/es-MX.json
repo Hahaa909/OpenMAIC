@@ -2068,7 +2068,9 @@
         "rename": "Cambiar nombre",
         "move": "Mover a…",
         "column": "Acciones",
-        "delete": "Eliminar"
+        "delete": "Eliminar",
+        "open": "Abrir el original",
+        "chat": "Conversar sobre este material"
       },
       "folder": {
         "new": "Nueva carpeta"

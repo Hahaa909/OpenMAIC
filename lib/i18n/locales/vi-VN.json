@@ -2068,7 +2068,9 @@
         "rename": "Đổi tên",
         "move": "Chuyển đến…",
         "column": "Thao tác",
-        "delete": "Xóa"
+        "delete": "Xóa",
+        "open": "Mở tệp gốc",
+        "chat": "Trò chuyện với tài liệu này"
       },
       "folder": {
         "new": "Thư mục mới"
