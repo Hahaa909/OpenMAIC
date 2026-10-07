@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "Base de conhecimento"
+      "title": "Base de conhecimento",
+      "search": "Pesquisar por nome ou tipo de arquivo",
+      "loading": "Carregando…",
+      "retry": "Tentar novamente",
+      "loadMore": "Carregar mais",
+      "scope": {
+        "aria": "Seções da base de conhecimento",
+        "all": "Tudo",
+        "unfiled": "Sem pasta",
+        "folders": "Pastas"
+      },
+      "view": {
+        "aria": "Visualização",
+        "cards": "Cartões",
+        "list": "Lista"
+      },
+      "status": {
+        "stored": "Armazenado · não analisado",
+        "parsing": "Analisando",
+        "searchable": "Pesquisável",
+        "failed": "Falha na análise",
+        "failedReason": "Motivo: {{reason}}"
+      },
+      "column": {
+        "name": "Nome",
+        "status": "Status",
+        "folder": "Pasta",
+        "size": "Tamanho",
+        "added": "Adicionado em"
+      },
+      "limits": {
+        "perFile": "Até {{document}} por documento ou imagem, {{media}} por áudio ou vídeo",
+        "usage": "{{count}} de {{maxCount}} arquivos, {{bytes}} de {{maxBytes}}",
+        "storage": "Armazenamento {{used}} de {{quota}}",
+        "storageUnlimited": "Armazenamento {{used}} usado, sem limite"
+      },
+      "empty": {
+        "title": "Sua base de conhecimento está vazia",
+        "body": "Envie seus materiais didáticos, deixe o assistente organizá-los e analisá-los, e escolha-os com @ ao preparar um curso.",
+        "folder": "Ainda não há materiais nesta pasta",
+        "unfiled": "Nenhum material sem pasta",
+        "query": "Nenhum material corresponde a “{{query}}”"
+      },
+      "error": {
+        "load": "Não foi possível carregar a base de conhecimento",
+        "busy": "Sua conta está sendo atualizada. Tente novamente em instantes",
+        "identity": "Seu login mudou. Recarregue a página",
+        "stale": "o conteúdo exibido pode estar desatualizado"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

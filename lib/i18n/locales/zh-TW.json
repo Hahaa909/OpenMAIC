@@ -1980,7 +1980,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "知識庫"
+      "title": "知識庫",
+      "search": "搜尋名稱或檔案類型",
+      "loading": "載入中…",
+      "retry": "重試",
+      "loadMore": "載入更多",
+      "scope": {
+        "aria": "知識庫分類",
+        "all": "全部",
+        "unfiled": "未歸檔",
+        "folders": "資料夾"
+      },
+      "view": {
+        "aria": "顯示方式",
+        "cards": "卡片",
+        "list": "清單"
+      },
+      "status": {
+        "stored": "已存入 · 未解析",
+        "parsing": "解析中",
+        "searchable": "可檢索",
+        "failed": "解析失敗",
+        "failedReason": "原因：{{reason}}"
+      },
+      "column": {
+        "name": "名稱",
+        "status": "狀態",
+        "folder": "資料夾",
+        "size": "大小",
+        "added": "新增時間"
+      },
+      "limits": {
+        "perFile": "單一文件或圖片不超過 {{document}}，音訊與影片不超過 {{media}}",
+        "usage": "已用 {{count}}/{{maxCount}} 份，{{bytes}}/{{maxBytes}}",
+        "storage": "儲存空間 {{used}}/{{quota}}",
+        "storageUnlimited": "儲存空間已用 {{used}}，不限額"
+      },
+      "empty": {
+        "title": "知識庫還是空的",
+        "body": "上傳教學資料，讓助理幫你歸檔與解析，備課時用 @ 選用。",
+        "folder": "這個資料夾裡還沒有資料",
+        "unfiled": "沒有未歸檔的資料",
+        "query": "找不到與「{{query}}」相符的資料"
+      },
+      "error": {
+        "load": "知識庫載入失敗",
+        "busy": "帳號正在更新，請稍後再試",
+        "identity": "登入狀態已變更，請重新整理頁面",
+        "stale": "顯示的內容可能不是最新的"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

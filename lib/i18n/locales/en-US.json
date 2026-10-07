@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "Knowledge base"
+      "title": "Knowledge base",
+      "search": "Search names and file types",
+      "loading": "Loading…",
+      "retry": "Retry",
+      "loadMore": "Load more",
+      "scope": {
+        "aria": "Knowledge base sections",
+        "all": "All",
+        "unfiled": "Unfiled",
+        "folders": "Folders"
+      },
+      "view": {
+        "aria": "View",
+        "cards": "Cards",
+        "list": "List"
+      },
+      "status": {
+        "stored": "Stored · not parsed",
+        "parsing": "Parsing",
+        "searchable": "Searchable",
+        "failed": "Parse failed",
+        "failedReason": "Reason: {{reason}}"
+      },
+      "column": {
+        "name": "Name",
+        "status": "Status",
+        "folder": "Folder",
+        "size": "Size",
+        "added": "Added"
+      },
+      "limits": {
+        "perFile": "Up to {{document}} per document or image, {{media}} per audio or video",
+        "usage": "{{count}} of {{maxCount}} files, {{bytes}} of {{maxBytes}}",
+        "storage": "Storage {{used}} of {{quota}}",
+        "storageUnlimited": "Storage {{used}} used, no limit"
+      },
+      "empty": {
+        "title": "Your knowledge base is empty",
+        "body": "Upload your teaching materials, let the assistant file and parse them, then pick them with @ while you prepare a course.",
+        "folder": "No materials in this folder yet",
+        "unfiled": "No unfiled materials",
+        "query": "No materials match “{{query}}”"
+      },
+      "error": {
+        "load": "The knowledge base could not be loaded",
+        "busy": "Your account is being updated. Try again in a moment",
+        "identity": "Your sign-in changed. Reload the page",
+        "stale": "what is shown may be out of date"
+      }
     },
     "untitledCourse": "Untitled course",
     "sceneCount": "{{count}} pages",

@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "知识库"
+      "title": "知识库",
+      "search": "搜索名称或文件类型",
+      "loading": "加载中…",
+      "retry": "重试",
+      "loadMore": "加载更多",
+      "scope": {
+        "aria": "知识库分类",
+        "all": "全部",
+        "unfiled": "未归档",
+        "folders": "文件夹"
+      },
+      "view": {
+        "aria": "显示方式",
+        "cards": "卡片",
+        "list": "列表"
+      },
+      "status": {
+        "stored": "已存入 · 未解析",
+        "parsing": "解析中",
+        "searchable": "可检索",
+        "failed": "解析失败",
+        "failedReason": "原因：{{reason}}"
+      },
+      "column": {
+        "name": "名称",
+        "status": "状态",
+        "folder": "文件夹",
+        "size": "大小",
+        "added": "添加时间"
+      },
+      "limits": {
+        "perFile": "单个文档或图片不超过 {{document}}，音视频不超过 {{media}}",
+        "usage": "已用 {{count}}/{{maxCount}} 份，{{bytes}}/{{maxBytes}}",
+        "storage": "存储 {{used}}/{{quota}}",
+        "storageUnlimited": "存储已用 {{used}}，不限额"
+      },
+      "empty": {
+        "title": "知识库还是空的",
+        "body": "上传教学资料，让助手帮你归档和解析，备课时用 @ 选用。",
+        "folder": "这个文件夹里还没有资料",
+        "unfiled": "没有未归档的资料",
+        "query": "没有找到与“{{query}}”匹配的资料"
+      },
+      "error": {
+        "load": "知识库加载失败",
+        "busy": "账号正在更新，请稍后重试",
+        "identity": "登录状态已变化，请刷新页面",
+        "stale": "显示的可能不是最新内容"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

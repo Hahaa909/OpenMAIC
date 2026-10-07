@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "ナレッジベース"
+      "title": "ナレッジベース",
+      "search": "名前やファイル形式で検索",
+      "loading": "読み込み中…",
+      "retry": "再試行",
+      "loadMore": "さらに読み込む",
+      "scope": {
+        "aria": "ナレッジベースの区分",
+        "all": "すべて",
+        "unfiled": "未分類",
+        "folders": "フォルダー"
+      },
+      "view": {
+        "aria": "表示",
+        "cards": "カード",
+        "list": "リスト"
+      },
+      "status": {
+        "stored": "保存済み · 未解析",
+        "parsing": "解析中",
+        "searchable": "検索可能",
+        "failed": "解析失敗",
+        "failedReason": "理由：{{reason}}"
+      },
+      "column": {
+        "name": "名前",
+        "status": "状態",
+        "folder": "フォルダー",
+        "size": "サイズ",
+        "added": "追加日"
+      },
+      "limits": {
+        "perFile": "文書・画像は {{document}} まで、音声・動画は {{media}} まで",
+        "usage": "{{count}}/{{maxCount}} 件、{{bytes}}/{{maxBytes}}",
+        "storage": "ストレージ {{used}}/{{quota}}",
+        "storageUnlimited": "ストレージ {{used}} 使用中（上限なし）"
+      },
+      "empty": {
+        "title": "ナレッジベースはまだ空です",
+        "body": "教材をアップロードすると、アシスタントが整理・解析します。授業準備のときに @ で選べます。",
+        "folder": "このフォルダーにはまだ資料がありません",
+        "unfiled": "未分類の資料はありません",
+        "query": "「{{query}}」に一致する資料はありません"
+      },
+      "error": {
+        "load": "ナレッジベースを読み込めませんでした",
+        "busy": "アカウントを更新中です。しばらくしてからもう一度お試しください",
+        "identity": "ログイン状態が変わりました。ページを再読み込みしてください",
+        "stale": "表示内容が最新でない可能性があります"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "Kho kiến thức"
+      "title": "Kho kiến thức",
+      "search": "Tìm theo tên hoặc loại tệp",
+      "loading": "Đang tải…",
+      "retry": "Thử lại",
+      "loadMore": "Tải thêm",
+      "scope": {
+        "aria": "Các mục của kho kiến thức",
+        "all": "Tất cả",
+        "unfiled": "Chưa phân loại",
+        "folders": "Thư mục"
+      },
+      "view": {
+        "aria": "Chế độ xem",
+        "cards": "Thẻ",
+        "list": "Danh sách"
+      },
+      "status": {
+        "stored": "Đã lưu · chưa phân tích",
+        "parsing": "Đang phân tích",
+        "searchable": "Có thể tìm kiếm",
+        "failed": "Phân tích thất bại",
+        "failedReason": "Lý do: {{reason}}"
+      },
+      "column": {
+        "name": "Tên",
+        "status": "Trạng thái",
+        "folder": "Thư mục",
+        "size": "Kích thước",
+        "added": "Ngày thêm"
+      },
+      "limits": {
+        "perFile": "Tối đa {{document}} cho mỗi tài liệu hoặc hình ảnh, {{media}} cho mỗi âm thanh hoặc video",
+        "usage": "{{count}}/{{maxCount}} tệp, {{bytes}}/{{maxBytes}}",
+        "storage": "Dung lượng {{used}}/{{quota}}",
+        "storageUnlimited": "Dung lượng đã dùng {{used}}, không giới hạn"
+      },
+      "empty": {
+        "title": "Kho kiến thức của bạn đang trống",
+        "body": "Tải lên tài liệu giảng dạy, để trợ lý sắp xếp và phân tích, rồi chọn chúng bằng @ khi soạn bài.",
+        "folder": "Thư mục này chưa có tài liệu",
+        "unfiled": "Không có tài liệu chưa phân loại",
+        "query": "Không có tài liệu nào khớp với “{{query}}”"
+      },
+      "error": {
+        "load": "Không thể tải kho kiến thức",
+        "busy": "Tài khoản đang được cập nhật. Vui lòng thử lại sau giây lát",
+        "identity": "Trạng thái đăng nhập đã thay đổi. Hãy tải lại trang",
+        "stale": "nội dung hiển thị có thể chưa mới nhất"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

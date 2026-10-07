@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "Base de connaissances"
+      "title": "Base de connaissances",
+      "search": "Rechercher par nom ou type de fichier",
+      "loading": "Chargement…",
+      "retry": "Réessayer",
+      "loadMore": "Charger plus",
+      "scope": {
+        "aria": "Sections de la base de connaissances",
+        "all": "Tout",
+        "unfiled": "Non classés",
+        "folders": "Dossiers"
+      },
+      "view": {
+        "aria": "Affichage",
+        "cards": "Cartes",
+        "list": "Liste"
+      },
+      "status": {
+        "stored": "Enregistré · non analysé",
+        "parsing": "Analyse en cours",
+        "searchable": "Consultable",
+        "failed": "Échec de l’analyse",
+        "failedReason": "Raison : {{reason}}"
+      },
+      "column": {
+        "name": "Nom",
+        "status": "État",
+        "folder": "Dossier",
+        "size": "Taille",
+        "added": "Ajouté le"
+      },
+      "limits": {
+        "perFile": "Jusqu’à {{document}} par document ou image, {{media}} par audio ou vidéo",
+        "usage": "{{count}} sur {{maxCount}} fichiers, {{bytes}} sur {{maxBytes}}",
+        "storage": "Stockage {{used}} sur {{quota}}",
+        "storageUnlimited": "Stockage {{used}} utilisé, sans limite"
+      },
+      "empty": {
+        "title": "Votre base de connaissances est vide",
+        "body": "Importez vos supports de cours, laissez l’assistant les classer et les analyser, puis choisissez-les avec @ en préparant un cours.",
+        "folder": "Aucun document dans ce dossier pour l’instant",
+        "unfiled": "Aucun document non classé",
+        "query": "Aucun document ne correspond à « {{query}} »"
+      },
+      "error": {
+        "load": "Impossible de charger la base de connaissances",
+        "busy": "Votre compte est en cours de mise à jour. Réessayez dans un instant",
+        "identity": "Votre connexion a changé. Rechargez la page",
+        "stale": "l’affichage n’est peut-être pas à jour"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",

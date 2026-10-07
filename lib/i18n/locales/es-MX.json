@@ -1995,7 +1995,55 @@
   },
   "workspace": {
     "knowledgeBase": {
-      "title": "Base de conocimientos"
+      "title": "Base de conocimientos",
+      "search": "Buscar por nombre o tipo de archivo",
+      "loading": "Cargando…",
+      "retry": "Reintentar",
+      "loadMore": "Cargar más",
+      "scope": {
+        "aria": "Secciones de la base de conocimientos",
+        "all": "Todo",
+        "unfiled": "Sin clasificar",
+        "folders": "Carpetas"
+      },
+      "view": {
+        "aria": "Vista",
+        "cards": "Tarjetas",
+        "list": "Lista"
+      },
+      "status": {
+        "stored": "Guardado · sin analizar",
+        "parsing": "Analizando",
+        "searchable": "Consultable",
+        "failed": "Error al analizar",
+        "failedReason": "Motivo: {{reason}}"
+      },
+      "column": {
+        "name": "Nombre",
+        "status": "Estado",
+        "folder": "Carpeta",
+        "size": "Tamaño",
+        "added": "Agregado"
+      },
+      "limits": {
+        "perFile": "Hasta {{document}} por documento o imagen, {{media}} por audio o video",
+        "usage": "{{count}} de {{maxCount}} archivos, {{bytes}} de {{maxBytes}}",
+        "storage": "Almacenamiento {{used}} de {{quota}}",
+        "storageUnlimited": "Almacenamiento {{used}} en uso, sin límite"
+      },
+      "empty": {
+        "title": "Tu base de conocimientos está vacía",
+        "body": "Sube tus materiales didácticos, deja que el asistente los clasifique y analice, y elígelos con @ al preparar un curso.",
+        "folder": "Esta carpeta aún no tiene materiales",
+        "unfiled": "No hay materiales sin clasificar",
+        "query": "Ningún material coincide con “{{query}}”"
+      },
+      "error": {
+        "load": "No se pudo cargar la base de conocimientos",
+        "busy": "Tu cuenta se está actualizando. Inténtalo de nuevo en un momento",
+        "identity": "Tu inicio de sesión cambió. Vuelve a cargar la página",
+        "stale": "lo que se muestra podría no estar actualizado"
+      }
     },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",
