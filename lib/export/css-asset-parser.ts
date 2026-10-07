@@ -107,6 +107,23 @@ export function rewriteCssValue(
     }, value);
 }
 
+/**
+ * Split a declaration value at its top-level commas; commas inside functions
+ * (`format("woff2", "woff")`, `url(a,b)`) or strings do not split. Each entry
+ * is returned as its trimmed source text.
+ */
+export function splitCssCommaList(value: string): string[] {
+  const entries: string[] = [];
+  let start = 0;
+  for (const node of valueParser(value).nodes) {
+    if (node.type !== 'div' || node.value !== ',') continue;
+    entries.push(value.slice(start, node.sourceIndex).trim());
+    start = node.sourceEndIndex;
+  }
+  entries.push(value.slice(start).trim());
+  return entries;
+}
+
 export function cssImportReference(rule: AtRule): { url: string; conditions: string } | null {
   const parsed = valueParser(rule.params);
   const node = parsed.nodes.find(
