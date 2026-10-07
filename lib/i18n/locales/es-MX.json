@@ -1994,6 +1994,9 @@
     }
   },
   "workspace": {
+    "knowledgeBase": {
+      "title": "Base de conocimientos"
+    },
     "untitledCourse": "未命名课堂",
     "sceneCount": "{{count}} 页",
     "sceneCount_one": "{{count}} 页",

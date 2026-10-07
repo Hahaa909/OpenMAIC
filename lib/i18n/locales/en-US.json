@@ -1994,6 +1994,9 @@
     }
   },
   "workspace": {
+    "knowledgeBase": {
+      "title": "Knowledge base"
+    },
     "untitledCourse": "Untitled course",
     "sceneCount": "{{count}} pages",
     "sceneCount_one": "{{count}} page",

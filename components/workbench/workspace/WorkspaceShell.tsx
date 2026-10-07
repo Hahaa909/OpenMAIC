@@ -72,6 +72,7 @@ import {
 } from '@/lib/workbench/workspace-navigation';
 import {
   activateCourseTab,
+  closeAllCourseTabs,
   CHAT_COLLAPSED_STORAGE_KEY,
   CHAT_WIDTH_DEFAULT,
   CHAT_WIDTH_STORAGE_KEY,
@@ -89,6 +90,7 @@ import {
   restoreCourseTabs,
   samePanes,
   withCourse,
+  withLibrary,
   withSession,
   type WorkspacePanes,
 } from '@/lib/workbench/workspace-panes';
@@ -116,6 +118,7 @@ import { WorkspaceChatPane } from './WorkspaceChatPane';
 import { WorkspaceClassroomPane } from './WorkspaceClassroomPane';
 import { PaneTab } from './PaneTab';
 import { ResizeHandle } from './ResizeHandle';
+import { MaterialLibraryPage } from './MaterialLibraryPage';
 
 const EMPTY_SESSIONS: ProHomeSessionItem[] = [];
 
@@ -199,6 +202,24 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   const chatWidth = useChatWidth();
 
   const panes = navigation.panes;
+  /**
+   * A pane change the teacher did not make just now: an agent-created course,
+   * a conversation that finished being created, a deletion the server
+   * confirmed, a bootstrap. It is decided from the panes as they are when it
+   * runs, keeps the knowledge base page if the teacher has it open, and then
+   * REPLACES the history entry rather than adding one -- otherwise Back from
+   * the page would first step through background changes made under it.
+   */
+  const navigateInBackground = useCallback(
+    (change: (current: WorkspacePanes) => WorkspacePanes | null, mode: 'push' | 'replace') => {
+      navigation.update((current) => {
+        const next = change(current);
+        if (!next) return null;
+        return { next, mode: current.library ? 'replace' : mode };
+      });
+    },
+    [navigation],
+  );
   const [rememberedResumeSessionId] = useState(() => {
     const remembered = readLastWorkspaceSessionId();
     return initialPanes.courseId === null && initialPanes.sessionId === remembered
@@ -214,6 +235,15 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   }, [panes.courseId, panes.sessionId]);
   const collapse = usePaneCollapse();
   const [courseTabs, setCourseTabs] = useState(() => restoreCourseTabs(null, panes.courseId));
+  /**
+   * The tab set as last committed, for work that finishes after later
+   * renders: a course deletion confirmed while the teacher opened other tabs
+   * must close only its own tab, from the set as it is then.
+   */
+  const courseTabsRef = useRef(courseTabs);
+  useLayoutEffect(() => {
+    courseTabsRef.current = courseTabs;
+  }, [courseTabs]);
   const narrow = useNarrowViewport();
   // Which of the two content panes has the column, on a window too narrow for
   // both. Not persisted: it is a consequence of the window, not a preference.
@@ -388,10 +418,11 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     ) {
       return;
     }
-    navigation.replace({ sessionId: null, courseId: null });
-  }, [navigation, panes.sessionId, rememberedResumeSessionId, sessions, sessionState]);
+    navigateInBackground((current) => ({ ...current, sessionId: null, courseId: null }), 'replace');
+  }, [navigateInBackground, panes.sessionId, rememberedResumeSessionId, sessions, sessionState]);
 
   // ── Navigation ────────────────────────────────────────────────────────
+  /** The teacher's own navigation, from the panes this render shows. */
   const goTo = useCallback(
     (next: WorkspacePanes) => {
       if (samePanes(next, panes)) return;
@@ -426,7 +457,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
         ? restoreCourseTabs(courseTabs, panes.courseId)
         : courseTabs.activeCourseId === null
           ? courseTabs
-          : NO_COURSE_TABS;
+          : closeAllCourseTabs(courseTabs);
       if (reconciled !== courseTabs) {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- browser history is an external system being reconciled into the local tab model
         setCourseTabs(reconciled);
@@ -460,7 +491,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       setCourseTabs(next);
       persistCourseTabs(next);
       collapse.expandClassroom();
-      goTo(withCourse(panes, next.activeCourseId));
+      goTo(withLibrary(withCourse(panes, next.activeCourseId), false));
     },
     [collapse, courseTabs, goTo, panes, persistCourseTabs],
   );
@@ -484,29 +515,37 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       persistCourseTabs(next);
       if (!courseTabs.activeCourseId) {
         collapse.expandClassroom();
-        goTo(withCourse(panes, next.activeCourseId));
+        navigateInBackground((current) => withCourse(current, next.activeCourseId), 'push');
       }
     },
-    [collapse, courseTabs, goTo, panes, persistCourseTabs],
+    [collapse, courseTabs, navigateInBackground, persistCourseTabs],
   );
 
   const openSession = useCallback(
     (sessionId: string) => {
       setNewConversationRequested(false);
       collapse.expandChat();
-      goTo(withSession(panes, sessionId));
+      goTo(withLibrary(withSession(panes, sessionId), false));
     },
     [collapse, goTo, panes],
   );
 
+  /**
+   * The home composer's conversation exists now. Its POST may have been in
+   * flight while the teacher opened the knowledge base, so this is a
+   * background change: it attaches the session under the page instead of
+   * taking the teacher off it.
+   */
   const openCreatedSession = useCallback(
     (sessionId: string) => {
       // Opening the pane is immediate, but the rail still needs a pull fallback
       // when the owner EventSource is reconnecting or missed session_created.
       loadSessions();
-      openSession(sessionId);
+      setNewConversationRequested(false);
+      collapse.expandChat();
+      navigateInBackground((current) => withSession(current, sessionId), 'push');
     },
-    [loadSessions, openSession],
+    [collapse, loadSessions, navigateInBackground],
   );
 
   const activateCourse = useCallback(
@@ -522,13 +561,17 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
 
   const closeCourse = useCallback(
     (courseId: string) => {
-      const next = closeCourseTab(courseTabs, courseId);
-      if (next === courseTabs) return;
+      const current = courseTabsRef.current;
+      const next = closeCourseTab(current, courseId);
+      if (next === current) return;
+      courseTabsRef.current = next;
       setCourseTabs(next);
       persistCourseTabs(next);
-      goTo(withCourse(panes, next.activeCourseId));
+      // Also the end of a course deletion (`handleCourseDeleted`), which the
+      // teacher may have left the classroom for while it was confirmed.
+      navigateInBackground((panesNow) => withCourse(panesNow, next.activeCourseId), 'push');
     },
-    [courseTabs, goTo, panes, persistCourseTabs],
+    [navigateInBackground, persistCourseTabs],
   );
 
   /**
@@ -542,12 +585,21 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   const handleSessionDeleted = useCallback(
     (sessionId: string) => {
       forgetWorkspaceSession(sessionId);
-      if (sessionId !== panes.sessionId) return;
-      setNewConversationRequested(false);
-      goTo(withSession(panes, null));
+      let attached = false;
+      navigateInBackground((current) => {
+        if (current.sessionId !== sessionId) return null;
+        attached = true;
+        return withSession(current, null);
+      }, 'push');
+      if (attached) setNewConversationRequested(false);
     },
-    [goTo, panes],
+    [navigateInBackground],
   );
+
+  /** The rail's knowledge base row: the page takes the main area. */
+  const openLibrary = useCallback(() => {
+    goTo(withLibrary(panes, true));
+  }, [goTo, panes]);
 
   /**
    * The title a chat is displaying right now, wherever it is displayed: the
@@ -655,7 +707,9 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
    * course away. That is `startNewConversation` below.
    */
   const goHome = () => {
-    if (panes.sessionId || panes.courseId) navigation.push({ sessionId: null, courseId: null });
+    if (panes.sessionId || panes.courseId || panes.library) {
+      navigation.push({ sessionId: null, courseId: null });
+    }
     setCourseTabs(NO_COURSE_TABS);
     persistCourseTabs(NO_COURSE_TABS);
     setNewConversationRequested(false);
@@ -678,10 +732,13 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   const startNewConversation = () => {
     setNewConversationRequested(true);
     collapse.expandChat();
+    // The teacher's own choice, so it also leaves the knowledge base page.
     if (panes.courseId) {
-      if (panes.sessionId) navigation.push({ sessionId: null, courseId: panes.courseId });
+      if (panes.sessionId || panes.library) {
+        navigation.push({ sessionId: null, courseId: panes.courseId });
+      }
     } else {
-      if (panes.sessionId) navigation.push({ sessionId: null, courseId: null });
+      if (panes.sessionId || panes.library) navigation.push({ sessionId: null, courseId: null });
       setCourseTabs(NO_COURSE_TABS);
       persistCourseTabs(NO_COURSE_TABS);
     }
@@ -803,11 +860,15 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     if (courseChatBootstrap.kind !== 'adopt') return;
     // Carrying an existing conversation over is pure navigation: no request, and
     // idempotent by construction — the URL it writes makes this branch settle.
-    navigation.replace({
-      sessionId: courseChatBootstrap.sessionId,
-      courseId: courseChatBootstrap.courseId,
-    });
-  }, [courseChatBootstrap, navigation]);
+    navigateInBackground(
+      (current) => ({
+        ...current,
+        sessionId: courseChatBootstrap.sessionId,
+        courseId: courseChatBootstrap.courseId,
+      }),
+      'replace',
+    );
+  }, [courseChatBootstrap, navigateInBackground]);
 
   /**
    * The empty conversation: a composer with no session behind it yet.
@@ -836,7 +897,16 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
               // The rail should show the conversation that just came into being,
               // and the URL is what attaches it.
               loadSessions();
-              navigation.replace({ sessionId: started.sessionId, courseId: draftCourseId });
+              // Decided when the session exists, not when the message was
+              // sent: the teacher may have opened the knowledge base since.
+              navigateInBackground(
+                (current) => ({
+                  ...current,
+                  sessionId: started.sessionId,
+                  courseId: draftCourseId,
+                }),
+                'replace',
+              );
               return {
                 accepted: true,
                 elementRefsAccepted: started.elementRefsAccepted,
@@ -845,7 +915,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
             },
           }
         : null,
-    [draftCourseId, loadSessions, navigation],
+    [draftCourseId, loadSessions, navigateInBackground],
   );
 
   // The owner list stream and attached conversation stream have independent
@@ -991,7 +1061,11 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       ref={rootRef}
       data-testid="pro-workspace"
       data-ws-layout={
-        render.home ? 'home' : `${chatOpen ? 'chat' : ''}${classroomOpen ? 'classroom' : ''}`
+        render.library
+          ? 'library'
+          : render.home
+            ? 'home'
+            : `${chatOpen ? 'chat' : ''}${classroomOpen ? 'classroom' : ''}`
       }
       className="ws-root flex h-[100dvh] w-full overflow-hidden"
       // The default only — the persisted width is applied to this same
@@ -1020,6 +1094,8 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           onSessionDeleted={handleSessionDeleted}
           onRenameSession={renameSession}
           onDeleteCourse={handleCourseDeleted}
+          libraryOpen={render.library}
+          onOpenLibrary={openLibrary}
           resizeHandle={
             <ResizeHandle
               testId="pro-rail-resize-handle"
@@ -1112,6 +1188,12 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           onExitPro={exitPro}
         />
       ) : null}
+
+      {/* The knowledge base page covers the main area. The conversation and
+          classroom panes above stay mounted, hidden (`render` turns both off),
+          so leaving the page finds them as they were and the run's stream is
+          never detached. */}
+      {render.library ? <MaterialLibraryPage /> : null}
     </div>
   );
 }
