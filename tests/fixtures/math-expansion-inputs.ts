@@ -20,6 +20,10 @@ export const MACRO_EXPANSION_INPUTS: Readonly<Record<string, string>> = {
   definitionsInTag: `x \\tag{\\def\\ma{${LEAF}}\\gdef\\mb{${times('ma', 30)}}\\newcommand{\\mc}{${times('mb', 30)}}\\mc}`,
   /** A tag that refers to itself, directly and through `\gdef\df@tag`. */
   selfReferencingTag: `x \\tag{\\df@tag ${LEAF}} \\gdef\\df@tag{\\text{\\df@tag\\df@tag ${LEAF}}}`,
+  /** A long tag mentioned many times by name, so each mention could re-expand it. */
+  repeatedTagMentions: `x \\tag*{${'a'.repeat(5000)}}${'\\df@tag '.repeat(900)}`,
+  /** The same through a tag written as `\gdef\df@tag`. */
+  repeatedGdefTagMentions: `x \\gdef\\df@tag{\\text{${'a'.repeat(5000)}}}${'\\df@tag '.repeat(900)}`,
   /** A self-referencing `\@eqnsw`, the other built-in numbering state. */
   selfReferencingNumberingState: `\\gdef\\@eqnsw{${times('@eqnsw', 30)}}${times('@eqnsw', 30)}`,
   /** A flat repetition of one defined macro. */

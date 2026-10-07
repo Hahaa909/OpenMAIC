@@ -245,12 +245,29 @@ describe('legitimate formulas render exactly as before', () => {
   }
 });
 
+describe('Temml script arguments after an inert definition', () => {
+  // Stock Temml reports these as parse errors; with the definition expanded
+  // to nothing, Temml throws a TypeError on the bare script (as stock Temml
+  // does for `x^`). The PPTX export, the only Temml consumer, returns null.
+  it.each([
+    'x^',
+    'x^\\notag',
+    'x^\\nonumber',
+    'x_\\def\\y{}',
+    'x^\\let\\a b',
+    'x^\\newcommand{\\y}{1}',
+  ])('latexToOmml(%s) is null rather than throwing', (latex) => {
+    expect(latexToOmml(latex)).toBeNull();
+  });
+});
+
 describe('built-in equation numbering survives the hardening', () => {
   /** [formula, the explicit tags it shows]. Automatic numbers are CSS counters. */
   const NUMBERED: readonly [string, readonly string[]][] = [
     ['E = mc^2 \\tag{1}', ['(1)']],
     ['E = mc^2 \\tag*{a}', ['a']],
     ['\\begin{equation} x = y \\tag*{(*)} \\end{equation}', ['(*)']],
+    ['\\begin{align} a &= b \\tag{1} \\\\ c &= d \\tag*{B} \\\\ e &= f \\end{align}', ['(1)', 'B']],
     [
       '\\begin{align} a &= b \\\\ c &= d \\nonumber \\\\ e &= f \\notag \\\\ g &= h \\tag{9} \\\\ i &= j \\end{align}',
       ['(9)'],
@@ -360,6 +377,20 @@ describe('built-in equation numbering survives the hardening', () => {
       for (const engine of [render, renderTemml]) {
         const html = engine(latex);
         expect(textOf(html)).not.toMatch(/\(|df@tag/);
+      }
+    });
+
+    it('expands a tag in full once, however often a formula names it', () => {
+      const LONG = 'a'.repeat(2000);
+      for (const latex of [
+        `x \\tag*{${LONG}}${'\\df@tag '.repeat(200)}`,
+        `x \\gdef\\df@tag{\\text{${LONG}}}${'\\df@tag '.repeat(200)}`,
+      ]) {
+        for (const engine of [render, renderTemml]) {
+          const text = textOf(engine(latex));
+          expect(text.split(LONG).length - 1).toBeLessThanOrEqual(2); // markup text and its MathML copy
+          expect(text.length).toBeLessThan(4 * latex.length);
+        }
       }
     });
 

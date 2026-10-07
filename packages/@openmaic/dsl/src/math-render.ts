@@ -120,9 +120,10 @@ function swallowDef(raw: object): string {
  *
  * - `\@eqnsw` may only be set to `0`;
  * - `\df@tag` may only be set to one `\text{...}` group that does not mention
- *   `\df@tag`. The engine expands the tag exactly once, so its output stays
- *   proportional to the input; a self-reference would re-expand it until the
- *   call stack or the expansion budget runs out (`\tag{\df@tag}`). Nested
+ *   `\df@tag`, and it expands to that group only once (see `oneShot`), so
+ *   its output stays proportional to the input. A self-reference would
+ *   re-expand it until the call stack or the expansion budget runs out
+ *   (`\tag{\df@tag}` in the stock engines). Nested
  *   `\tag` inside the tag is rejected by the engines (`Multiple \tag`), and
  *   every other definition inside it stays inert.
  *
@@ -145,6 +146,35 @@ const EQUATION_NUMBERING_STATE: Readonly<Record<string, (body: MacroToken[]) => 
   },
 };
 
+/** The value the engines' `\gdef` stores for a parameterless macro. */
+function expansionOf(tokens: MacroToken[]) {
+  return { tokens, numArgs: 0, delimiters: [[]] };
+}
+
+/**
+ * `\df@tag` as a macro that yields its full body on the first expansion only.
+ *
+ * The engines expand `\df@tag` once per formula (or once per `align` row,
+ * clearing it afterwards), so tags render unchanged. A formula can also name
+ * `\df@tag` itself, and every such mention would otherwise re-expand the
+ * whole tag: a long tag mentioned many times multiplies the output by up to
+ * the expansion budget. Later expansions yield an empty `\text{}` instead
+ * (not nothing: Temml fails with a TypeError on an empty tag). The macro stays
+ * defined, since the engines test it for `Multiple \tag`.
+ *
+ * `tokens` is in stack order, so `\text{` is its last two tokens and `}` its
+ * first (the shape check guarantees all three).
+ */
+function oneShot(tokens: MacroToken[]): () => ReturnType<typeof expansionOf> {
+  const empty = [tokens[0], tokens[tokens.length - 2], tokens[tokens.length - 1]];
+  let spent = false;
+  return () => {
+    const expansion = expansionOf(spent ? empty : tokens);
+    spent = true;
+    return expansion;
+  };
+}
+
 /**
  * `\gdef`: inert, except for the built-in equation-numbering state described
  * above, which it sets exactly as the engines' own `\gdef` would.
@@ -162,8 +192,7 @@ function gdefNumberingStateOnly(raw: object): string {
   }
   const { tokens } = context.consumeArg();
   if (accepts([...tokens].reverse())) {
-    // The same value the engines' `\gdef` stores for a parameterless macro.
-    context.macros.set(name, { tokens, numArgs: 0, delimiters: [[]] }, true);
+    context.macros.set(name, name === '\\df@tag' ? oneShot(tokens) : expansionOf(tokens), true);
   }
   return '';
 }
@@ -225,6 +254,14 @@ function swallowFuturelet(raw: object): string {
   return '';
 }
 
+/**
+ * Each inert definition expands to nothing, as the stock `\newcommand` family
+ * does in KaTeX. Where the stock engines would have parsed the definition
+ * command as a script argument (`x^\notag`, `x_\def\y{}`), the script is
+ * then left bare; KaTeX reports that as a parse error, while Temml throws a
+ * TypeError on a bare `x^` (stock Temml does the same for a literal `x^`).
+ * Callers of Temml therefore keep their own try/catch.
+ */
 const INERT_DEFINITIONS: Readonly<
   Record<(typeof MATH_MACRO_DEFINITION_COMMANDS)[number], MathMacroExpansion>
 > = {

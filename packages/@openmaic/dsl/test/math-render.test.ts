@@ -31,9 +31,9 @@ function contextOver(source: string[]) {
       // The engines return argument tokens in stack order (last first).
       return { tokens: group.reverse() };
     },
-    defined: new Map<string, { tokens: { text: string }[]; numArgs: number }>(),
+    defined: new Map<string, unknown>(),
     macros: {
-      set: (name: string, value: { tokens: { text: string }[]; numArgs: number }) => {
+      set: (name: string, value: unknown) => {
         context.defined.set(name, value);
       },
     },
@@ -41,6 +41,17 @@ function contextOver(source: string[]) {
   return { context, rest: () => tokens.join('') };
 }
 
+type Expansion = { tokens: { text: string }[]; numArgs: number };
+
+/** Replacement text of a stored macro value, read in source order. */
+function textOf(expansion: Expansion): string {
+  return [...expansion.tokens]
+    .reverse()
+    .map((token) => token.text)
+    .join('');
+}
+
+/** Runs an inert definition; each one expands to `\relax` plus what it left unread. */
 function expandWithState(command: string, source: string[]) {
   const macro = safeKatexOptions().macros[command];
   const { context, rest } = contextOver(source);
@@ -48,10 +59,9 @@ function expandWithState(command: string, source: string[]) {
   const defined = Object.fromEntries(
     [...context.defined].map(([name, value]) => [
       name,
-      [...value.tokens]
-        .reverse()
-        .map((token) => token.text)
-        .join(''),
+      typeof value === 'function'
+        ? [textOf(value() as Expansion), textOf(value() as Expansion)]
+        : textOf(value as Expansion),
     ]),
   );
   return { output: replacement + rest(), defined };
@@ -159,11 +169,12 @@ describe('safeKatexOptions', () => {
         expandWithState('\\gdef', ['\\df@tag', ...tagBody('(', '{', '1', '}', ')'), 'y']),
       ).toEqual({
         output: 'y',
-        defined: { '\\df@tag': '\\text{({1})}' },
+        // The full tag expands once; later mentions yield an empty `\text{}`.
+        defined: { '\\df@tag': ['\\text{({1})}', '\\text{}'] },
       });
       expect(expandWithState('\\gdef', ['\\df@tag', ...tagBody('a'), 'y'])).toEqual({
         output: 'y',
-        defined: { '\\df@tag': '\\text{a}' },
+        defined: { '\\df@tag': ['\\text{a}', '\\text{}'] },
       });
       expect(expandWithState('\\gdef', ['\\@eqnsw', '{', '0', '}', 'y'])).toEqual({
         output: 'y',
