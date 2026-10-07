@@ -129,32 +129,41 @@ export interface FontSrcEntry {
   /** Raw values of the entry's url() references. */
   urls: string[];
   /**
-   * Lower-cased arguments of the entry's `format()` hint (strings and
-   * keywords, so `format("woff2" supports variations)` yields three); `null`
-   * when the entry has no `format()`.
+   * Lower-cased tokens inside the entry's `format()` hint, in source order:
+   * strings and keywords by value, separators (`,`, `/`) as themselves, and
+   * anything else (nested functions, unclosed strings) as `''`. So
+   * `format("woff2" supports variations)` yields three tokens and the
+   * malformed `format("woff2",)` yields `['woff2', ',']`. `null` when the
+   * entry has no `format()`.
    */
   format: string[] | null;
   /**
    * The entry has top-level parts beyond one url() and at most one format():
-   * a `tech()` condition, `local()`, repeated functions or stray tokens.
+   * a `tech()` condition, `local()`, repeated functions, stray tokens or an
+   * unclosed function.
    */
   extra: boolean;
 }
+
+type CssValueSourceNode = CssValueNode & { unclosed?: boolean };
 
 export function parseFontSrcEntry(entry: string): FontSrcEntry {
   let urlCount = 0;
   let format: string[] | null = null;
   let extra = false;
-  for (const node of valueParser(entry).nodes) {
+  for (const node of valueParser(entry).nodes as CssValueSourceNode[]) {
     if (node.type === 'space' || node.type === 'comment') continue;
-    const name = node.type === 'function' ? node.value.toLowerCase() : '';
+    const name = node.type === 'function' && !node.unclosed ? node.value.toLowerCase() : '';
     if (name === 'url' && urlCount === 0) {
       urlCount++;
     } else if (name === 'format' && format === null && node.type === 'function') {
       format = [];
-      for (const arg of node.nodes) {
-        if (arg.type === 'space' || arg.type === 'comment' || arg.type === 'div') continue;
-        format.push(arg.type === 'string' || arg.type === 'word' ? arg.value.toLowerCase() : '');
+      for (const arg of node.nodes as CssValueSourceNode[]) {
+        if (arg.type === 'space' || arg.type === 'comment') continue;
+        if (arg.type === 'div') format.push(arg.value);
+        else if ((arg.type === 'string' || arg.type === 'word') && !arg.unclosed)
+          format.push(arg.value.toLowerCase());
+        else format.push('');
       }
     } else {
       extra = true;

@@ -8,6 +8,7 @@ import {
   inlineCssUrls,
   inlineHtmlAssets,
 } from '@/lib/export/inline-assets';
+import { parseFontSrcEntry } from '@/lib/export/css-asset-parser';
 
 describe('collectAssetRefs', () => {
   it('collects stylesheet link hrefs', () => {
@@ -461,6 +462,15 @@ describe('inlineCssUrls', () => {
     ['format(... supports ...)', 'format("woff2" supports variations)'],
     ['a woff2-variations hint', 'format("woff2-variations")'],
     ['a multi-format hint', 'format("woff2", "woff")'],
+    ['a trailing comma in format()', 'format("woff2",)'],
+    ['a leading comma in format()', 'format(, woff2)'],
+    ['an empty format()', 'format()'],
+    ['a comma-only format()', 'format(,)'],
+    ['a space-separated format() list', 'format("woff2" "woff2")'],
+    ['a nested function in format()', 'format(var(--f))'],
+    ['a stray token after format()', 'format("woff2") x'],
+    ['a second format()', 'format("woff2") format("woff2")'],
+    ['a slash in format()', 'format("woff2" / "woff2")'],
   ])('keeps and inlines the fallbacks of a woff2 source with %s', async (_label, hint) => {
     const css = `@font-face{font-family:K;src:url(https://fonts.example/k?id=1) ${hint},url(fallback.ttf) format("truetype")}`;
     const calls: string[] = [];
@@ -468,6 +478,18 @@ describe('inlineCssUrls', () => {
     expect(out).toContain('url(data:font/ttf;base64,AQ==) format("truetype")');
     expect(out).not.toContain('fallback.ttf');
     expect(calls.sort()).toEqual(['https://fonts.example/k?id=1', 'https://x/fallback.ttf']);
+    expect(failed).toEqual([]);
+  });
+
+  it.each([
+    ['a quoted url() with trailing tokens', 'url("K.woff2" x) format("woff2")'],
+    ['an unquoted url() followed by a stray token', 'url(K.woff2)x'],
+    ['two url()s in one entry', 'url(K.woff2) url(K-alt.woff2) format("woff2")'],
+    ['an empty url()', 'url() format("woff2")'],
+  ])('keeps the fallbacks behind a malformed woff2 entry with %s', async (_label, entry) => {
+    const css = `@font-face{font-family:K;src:${entry},url(fallback.ttf) format("truetype")}`;
+    const { css: out, failed } = await inlineCssUrls(css, 'https://x/base.css', fontFetcher());
+    expect(out).toContain('url(data:font/ttf;base64,AQ==) format("truetype")');
     expect(failed).toEqual([]);
   });
 
@@ -1357,5 +1379,32 @@ ${tail}`),
       url: 'https://cdn.test/bad.css',
       reason: 'css parse failed',
     });
+  });
+});
+
+describe('parseFontSrcEntry', () => {
+  it('reads a well-formed url() + format() entry', () => {
+    expect(parseFontSrcEntry('url("K.woff2")  FORMAT( "WOFF2" )')).toEqual({
+      urls: ['K.woff2'],
+      format: ['woff2'],
+      extra: false,
+    });
+  });
+
+  it.each([
+    ['format("woff2",)', ['woff2', ',']],
+    ['format(,woff2)', [',', 'woff2']],
+    ['format()', []],
+    ['format(,)', [',']],
+    ['format("woff2" / woff2)', ['woff2', '/', 'woff2']],
+    ['format(var(--f))', ['']],
+  ])('keeps every token of %s so malformed hints never look like a plain woff2', (hint, format) => {
+    expect(parseFontSrcEntry(`url(K.woff2) ${hint}`).format).toEqual(format);
+  });
+
+  it('flags unclosed functions and strings', () => {
+    expect(parseFontSrcEntry('url(K.woff2) format("woff2"').extra).toBe(true);
+    expect(parseFontSrcEntry('url(K.woff2').extra).toBe(true);
+    expect(parseFontSrcEntry('url(K.woff2) format("woff2)').extra).toBe(true);
   });
 });

@@ -223,8 +223,10 @@ const NON_WOFF2_FORMAT =
  * single woff2 url() whose only hint is a plain `format("woff2")` /
  * `format(woff2)` (or none, with a woff2 URL). Anything that makes support
  * conditional (a `tech()` condition, `supports` inside `format()`, a
- * `woff2-variations` or multi-format hint, `local()`) disqualifies it, since a
- * browser that skips the entry still needs the fallbacks behind it.
+ * `woff2-variations` or multi-format hint, `local()`) disqualifies it, and so
+ * does anything that does not strictly parse (empty or comma-only `format()`,
+ * a trailing comma, an unclosed function or string, stray tokens): browsers
+ * skip a malformed entry, so it still needs the fallbacks behind it.
  */
 function isUnconditionalWoff2Entry(entry: string): boolean {
   const { urls, format, extra } = parseFontSrcEntry(entry);
