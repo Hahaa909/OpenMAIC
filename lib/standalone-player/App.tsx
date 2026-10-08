@@ -2,18 +2,22 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  Captions,
   FolderKanban,
   List,
   ListChecks,
   Maximize,
   Minimize,
   MousePointerClick,
+  Pause,
+  Play,
   Presentation,
 } from 'lucide-react';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import type { PlayerData } from './read-data';
 import {
   applyNavigation,
+  isPlaybackToggleKey,
   navigationActionForKey,
   sceneHash,
   sceneIndexFromHash,
@@ -25,6 +29,8 @@ import { QuizScene } from './scenes/QuizScene';
 import { PblScene } from './scenes/PblScene';
 import { UnavailableScene } from './scenes/UnavailableScene';
 import { SceneErrorBoundary } from './SceneErrorBoundary';
+import { usePlayback, type Playback } from './playback/use-playback';
+import { CaptionBar, DiscussionCard, StartOverlay } from './PlaybackOverlays';
 
 function SceneIcon({ type, className }: { type: ManifestScene['type']; className?: string }) {
   switch (type) {
@@ -41,15 +47,36 @@ function SceneIcon({ type, className }: { type: ManifestScene['type']; className
   }
 }
 
-function SceneView({ scene, data }: { scene: ManifestScene; data: PlayerData }) {
+function SceneView({
+  scene,
+  data,
+  playback,
+}: {
+  scene: ManifestScene;
+  data: PlayerData;
+  playback: Playback;
+}) {
   const { strings, classroomUrl } = data.config;
   const content = scene.content;
   switch (content.type) {
     case 'slide':
-      return <SlideScene slide={content.canvas} strings={strings} />;
+      return (
+        <SlideScene
+          slide={content.canvas}
+          strings={strings}
+          effects={playback.state.view.effects}
+          media={playback.media}
+          videos={playback.videos}
+        />
+      );
     case 'interactive':
       return content.html ? (
-        <InteractiveScene html={content.html} title={scene.title} strings={strings} />
+        <InteractiveScene
+          html={content.html}
+          title={scene.title}
+          strings={strings}
+          widgets={playback.widgets}
+        />
       ) : (
         <UnavailableScene message={strings.unsupportedScene} />
       );
@@ -91,26 +118,50 @@ export function App({ data }: { data: PlayerData }) {
   const [listOpen, setListOpen] = useState(false);
   const { fullscreen, toggle: toggleFullscreen } = useFullscreen();
 
-  const goTo = useCallback(
-    (next: number) => {
-      setIndex(next);
-      // replaceState: scene changes should not flood the history stack, and
-      // a reload (or a shared `#scene-N` link) reopens the same scene.
-      try {
-        history.replaceState(null, '', sceneHash(next));
-      } catch {
-        // Some file:// contexts refuse history updates; navigation still works.
-      }
-    },
-    [setIndex],
-  );
+  // The start overlay invites playback on the first scene; navigating away
+  // means the learner chose to browse.
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  const goTo = useCallback((next: number) => {
+    setIndex(next);
+    setOverlayDismissed(true);
+    // replaceState: scene changes should not flood the history stack, and
+    // a reload (or a shared `#scene-N` link) reopens the same scene.
+    try {
+      history.replaceState(null, '', sceneHash(next));
+    } catch {
+      // Some file:// contexts refuse history updates; navigation still works.
+    }
+  }, []);
   const navigate = useCallback(
     (action: NavigationAction) => goTo(applyNavigation(index, action, count)),
     [goTo, index, count],
   );
+  const playback = usePlayback(scenes, index, goTo);
+  const { mode, started, view } = playback.state;
+  const [captionsOn, setCaptionsOn] = useState(true);
+  const playing = mode === 'playing';
+  const playLabel = playing
+    ? strings.pause
+    : mode === 'holding'
+      ? strings.playbackContinue
+      : strings.play;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (
+        isPlaybackToggleKey({
+          key: event.key,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          target: event.target as HTMLElement | null,
+        })
+      ) {
+        event.preventDefault();
+        playback.toggle();
+        return;
+      }
       const action = navigationActionForKey({
         key: event.key,
         altKey: event.altKey,
@@ -124,7 +175,7 @@ export function App({ data }: { data: PlayerData }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [navigate]);
+  }, [navigate, playback]);
 
   useEffect(() => {
     const onHash = () => setIndex(sceneIndexFromHash(window.location.hash, count));
@@ -178,10 +229,26 @@ export function App({ data }: { data: PlayerData }) {
         >
           {scene ? (
             <SceneErrorBoundary key={index} message={strings.unsupportedScene}>
-              <SceneView scene={scene} data={data} />
+              <SceneView scene={scene} data={data} playback={playback} />
             </SceneErrorBoundary>
           ) : (
             <UnavailableScene message={strings.emptyClassroom} />
+          )}
+          {view.discussion !== null && (
+            <DiscussionCard
+              topic={view.discussion}
+              classroomUrl={data.config.classroomUrl}
+              strings={strings}
+              onDismiss={playback.dismissDiscussion}
+            />
+          )}
+          {captionsOn && view.caption && <CaptionBar text={view.caption} />}
+          {scene && !started && !overlayDismissed && (
+            <StartOverlay
+              label={strings.playbackStart}
+              onPlay={playback.play}
+              onDismiss={() => setOverlayDismissed(true)}
+            />
           )}
         </main>
 
@@ -232,6 +299,35 @@ export function App({ data }: { data: PlayerData }) {
         >
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
           {strings.previous}
+        </button>
+        <button
+          type="button"
+          onClick={playback.toggle}
+          disabled={!scene}
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label={playLabel}
+          title={playLabel}
+          data-testid="play-toggle"
+          data-mode={mode}
+        >
+          {playing ? (
+            <Pause className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <Play className="h-4 w-4 translate-x-px" aria-hidden="true" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setCaptionsOn((on) => !on)}
+          className={`rounded-md p-2 hover:bg-slate-100 ${
+            captionsOn ? 'text-violet-600' : 'text-slate-400'
+          }`}
+          aria-label={strings.captions}
+          aria-pressed={captionsOn}
+          title={strings.captions}
+          data-testid="captions-toggle"
+        >
+          <Captions className="h-4 w-4" aria-hidden="true" />
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200">

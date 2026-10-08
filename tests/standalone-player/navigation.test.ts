@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyNavigation,
   clampSceneIndex,
+  isPlaybackToggleKey,
   navigationActionForKey,
   sceneHash,
   sceneIndexFromHash,
@@ -94,5 +95,19 @@ describe('standalone player PBL briefing', () => {
     );
     expect(safeClassroomUrl('javascript:alert(1)')).toBeUndefined();
     expect(safeClassroomUrl(undefined)).toBeUndefined();
+  });
+});
+
+describe('standalone player playback key', () => {
+  it('toggles playback on Space outside anything Space already activates', () => {
+    expect(isPlaybackToggleKey({ key: ' ', target: { tagName: 'BODY' } })).toBe(true);
+    expect(isPlaybackToggleKey({ key: ' ', target: { tagName: 'MAIN' } })).toBe(true);
+    for (const tagName of ['BUTTON', 'A', 'INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY']) {
+      expect(isPlaybackToggleKey({ key: ' ', target: { tagName } })).toBe(false);
+    }
+    expect(isPlaybackToggleKey({ key: ' ', target: { isContentEditable: true } })).toBe(false);
+    expect(isPlaybackToggleKey({ key: ' ', shiftKey: true })).toBe(false);
+    expect(isPlaybackToggleKey({ key: 'Enter' })).toBe(false);
+    expect(navigationActionForKey({ key: ' ' })).toBeNull();
   });
 });

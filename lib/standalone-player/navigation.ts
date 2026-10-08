@@ -58,3 +58,24 @@ export function navigationActionForKey(event: {
       return null;
   }
 }
+
+const ACTIVATABLE_TAGS = new Set(['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT']);
+
+/**
+ * Whether a key press toggles playback: Space, with no modifier, outside
+ * anything Space already activates or types into (a focused button presses
+ * itself, so handling it here too would toggle twice).
+ */
+export function isPlaybackToggleKey(event: {
+  key: string;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  target?: { tagName?: string; isContentEditable?: boolean } | null;
+}): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  if (event.key !== ' ' && event.key !== 'Spacebar') return false;
+  const target = event.target;
+  return !(target && (ACTIVATABLE_TAGS.has(target.tagName ?? '') || target.isContentEditable));
+}
