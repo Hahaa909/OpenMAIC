@@ -29,20 +29,36 @@ import {
  * which the renderer injects as HTML, is sanitized before it is embedded (see
  * `prepare-manifest.ts`), and quiz and PBL text is rendered as text.
  */
-export const STANDALONE_HTML_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline' 'unsafe-eval' data: blob:",
-  "style-src 'unsafe-inline' data:",
-  'img-src data: blob:',
-  'media-src data: blob:',
-  'font-src data:',
-  'frame-src data: blob:',
-  'worker-src data: blob:',
-  "connect-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join('; ');
+export const STANDALONE_HTML_CSP = standaloneHtmlCsp('data: blob:');
+
+/**
+ * Content Security Policy of a page that plays media shipped next to it (the
+ * ZIP variant: `classroom.html` plus `media/` and `audio/` folders). Only
+ * `media-src` differs: `'self'` lets `<audio>`/`<video>` elements load the
+ * sibling files by relative path. Opened from disk, Chromium and WebKit match
+ * `'self'` against `file:` URLs (without it they block the files); served
+ * over HTTP, it is the page's own origin. Nothing else may load from the
+ * folder: `connect-src 'none'` still blocks fetch/XHR, so the player never
+ * reads media bytes itself, it only hands element sources to the browser.
+ */
+export const STANDALONE_HTML_LINKED_MEDIA_CSP = standaloneHtmlCsp("'self' data: blob:");
+
+function standaloneHtmlCsp(mediaSources: string): string {
+  return [
+    "default-src 'none'",
+    "script-src 'unsafe-inline' 'unsafe-eval' data: blob:",
+    "style-src 'unsafe-inline' data:",
+    'img-src data: blob:',
+    `media-src ${mediaSources}`,
+    'font-src data:',
+    'frame-src data: blob:',
+    'worker-src data: blob:',
+    "connect-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ');
+}
 
 /**
  * Serialize a value for a `<script type="application/json">` block.
@@ -106,6 +122,12 @@ export interface StandaloneHtmlInput {
    * names them (speech `audioRef`, video `mediaRef`).
    */
   embeddedMedia?: readonly StandaloneEmbeddedMedia[];
+  /**
+   * Playback media shipped next to the document and referenced by relative
+   * path. When present, the document's CSP lets media elements load them
+   * (see {@link STANDALONE_HTML_LINKED_MEDIA_CSP}).
+   */
+  linkedMedia?: readonly StandaloneLinkedMedia[];
   /** BCP 47 language tag of the player UI. */
   lang: string;
 }
@@ -117,14 +139,24 @@ export interface StandaloneEmbeddedMedia {
   base64: string | readonly string[];
 }
 
+export interface StandaloneLinkedMedia {
+  key: string;
+  mimeType: string;
+  /** Relative URL of the file, resolved against the document (e.g. `media/clip.mp4`). */
+  src: string;
+}
+
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
 /**
  * The media table and its data blocks. Base64 cannot end a `<script>` element,
  * but the payload is checked anyway since it is written verbatim.
  */
-function mediaBlocks(media: readonly StandaloneEmbeddedMedia[]): string[] {
-  if (media.length === 0) return [];
+function mediaBlocks(
+  media: readonly StandaloneEmbeddedMedia[],
+  linked: readonly StandaloneLinkedMedia[],
+): string[] {
+  if (media.length === 0 && linked.length === 0) return [];
   const table: StandaloneMediaTable = {};
   const blocks: string[] = [];
   media.forEach((entry, index) => {
@@ -136,6 +168,9 @@ function mediaBlocks(media: readonly StandaloneEmbeddedMedia[]): string[] {
     table[entry.key] = { mimeType: entry.mimeType, embedded: id };
     blocks.push(`<script type="application/octet-stream" id="${id}">`, ...pieces, '</script>\n');
   });
+  for (const entry of linked) {
+    table[entry.key] = { mimeType: entry.mimeType, src: entry.src };
+  }
   return [
     `<script type="application/json" id="${STANDALONE_MEDIA_TABLE_ELEMENT_ID}">${serializeJsonForHtmlScript(table)}</script>\n`,
     ...blocks,
@@ -160,12 +195,14 @@ export function assembleStandaloneHtmlParts(input: StandaloneHtmlInput): string[
     )
     .join('\n');
   const line = (text: string) => `${text}\n`;
+  const linkedMedia = input.linkedMedia ?? [];
+  const csp = linkedMedia.length > 0 ? STANDALONE_HTML_LINKED_MEDIA_CSP : STANDALONE_HTML_CSP;
   return [
     '<!doctype html>',
     `<html lang="${escapeHtmlText(input.lang)}">`,
     '<head>',
     '<meta charset="utf-8">',
-    `<meta http-equiv="Content-Security-Policy" content="${STANDALONE_HTML_CSP}">`,
+    `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
     '<meta name="referrer" content="no-referrer">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     '<meta name="generator" content="OpenMAIC">',
@@ -179,7 +216,7 @@ export function assembleStandaloneHtmlParts(input: StandaloneHtmlInput): string[
   ]
     .map(line)
     .concat(
-      mediaBlocks(input.embeddedMedia ?? []),
+      mediaBlocks(input.embeddedMedia ?? [], linkedMedia),
       [
         ...(input.extraScripts ?? []).map(
           (js, index) => `<script>${assertRawText(js, 'script', `script ${index + 1}`)}</script>`,

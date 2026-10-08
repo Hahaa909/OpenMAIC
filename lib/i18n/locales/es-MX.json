@@ -79,7 +79,10 @@
     "htmlSilent": "Sin narración",
     "htmlSilentDesc": "Archivo más pequeño: subtítulos al ritmo de lectura; no incluye videos",
     "htmlLarge": "El archivo exportado pesa {{size}} MB y puede tardar en abrirse. Exporta sin narración para obtener un archivo más pequeño.",
-    "htmlTooLarge": "Esta clase generaría un archivo de {{size}} MB, demasiado grande para un solo archivo HTML. Exporta sin narración.",
+    "htmlTooLarge": "Esta clase generaría una exportación de {{size}} MB, demasiado grande para guardarla incluso como ZIP. Exporta sin narración.",
+    "htmlZipFallback": "Esta clase es demasiado grande para un solo archivo HTML (unos {{size}} MB), así que se guardó como ZIP: classroom.html y sus carpetas de medios.",
+    "htmlZipFallbackDesc": "Extrae todo el ZIP y luego abre classroom.html.",
+    "htmlZipReadme": "Primero extrae todo este archivo ZIP y luego abre classroom.html en un navegador web. Deja las carpetas audio y media junto a classroom.html: la página reproduce desde ellas la narración y los videos. Si la abres desde dentro del ZIP sin extraerlo, la página no los encuentra y se reproduce sin sonido ni video.",
     "htmlPlayer": {
       "previous": "Anterior",
       "next": "Siguiente",

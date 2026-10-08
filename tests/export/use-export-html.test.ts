@@ -68,6 +68,7 @@ beforeEach(() => {
   // Would stall forever if the export ever asked for stage metadata.
   mocks.fetchStageMeta.mockImplementation(() => new Promise(() => {}));
   mocks.buildStandaloneHtmlExport.mockResolvedValue({
+    format: 'html',
     blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
     fileName: 'course.html',
     inlineFailures: [],
@@ -126,6 +127,7 @@ describe('useExportHtml', () => {
 
   it('warns when the file is larger than the size threshold', async () => {
     mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
+      format: 'html',
       blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
       fileName: 'course.html',
       inlineFailures: [],
@@ -142,6 +144,44 @@ describe('useExportHtml', () => {
       'export.htmlLarge {"size":"100"}',
       expect.objectContaining({ id: 'toast' }),
     );
+  });
+
+  it('asks for the ZIP fallback with the localized README', async () => {
+    await act(async () => {
+      await latest!.exportStandaloneHtml({ includeNarration: true });
+    });
+    expect(mocks.buildStandaloneHtmlExport.mock.calls[0][2]).toMatchObject({
+      format: 'auto',
+      zipReadme: 'export.htmlZipReadme',
+    });
+  });
+
+  it('saves the ZIP and explains why, and how to open it, when the classroom fell back to it', async () => {
+    const zip = new Blob(['PK'], { type: 'application/zip' });
+    mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
+      format: 'zip',
+      blob: zip,
+      fileName: 'course.zip',
+      inlineFailures: [],
+      unresolvedMedia: [],
+      missingAudioCount: 1,
+      byteSize: 420 * 1024 * 1024,
+      singleFileBytes: 560 * 1024 * 1024,
+    });
+    await act(async () => {
+      await latest!.exportStandaloneHtml({ includeNarration: true });
+    });
+    expect(mocks.saveAs).toHaveBeenCalledWith(zip, 'course.zip');
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+    expect(mocks.toast.error).not.toHaveBeenCalled();
+    expect(mocks.toast.warning).toHaveBeenCalledTimes(1);
+    expect(mocks.toast.warning).toHaveBeenCalledWith('export.htmlZipFallback {"size":"560"}', {
+      id: 'toast',
+      description: 'export.htmlZipFallbackDesc export.inlinePartial {"count":1}',
+      duration: expect.any(Number),
+    });
+    expect(mocks.toast.warning.mock.calls[0][1].duration).toBeGreaterThanOrEqual(10_000);
+    expect(latest!.exporting).toBe(false);
   });
 
   it('explains, without saving, when the file would be too large', async () => {
@@ -161,6 +201,7 @@ describe('useExportHtml', () => {
 
   it('counts narration that could not be embedded as a partial export', async () => {
     mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
+      format: 'html',
       blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
       fileName: 'course.html',
       inlineFailures: [],

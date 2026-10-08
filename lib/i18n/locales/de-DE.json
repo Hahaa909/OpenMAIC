@@ -79,7 +79,10 @@
     "htmlSilent": "Ohne Sprecherton",
     "htmlSilentDesc": "Kleinere Datei: Untertitel im Lesetempo; Videos sind nicht enthalten",
     "htmlLarge": "Die exportierte Datei ist {{size}} MB groß und öffnet sich möglicherweise langsam. Exportieren Sie ohne Sprecherton für eine kleinere Datei.",
-    "htmlTooLarge": "Dieser Unterricht ergäbe eine Datei von {{size}} MB – zu groß für eine einzelne HTML-Datei. Exportieren Sie stattdessen ohne Sprecherton.",
+    "htmlTooLarge": "Dieser Unterricht ergäbe einen Export von {{size}} MB – selbst als ZIP zu groß zum Speichern. Exportieren Sie stattdessen ohne Sprecherton.",
+    "htmlZipFallback": "Dieser Unterricht ist für eine einzelne HTML-Datei zu groß (etwa {{size}} MB) und wurde daher als ZIP gespeichert: classroom.html mit seinen Medienordnern.",
+    "htmlZipFallbackDesc": "Entpacken Sie das gesamte ZIP und öffnen Sie dann classroom.html.",
+    "htmlZipReadme": "Entpacken Sie zuerst diese gesamte ZIP-Datei und öffnen Sie dann classroom.html in einem Webbrowser. Lassen Sie die Ordner audio und media neben classroom.html: Die Seite spielt Sprecherton und Videos daraus ab. Direkt aus dem ZIP geöffnet, ohne zu entpacken, findet die Seite sie nicht und spielt ohne Ton und Video.",
     "htmlPlayer": {
       "previous": "Zurück",
       "next": "Weiter",

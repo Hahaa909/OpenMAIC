@@ -39,14 +39,19 @@ vi.mock('@/lib/export/classroom-zip-utils', async (importOriginal) => {
   };
 });
 
+import JSZip from 'jszip';
 import {
   buildStandaloneHtmlExport,
   classroomUrlFor,
   estimateStandaloneHtmlBytes,
+  linkedMediaSrc,
+  STANDALONE_ZIP_README_EN,
+  standaloneZipReadme,
   type StandaloneHtmlExportOptions,
 } from '@/lib/export/standalone-html/build-standalone-html';
 import {
   STANDALONE_HTML_CSP,
+  STANDALONE_HTML_LINKED_MEDIA_CSP,
   assembleStandaloneHtml,
   serializeJsonForHtmlScript,
 } from '@/lib/export/standalone-html/assemble';
@@ -195,6 +200,125 @@ function imageSources(manifest: ClassroomManifest): string[] {
         )
       : [],
   );
+}
+
+/**
+ * A classroom with stored and legacy narration and a generated video, the
+ * snapshot collectors mocked to return their bytes (one narration is lost).
+ */
+function setupNarratedClassroom() {
+  const AUDIO_BYTES = Uint8Array.from([0x49, 0x44, 0x33, 1, 2, 3, 4, 5]);
+  const LEGACY_BYTES = Uint8Array.from([0xff, 0xfb, 9, 8, 7]);
+  const VIDEO_BYTES = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 1, 2]);
+  const legacyUrl = 'https://cdn.example/narration/legacy.mp3';
+  const scenes = standaloneFixtureScenes(STAGE_ID).map((scene) =>
+    scene.type === 'slide'
+      ? ({
+          ...withSlideElements(
+            scene,
+            (elements) =>
+              [
+                ...elements,
+                {
+                  type: 'video',
+                  id: 'clip',
+                  left: 0,
+                  top: 0,
+                  width: 160,
+                  height: 90,
+                  rotate: 0,
+                  src: 'gen_vid_1',
+                  mediaRef: 'gen_vid_1',
+                  autoplay: false,
+                },
+              ] as PPTElement[],
+          ),
+          actions: [
+            { id: 'sp', type: 'spotlight', elementId: 'leaf', dimOpacity: 0.6 },
+            { id: 's1', type: 'speech', text: 'Stored narration.', audioId: 'aud-1' },
+            { id: 'v1', type: 'play_video', elementId: 'clip' },
+            { id: 's2', type: 'speech', text: 'Legacy narration.', audioUrl: legacyUrl },
+            { id: 's3', type: 'speech', text: 'No audio at all.' },
+            { id: 's4', type: 'speech', text: 'Lost audio.', audioId: 'aud-missing' },
+          ],
+        } as Scene)
+      : scene,
+  );
+  const stage = setupSnapshot(scenes);
+  mocks.buildAssetManifest.mockResolvedValue({
+    entries: [
+      { kind: 'audio', ref: 'aud-1' },
+      { kind: 'audio', ref: 'aud-missing' },
+      { kind: 'image', ref: DEFAULT_FIXTURE_MEDIA.archivedImageRef },
+      { kind: 'video', ref: 'gen_vid_1' },
+    ],
+  });
+  mocks.collectAudioFiles.mockResolvedValue([
+    {
+      zipPath: 'audio/audio-1.mp3',
+      sourceRef: 'aud-1',
+      mimeType: 'audio/mpeg',
+      record: {
+        id: 'aud-1',
+        blob: new Blob([AUDIO_BYTES], { type: 'audio/mpeg' }),
+        format: 'mp3',
+      },
+    },
+  ]);
+  mocks.collectLegacyAudioForExport.mockResolvedValue({
+    audioUrlToPath: new Map([[legacyUrl, 'audio/legacy-1.mp3']]),
+    blobs: [
+      {
+        zipPath: 'audio/legacy-1.mp3',
+        blob: new Blob([LEGACY_BYTES], { type: 'audio/mpeg' }),
+        format: 'mp3',
+        mimeType: 'audio/mpeg',
+        sourceRef: legacyUrl,
+      },
+    ],
+    fullyRescuedAudioIds: new Set(),
+  });
+  mocks.collectMediaFiles.mockImplementation(async (_stageId, entries) =>
+    (entries as Array<{ kind: string; ref: string }>).flatMap((entry, index) => {
+      if (entry.kind === 'image') {
+        return [
+          {
+            zipPath: `media/asset-${index + 1}.png`,
+            posterZipPath: `media/asset-${index + 1}.poster.jpg`,
+            sourceRef: entry.ref,
+            elementId: entry.ref,
+            record: {
+              type: 'image',
+              blob: new Blob([PNG_BYTES], { type: 'image/png' }),
+              mimeType: 'image/png',
+              size: PNG_BYTES.length,
+              prompt: '',
+            },
+          },
+        ];
+      }
+      if (entry.kind === 'video') {
+        return [
+          {
+            zipPath: `media/asset-${index + 1}.mp4`,
+            posterZipPath: `media/asset-${index + 1}.poster.jpg`,
+            sourceRef: entry.ref,
+            elementId: entry.ref,
+            record: {
+              type: 'video',
+              blob: new Blob([VIDEO_BYTES], { type: 'video/mp4' }),
+              mimeType: 'video/mp4',
+              size: VIDEO_BYTES.length,
+              prompt: 'Secret video prompt',
+              poster: new Blob([PNG_BYTES], { type: 'image/png' }),
+            },
+          },
+        ];
+      }
+      return [];
+    }),
+  );
+  return { stage, scenes, AUDIO_BYTES, LEGACY_BYTES, VIDEO_BYTES };
 }
 
 beforeEach(() => {
@@ -666,118 +790,7 @@ describe('standalone HTML export content safety', () => {
   });
 
   it('embeds narration (stored and legacy) and video bytes when narration is included', async () => {
-    const AUDIO_BYTES = Uint8Array.from([0x49, 0x44, 0x33, 1, 2, 3, 4, 5]);
-    const LEGACY_BYTES = Uint8Array.from([0xff, 0xfb, 9, 8, 7]);
-    const VIDEO_BYTES = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 1, 2]);
-    const legacyUrl = 'https://cdn.example/narration/legacy.mp3';
-    const scenes = standaloneFixtureScenes(STAGE_ID).map((scene) =>
-      scene.type === 'slide'
-        ? ({
-            ...withSlideElements(
-              scene,
-              (elements) =>
-                [
-                  ...elements,
-                  {
-                    type: 'video',
-                    id: 'clip',
-                    left: 0,
-                    top: 0,
-                    width: 160,
-                    height: 90,
-                    rotate: 0,
-                    src: 'gen_vid_1',
-                    mediaRef: 'gen_vid_1',
-                    autoplay: false,
-                  },
-                ] as PPTElement[],
-            ),
-            actions: [
-              { id: 'sp', type: 'spotlight', elementId: 'leaf', dimOpacity: 0.6 },
-              { id: 's1', type: 'speech', text: 'Stored narration.', audioId: 'aud-1' },
-              { id: 'v1', type: 'play_video', elementId: 'clip' },
-              { id: 's2', type: 'speech', text: 'Legacy narration.', audioUrl: legacyUrl },
-              { id: 's3', type: 'speech', text: 'No audio at all.' },
-              { id: 's4', type: 'speech', text: 'Lost audio.', audioId: 'aud-missing' },
-            ],
-          } as Scene)
-        : scene,
-    );
-    const stage = setupSnapshot(scenes);
-    mocks.buildAssetManifest.mockResolvedValue({
-      entries: [
-        { kind: 'audio', ref: 'aud-1' },
-        { kind: 'audio', ref: 'aud-missing' },
-        { kind: 'image', ref: DEFAULT_FIXTURE_MEDIA.archivedImageRef },
-        { kind: 'video', ref: 'gen_vid_1' },
-      ],
-    });
-    mocks.collectAudioFiles.mockResolvedValue([
-      {
-        zipPath: 'audio/audio-1.mp3',
-        sourceRef: 'aud-1',
-        mimeType: 'audio/mpeg',
-        record: {
-          id: 'aud-1',
-          blob: new Blob([AUDIO_BYTES], { type: 'audio/mpeg' }),
-          format: 'mp3',
-        },
-      },
-    ]);
-    mocks.collectLegacyAudioForExport.mockResolvedValue({
-      audioUrlToPath: new Map([[legacyUrl, 'audio/legacy-1.mp3']]),
-      blobs: [
-        {
-          zipPath: 'audio/legacy-1.mp3',
-          blob: new Blob([LEGACY_BYTES], { type: 'audio/mpeg' }),
-          format: 'mp3',
-          mimeType: 'audio/mpeg',
-          sourceRef: legacyUrl,
-        },
-      ],
-      fullyRescuedAudioIds: new Set(),
-    });
-    mocks.collectMediaFiles.mockImplementation(async (_stageId, entries) =>
-      (entries as Array<{ kind: string; ref: string }>).flatMap((entry, index) => {
-        if (entry.kind === 'image') {
-          return [
-            {
-              zipPath: `media/asset-${index + 1}.png`,
-              posterZipPath: `media/asset-${index + 1}.poster.jpg`,
-              sourceRef: entry.ref,
-              elementId: entry.ref,
-              record: {
-                type: 'image',
-                blob: new Blob([PNG_BYTES], { type: 'image/png' }),
-                mimeType: 'image/png',
-                size: PNG_BYTES.length,
-                prompt: '',
-              },
-            },
-          ];
-        }
-        if (entry.kind === 'video') {
-          return [
-            {
-              zipPath: `media/asset-${index + 1}.mp4`,
-              posterZipPath: `media/asset-${index + 1}.poster.jpg`,
-              sourceRef: entry.ref,
-              elementId: entry.ref,
-              record: {
-                type: 'video',
-                blob: new Blob([VIDEO_BYTES], { type: 'video/mp4' }),
-                mimeType: 'video/mp4',
-                size: VIDEO_BYTES.length,
-                prompt: 'Secret video prompt',
-                poster: new Blob([PNG_BYTES], { type: 'image/png' }),
-              },
-            },
-          ];
-        }
-        return [];
-      }),
-    );
-
+    const { stage, scenes, AUDIO_BYTES, LEGACY_BYTES, VIDEO_BYTES } = setupNarratedClassroom();
     const result = await buildExport(stage, scenes, {
       strings,
       lang: 'en-US',
@@ -1380,6 +1393,36 @@ describe('assembleStandaloneHtml', () => {
     ).toThrow(/not base64/);
   });
 
+  it('references linked media by src and lets only media elements load it', () => {
+    const html = assembleStandaloneHtml({
+      ...base,
+      playerScript: '',
+      linkedMedia: [{ key: 'media/asset-1.mp4', mimeType: 'video/mp4', src: 'media/asset-1.mp4' }],
+    });
+    expect(embeddedJson<StandaloneMediaTable>(html, STANDALONE_MEDIA_TABLE_ELEMENT_ID)).toEqual({
+      'media/asset-1.mp4': { mimeType: 'video/mp4', src: 'media/asset-1.mp4' },
+    });
+    expect(html).not.toContain('application/octet-stream');
+    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_MEDIA_CSP}"`);
+    expect(html).not.toContain(`content="${STANDALONE_HTML_CSP}"`);
+    // Without linked media, the single file's policy is used.
+    expect(assembleStandaloneHtml({ ...base, playerScript: '' })).toContain(
+      `content="${STANDALONE_HTML_CSP}"`,
+    );
+  });
+
+  it('pins both policies: only media-src differs, and nothing may be fetched', () => {
+    expect(STANDALONE_HTML_CSP).toBe(
+      "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' data: blob:; " +
+        "style-src 'unsafe-inline' data:; img-src data: blob:; media-src data: blob:; " +
+        'font-src data:; frame-src data: blob:; worker-src data: blob:; ' +
+        "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+    );
+    expect(STANDALONE_HTML_LINKED_MEDIA_CSP).toBe(
+      STANDALONE_HTML_CSP.replace('media-src data: blob:', "media-src 'self' data: blob:"),
+    );
+  });
+
   it('serializes JSON without raw angle brackets, ampersands or line separators', () => {
     const value = { text: '</script><!--<script>&\u2028\u2029' };
     const serialized = serializeJsonForHtmlScript(value);
@@ -1400,5 +1443,175 @@ describe('classroomUrlFor', () => {
       'https://maic.example/classroom/stage%201%2F%23%3F',
     );
     expect(classroomUrlFor('https://maic.example//', 'a')).toBe('https://maic.example/classroom/a');
+  });
+});
+
+describe('standalone HTML ZIP variant', () => {
+  const ZIP_DATE = new Date(2026, 0, 2, 3, 4, 6);
+
+  async function narratedExport(options: Partial<StandaloneHtmlExportOptions>) {
+    const { stage, scenes, ...bytes } = setupNarratedClassroom();
+    const result = await buildStandaloneHtmlExport(stage, scenes, {
+      strings,
+      lang: 'en-US',
+      fetchAsset,
+      fetchImage,
+      includeNarration: true,
+      zipDate: ZIP_DATE,
+      ...options,
+    });
+    return { result, ...bytes };
+  }
+
+  const withoutExportTime = (html: string) => html.replace(/"exportedAt":"[^"]*"/g, '');
+
+  async function readZip(blob: Blob) {
+    const zip = await JSZip.loadAsync(await blob.arrayBuffer(), { checkCRC32: true });
+    const files = Object.keys(zip.files).sort();
+    const bytes = async (path: string) => new Uint8Array(await zip.file(path)!.async('uint8array'));
+    const text = async (path: string) => zip.file(path)!.async('string');
+    return { zip, files, bytes, text };
+  }
+
+  it('ships classroom.html, a README and each clip at its key, stored uncompressed', async () => {
+    const { result, AUDIO_BYTES, LEGACY_BYTES, VIDEO_BYTES } = await narratedExport({
+      format: 'zip',
+      zipReadme: 'Localized readme',
+    });
+    expect(result.format).toBe('zip');
+    expect(result.fileName).toBe('Photosynthesis_ _Light_ & _Life_.zip');
+    expect(result.blob.type).toBe('application/zip');
+    expect(result.byteSize).toBe(result.blob.size);
+    expect(result.missingAudioCount).toBe(1);
+    expect(result.singleFileBytes).toBeUndefined();
+
+    const { zip, files, bytes, text } = await readZip(result.blob);
+    expect(files).toEqual([
+      'README.txt',
+      'audio/audio-1.mp3',
+      'audio/legacy-1.mp3',
+      'classroom.html',
+      'media/asset-2.mp4',
+    ]);
+    // Stored entries, in the order a reader extracts them: the page first.
+    expect(Object.keys(zip.files)[0]).toBe('classroom.html');
+    for (const entry of Object.values(zip.files)) {
+      expect(
+        (entry as unknown as { _data: { compression: { magic: string } } })._data.compression.magic,
+      ).toBe('\x00\x00');
+      expect(entry.date.getFullYear()).toBe(2026);
+    }
+    expect(await bytes('audio/audio-1.mp3')).toEqual(AUDIO_BYTES);
+    expect(await bytes('audio/legacy-1.mp3')).toEqual(LEGACY_BYTES);
+    expect(await bytes('media/asset-2.mp4')).toEqual(VIDEO_BYTES);
+
+    const readme = await text('README.txt');
+    expect(readme.startsWith('﻿Localized readme\r\n\r\n')).toBe(true);
+    expect(readme).toContain(STANDALONE_ZIP_README_EN);
+
+    const html = await text('classroom.html');
+    expect(embeddedJson<StandaloneMediaTable>(html, STANDALONE_MEDIA_TABLE_ELEMENT_ID)).toEqual({
+      'audio/audio-1.mp3': { mimeType: 'audio/mpeg', src: 'audio/audio-1.mp3' },
+      'audio/legacy-1.mp3': { mimeType: 'audio/mpeg', src: 'audio/legacy-1.mp3' },
+      'media/asset-2.mp4': { mimeType: 'video/mp4', src: 'media/asset-2.mp4' },
+    });
+    expect(html).not.toContain('application/octet-stream');
+    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_MEDIA_CSP}"`);
+    expect(html).toContain("connect-src 'none'");
+    // The manifest is the one the single file carries.
+    const single = await narratedExport({ format: 'html' });
+    const singleHtml = await single.result.blob.text();
+    expect(withoutExportTime(html)).toContain(
+      withoutExportTime(
+        `<script type="application/json" id="${STANDALONE_MANIFEST_ELEMENT_ID}">${serializeJsonForHtmlScript(
+          embeddedJson(singleHtml, STANDALONE_MANIFEST_ELEMENT_ID),
+        )}</script>`,
+      ),
+    );
+    expect(html).not.toContain('cdn.example');
+  });
+
+  it('auto keeps the single file, byte for byte, while it fits the ceiling', async () => {
+    const auto = await narratedExport({ format: 'auto' });
+    const html = await narratedExport({});
+    expect(auto.result.format).toBe('html');
+    expect(auto.result.fileName).toBe('Photosynthesis_ _Light_ & _Life_.html');
+    expect(withoutExportTime(await auto.result.blob.text())).toBe(
+      withoutExportTime(await html.result.blob.text()),
+    );
+    expect(auto.result.singleFileBytes).toBeUndefined();
+  });
+
+  it('auto builds the ZIP, without encoding any media, when the estimate passes the ceiling', async () => {
+    const read = vi.spyOn(Blob.prototype, 'arrayBuffer');
+    // Media payloads are typed; the CRC pass reads untyped slices of them.
+    const payloadReads = () =>
+      read.mock.contexts.filter((blob) => /^(audio|video)\//.test((blob as Blob).type)).length;
+    try {
+      await narratedExport({ format: 'html' });
+      expect(payloadReads()).toBe(3); // base64-encoded for the single file
+      read.mockClear();
+
+      await expect(narratedExport({ format: 'html', maxBytes: 64 })).rejects.toBeInstanceOf(
+        StandaloneHtmlTooLargeError,
+      );
+      read.mockClear();
+      const { result } = await narratedExport({ format: 'auto', maxBytes: 64 });
+      expect(result.format).toBe('zip');
+      expect(result.singleFileBytes).toBeGreaterThan(64);
+      expect(payloadReads()).toBe(0);
+      const { files } = await readZip(result.blob);
+      expect(files).toContain('classroom.html');
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('auto builds the ZIP when only the assembled document passes the ceiling', async () => {
+    const oversizedPlayer = 'x'.repeat(2 * 1024 * 1024);
+    const { result } = await narratedExport({
+      format: 'auto',
+      maxBytes: 1.5 * 1024 * 1024,
+      fetchAsset: async (assetPath: string) =>
+        assetPath === STANDALONE_PLAYER_ASSETS.script ? oversizedPlayer : fetchAsset(assetPath),
+    });
+    expect(result.format).toBe('zip');
+    expect(result.singleFileBytes).toBeGreaterThan(2 * 1024 * 1024);
+  });
+
+  it('builds a ZIP with no media table for a classroom without playback media', async () => {
+    const { result } = await (async () => {
+      const scenes = standaloneFixtureScenes(STAGE_ID);
+      const stage = setupSnapshot(scenes);
+      return {
+        result: await buildStandaloneHtmlExport(stage, scenes, {
+          strings,
+          lang: 'en-US',
+          fetchAsset,
+          fetchImage,
+          format: 'zip',
+        }),
+      };
+    })();
+    const { files, text } = await readZip(result.blob);
+    expect(files).toEqual(['README.txt', 'classroom.html']);
+    const html = await text('classroom.html');
+    expect(html).not.toContain(STANDALONE_MEDIA_TABLE_ELEMENT_ID);
+    expect(html).toContain(`content="${STANDALONE_HTML_CSP}"`);
+  });
+
+  it('encodes each path segment of a linked source', () => {
+    expect(linkedMediaSrc('media/asset-1.mp4')).toBe('media/asset-1.mp4');
+    expect(linkedMediaSrc('media/a b#?.mp4')).toBe('media/a%20b%23%3F.mp4');
+  });
+
+  it('writes the README in the UI locale, then English, once', () => {
+    expect(standaloneZipReadme()).toBe(`﻿${STANDALONE_ZIP_README_EN}\r\n`);
+    expect(standaloneZipReadme(STANDALONE_ZIP_README_EN)).toBe(standaloneZipReadme());
+    expect(standaloneZipReadme('先解压')).toBe(`﻿先解压\r\n\r\n${STANDALONE_ZIP_README_EN}\r\n`);
+    const en = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'lib/i18n/locales/en-US.json'), 'utf8'),
+    ) as { export: { htmlZipReadme: string } };
+    expect(en.export.htmlZipReadme).toBe(STANDALONE_ZIP_README_EN);
   });
 });

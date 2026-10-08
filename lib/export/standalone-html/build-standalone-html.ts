@@ -1,6 +1,8 @@
 /**
  * Standalone HTML export: one `.html` file that plays the whole classroom
- * offline (slides, interactive scenes, quizzes, PBL briefings).
+ * offline (slides, interactive scenes, quizzes, PBL briefings). A classroom
+ * too large for one file is exported as a ZIP instead: `classroom.html` plus
+ * the narration and video files it plays by relative path.
  *
  * The data is the classroom ZIP's export snapshot (one serializer for both
  * formats); this layer resolves the referenced media to `data:` URIs, fetches
@@ -24,8 +26,10 @@ import {
   assembleStandaloneHtmlParts,
   serializeJsonForHtmlScript,
   type StandaloneEmbeddedMedia,
+  type StandaloneHtmlInput,
 } from './assemble';
 import { STANDALONE_HTML_MAX_BYTES, StandaloneHtmlTooLargeError } from './limits';
+import { buildStoredZip, isSafeArchivePath, STORED_ZIP_MAX_BYTES } from './stored-zip';
 import {
   STANDALONE_PLAYER_ASSETS,
   type StandalonePlayerConfig,
@@ -38,6 +42,18 @@ import {
 } from './prepare-manifest';
 
 export const STANDALONE_HTML_EXTENSION = '.html';
+export const STANDALONE_ZIP_EXTENSION = '.zip';
+
+/** The page inside the ZIP variant; its media sits next to it under the payload keys. */
+export const STANDALONE_ZIP_PAGE_NAME = 'classroom.html';
+export const STANDALONE_ZIP_README_NAME = 'README.txt';
+
+/**
+ * English instructions shipped in every ZIP's README (after the UI locale's
+ * own, when that is not English). Mirrors `export.htmlZipReadme` in en-US.
+ */
+export const STANDALONE_ZIP_README_EN =
+  'Extract this whole ZIP file first, then open classroom.html in a web browser. Keep the audio and media folders next to classroom.html: the page plays its narration and video from them. Opened from inside the ZIP without extracting, the page cannot find them and plays without sound or video.';
 
 const IMAGE_EXTENSION_MIME: Record<string, string> = {
   avif: 'image/avif',
@@ -343,12 +359,30 @@ export interface StandaloneHtmlExportOptions extends StandaloneMediaDeps {
   documentDeps?: DocumentMigrationDeps;
   /** Loads a precompiled player asset by its public path. */
   fetchAsset?: (path: string) => Promise<string>;
-  /** Size ceiling of the file; defaults to {@link STANDALONE_HTML_MAX_BYTES}. */
+  /** Size ceiling of the single file; defaults to {@link STANDALONE_HTML_MAX_BYTES}. */
   maxBytes?: number;
+  /**
+   * - `html` (default): one self-contained file; throws
+   *   {@link StandaloneHtmlTooLargeError} above `maxBytes`.
+   * - `zip`: a ZIP of `classroom.html` and the media files it plays by
+   *   relative path.
+   * - `auto`: the single file, or the ZIP when the single file would exceed
+   *   `maxBytes`.
+   */
+  format?: 'html' | 'zip' | 'auto';
+  /**
+   * README text of the ZIP variant in the UI locale; the English text
+   * ({@link STANDALONE_ZIP_README_EN}) always follows it.
+   */
+  zipReadme?: string;
+  /** Timestamp of the ZIP entries; defaults to now. */
+  zipDate?: Date;
 }
 
 export interface StandaloneHtmlExport {
-  /** The document, assembled from parts (no single giant string). */
+  /** Which format was built (`zip` also when `auto` fell back to it). */
+  format: 'html' | 'zip';
+  /** The document, or the ZIP; assembled from parts (no single giant string). */
   blob: Blob;
   fileName: string;
   inlineFailures: InlineReport['failed'];
@@ -358,6 +392,11 @@ export interface StandaloneHtmlExport {
   missingAudioCount: number;
   /** Size of the file in bytes. */
   byteSize: number;
+  /**
+   * When `auto` built the ZIP: the size the single file would have had
+   * (estimated, or exact when only the assembled document passed the ceiling).
+   */
+  singleFileBytes?: number;
 }
 
 /**
@@ -406,15 +445,13 @@ export async function buildStandaloneHtmlExport(
     media,
   );
   const payloads = collectStandalonePlaybackPayloads(snapshot, playbackMedia, media);
-  const estimatedBytes = estimateStandaloneHtmlBytes(manifest, payloads);
   const maxBytes = options.maxBytes ?? STANDALONE_HTML_MAX_BYTES;
-  if (estimatedBytes > maxBytes) {
-    throw new StandaloneHtmlTooLargeError(estimatedBytes);
-  }
-  // One clip at a time, so only one clip's base64 is being produced at once.
-  const embeddedMedia: StandaloneEmbeddedMedia[] = [];
-  for (const { key, mimeType, blob } of payloads) {
-    embeddedMedia.push({ key, mimeType, base64: await blobToBase64Parts(blob) });
+  const requested = options.format ?? 'html';
+  const estimatedBytes = estimateStandaloneHtmlBytes(manifest, payloads);
+  let singleFileBytes: number | undefined;
+  if (requested !== 'zip' && estimatedBytes > maxBytes) {
+    if (requested === 'html') throw new StandaloneHtmlTooLargeError(estimatedBytes);
+    singleFileBytes = estimatedBytes;
   }
 
   const [playerScript, playerStyle, mathFonts, chartsScript] = await Promise.all([
@@ -423,34 +460,117 @@ export async function buildStandaloneHtmlExport(
     needsMathFonts(manifest) ? fetchAsset(STANDALONE_PLAYER_ASSETS.mathFonts) : undefined,
     needsCharts(manifest) ? fetchAsset(STANDALONE_PLAYER_ASSETS.charts) : undefined,
   ]);
-
   const config: StandalonePlayerConfig = {
     strings: options.strings,
     ...(options.classroomUrl ? { classroomUrl: options.classroomUrl } : {}),
   };
-  const blob = new Blob(
-    assembleStandaloneHtmlParts({
-      manifest,
-      config,
-      playerScript,
-      playerStyle,
-      extraStyles: mathFonts ? [mathFonts] : [],
-      extraScripts: chartsScript ? [chartsScript] : [],
-      embeddedMedia,
-      lang: options.lang,
-    }),
-    { type: 'text/html;charset=utf-8' },
-  );
-
-  // The estimate is a guard, not a measurement: the ceiling holds exactly.
-  if (blob.size > maxBytes) throw new StandaloneHtmlTooLargeError(blob.size);
-
-  return {
-    blob,
-    fileName: `${classroomExportBaseName(snapshot.stageName)}${STANDALONE_HTML_EXTENSION}`,
+  const page: Omit<StandaloneHtmlInput, 'embeddedMedia' | 'linkedMedia'> = {
+    manifest,
+    config,
+    playerScript,
+    playerStyle,
+    extraStyles: mathFonts ? [mathFonts] : [],
+    extraScripts: chartsScript ? [chartsScript] : [],
+    lang: options.lang,
+  };
+  const baseName = classroomExportBaseName(snapshot.stageName);
+  const report = {
     inlineFailures: snapshot.inlineFailures,
     unresolvedMedia: unresolved,
     missingAudioCount: snapshot.missingAudioCount,
-    byteSize: blob.size,
   };
+
+  if (requested !== 'zip' && singleFileBytes === undefined) {
+    // One clip at a time, so only one clip's base64 is being produced at once.
+    const embeddedMedia: StandaloneEmbeddedMedia[] = [];
+    for (const { key, mimeType, blob } of payloads) {
+      embeddedMedia.push({ key, mimeType, base64: await blobToBase64Parts(blob) });
+    }
+    const blob = new Blob(assembleStandaloneHtmlParts({ ...page, embeddedMedia }), {
+      type: 'text/html;charset=utf-8',
+    });
+    // The estimate is a guard, not a measurement: the ceiling holds exactly.
+    if (blob.size <= maxBytes) {
+      return {
+        format: 'html',
+        blob,
+        fileName: `${baseName}${STANDALONE_HTML_EXTENSION}`,
+        ...report,
+        byteSize: blob.size,
+      };
+    }
+    if (requested === 'html') throw new StandaloneHtmlTooLargeError(blob.size);
+    singleFileBytes = blob.size;
+  }
+
+  const blob = await buildStandaloneZip(page, payloads, options);
+  return {
+    format: 'zip',
+    blob,
+    fileName: `${baseName}${STANDALONE_ZIP_EXTENSION}`,
+    ...report,
+    byteSize: blob.size,
+    ...(singleFileBytes !== undefined ? { singleFileBytes } : {}),
+  };
+}
+
+/** Relative URL of a payload key (an archive path such as `media/clip.mp4`). */
+export function linkedMediaSrc(key: string): string {
+  return key.split('/').map(encodeURIComponent).join('/');
+}
+
+/** README of the ZIP variant: the UI locale's text, then the English one. */
+export function standaloneZipReadme(localized?: string): string {
+  const texts = [localized?.trim(), STANDALONE_ZIP_README_EN].filter(
+    (text, index, all): text is string => !!text && all.indexOf(text) === index,
+  );
+  // A BOM and CRLF line ends, so every text editor (Windows Notepad included)
+  // shows the text as UTF-8 with its paragraphs.
+  return `\uFEFF${texts.join('\r\n\r\n')}\r\n`;
+}
+
+/**
+ * The ZIP variant: `classroom.html` (the player and manifest, media
+ * referenced by relative path), each payload at its key, and a README. The
+ * media is stored as is, and the archive Blob references the payload Blobs,
+ * so building it copies no media.
+ */
+export async function buildStandaloneZip(
+  page: Omit<StandaloneHtmlInput, 'embeddedMedia' | 'linkedMedia'>,
+  payloads: readonly StandalonePlaybackPayload[],
+  options: Pick<StandaloneHtmlExportOptions, 'zipReadme' | 'zipDate'>,
+): Promise<Blob> {
+  const reserved = new Set([STANDALONE_ZIP_PAGE_NAME, STANDALONE_ZIP_README_NAME]);
+  for (const { key } of payloads) {
+    if (!isSafeArchivePath(key) || reserved.has(key)) {
+      throw new Error(`Standalone ZIP: unusable media path ${JSON.stringify(key)}`);
+    }
+  }
+  const html = new Blob(
+    assembleStandaloneHtmlParts({
+      ...page,
+      linkedMedia: payloads.map(({ key, mimeType }) => ({
+        key,
+        mimeType,
+        src: linkedMediaSrc(key),
+      })),
+    }),
+    { type: 'text/html;charset=utf-8' },
+  );
+  const readme = standaloneZipReadme(options.zipReadme);
+  // Checked before any CRC is computed. Headers add well under 1 KB per entry.
+  const contentBytes =
+    html.size +
+    new Blob([readme]).size +
+    payloads.reduce((sum, { blob }) => sum + blob.size, 0) +
+    (payloads.length + 2) * 1024;
+  if (contentBytes > STORED_ZIP_MAX_BYTES) throw new StandaloneHtmlTooLargeError(contentBytes);
+  return buildStoredZip(
+    [
+      { path: STANDALONE_ZIP_PAGE_NAME, data: html },
+      { path: STANDALONE_ZIP_README_NAME, data: readme },
+      ...payloads.map(({ key, blob }) => ({ path: key, data: blob })),
+    ],
+    { date: options.zipDate },
+  );
 }

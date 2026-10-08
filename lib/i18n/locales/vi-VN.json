@@ -79,7 +79,10 @@
     "htmlSilent": "Không có lời dẫn",
     "htmlSilentDesc": "Tệp nhỏ hơn: phụ đề theo tốc độ đọc; không kèm video",
     "htmlLarge": "Tệp đã xuất có dung lượng {{size}} MB và có thể mở chậm. Hãy xuất không có lời dẫn để có tệp nhỏ hơn.",
-    "htmlTooLarge": "Lớp học này sẽ tạo tệp khoảng {{size}} MB, quá lớn cho một tệp HTML. Hãy xuất không có lời dẫn.",
+    "htmlTooLarge": "Lớp học này sẽ tạo bản xuất khoảng {{size}} MB, quá lớn để lưu ngay cả dưới dạng ZIP. Hãy xuất không có lời dẫn.",
+    "htmlZipFallback": "Lớp học này quá lớn cho một tệp HTML (khoảng {{size}} MB) nên đã được lưu dưới dạng ZIP: classroom.html cùng các thư mục phương tiện.",
+    "htmlZipFallbackDesc": "Hãy giải nén toàn bộ tệp ZIP rồi mở classroom.html.",
+    "htmlZipReadme": "Trước tiên hãy giải nén toàn bộ tệp ZIP này, sau đó mở classroom.html trong trình duyệt web. Giữ các thư mục audio và media cạnh classroom.html: trang phát lời dẫn và video từ các thư mục đó. Nếu mở trực tiếp trong ZIP mà không giải nén, trang sẽ không tìm thấy chúng và phát không có âm thanh hay video.",
     "htmlPlayer": {
       "previous": "Trước",
       "next": "Tiếp",

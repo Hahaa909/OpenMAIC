@@ -19,22 +19,29 @@
 export const STANDALONE_HTML_SIZE_WARNING_BYTES = 100 * 1024 * 1024;
 
 /**
- * Estimated size above which the single-file export is refused. The document
- * is assembled as Blob parts, so no single string limit applies; what remains
- * is the exporting tab holding the media and its base64 at once, and the
- * largest file verified to open (400 MB, see above).
+ * Size above which the classroom is not exported as a single file. The
+ * document is assembled as Blob parts, so no single string limit applies;
+ * what remains is the exporting tab holding the media and its base64 at once,
+ * and the largest file verified to open (400 MB, see above).
+ *
+ * It is also the point where the export switches, on its own, to the ZIP
+ * variant (`classroom.html` plus its media folder): a single file is the
+ * better format wherever it works (nothing to extract, opens from mail and
+ * chat previews, works on phones), so the ZIP is used only once a single file
+ * would not be reliable. The ZIP needs no base64 and copies no media, so it
+ * has no ceiling of its own below the ZIP format's 4 GiB.
  */
 export const STANDALONE_HTML_MAX_BYTES = 400 * 1024 * 1024;
 
 /**
- * The single-file export would exceed {@link STANDALONE_HTML_MAX_BYTES}. Thrown
- * before any media is encoded, so a caller can offer another format (such as
- * a page plus a media folder) instead.
+ * The export would exceed what its format can hold: the single file above
+ * {@link STANDALONE_HTML_MAX_BYTES} (thrown before any media is encoded, so a
+ * caller can build the ZIP variant instead), or the ZIP above 4 GiB.
  */
 export class StandaloneHtmlTooLargeError extends Error {
   readonly name = 'StandaloneHtmlTooLargeError';
 
   constructor(readonly estimatedBytes: number) {
-    super(`Standalone HTML export would be about ${Math.round(estimatedBytes / 1048576)} MB`);
+    super(`Standalone export would be about ${Math.round(estimatedBytes / 1048576)} MB`);
   }
 }

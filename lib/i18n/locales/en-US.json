@@ -79,7 +79,10 @@
     "htmlSilent": "Without narration",
     "htmlSilentDesc": "Smaller file: captions with reading-time pacing; videos aren't included",
     "htmlLarge": "The exported file is {{size}} MB and may open slowly. Export without narration for a smaller file.",
-    "htmlTooLarge": "This classroom would make a {{size}} MB file, too large for a single HTML file. Export without narration instead.",
+    "htmlTooLarge": "This classroom would make a {{size}} MB export, too large to save even as a ZIP. Export without narration instead.",
+    "htmlZipFallback": "This classroom is too large for a single HTML file (about {{size}} MB), so it was saved as a ZIP: classroom.html plus its media folders.",
+    "htmlZipFallbackDesc": "Extract the whole ZIP, then open classroom.html.",
+    "htmlZipReadme": "Extract this whole ZIP file first, then open classroom.html in a web browser. Keep the audio and media folders next to classroom.html: the page plays its narration and video from them. Opened from inside the ZIP without extracting, the page cannot find them and plays without sound or video.",
     "htmlPlayer": {
       "previous": "Previous",
       "next": "Next",

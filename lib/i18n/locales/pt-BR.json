@@ -79,7 +79,10 @@
     "htmlSilent": "Sem narração",
     "htmlSilentDesc": "Arquivo menor: legendas no ritmo de leitura; vídeos não incluídos",
     "htmlLarge": "O arquivo exportado tem {{size}} MB e pode demorar para abrir. Exporte sem narração para um arquivo menor.",
-    "htmlTooLarge": "Esta aula geraria um arquivo de {{size}} MB, grande demais para um único arquivo HTML. Exporte sem narração.",
+    "htmlTooLarge": "Esta aula geraria uma exportação de {{size}} MB, grande demais para salvar mesmo como ZIP. Exporte sem narração.",
+    "htmlZipFallback": "Esta aula é grande demais para um único arquivo HTML (cerca de {{size}} MB), então foi salva como ZIP: classroom.html e suas pastas de mídia.",
+    "htmlZipFallbackDesc": "Extraia o ZIP inteiro e depois abra classroom.html.",
+    "htmlZipReadme": "Primeiro extraia este arquivo ZIP inteiro e depois abra classroom.html em um navegador. Mantenha as pastas audio e media ao lado de classroom.html: a página reproduz a narração e os vídeos a partir delas. Aberta de dentro do ZIP sem extrair, a página não as encontra e é reproduzida sem som nem vídeo.",
     "htmlPlayer": {
       "previous": "Anterior",
       "next": "Próximo",

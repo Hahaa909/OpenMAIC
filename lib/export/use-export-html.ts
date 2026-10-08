@@ -34,6 +34,9 @@ function formatMegabytes(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1);
 }
 
+/** How long the ZIP fallback notice stays up; it carries instructions. */
+const ZIP_FALLBACK_TOAST_MS = 12_000;
+
 export interface ExportHtmlOptions {
   /** Embed narration audio and video clips (see `buildStandaloneHtmlExport`). */
   includeNarration: boolean;
@@ -63,23 +66,48 @@ export function useExportHtml() {
         // link back to it on this deployment.
         const classroomUrl = classroomUrlFor(window.location.origin, stage.id);
 
-        const { blob, fileName, inlineFailures, unresolvedMedia, missingAudioCount, byteSize } =
-          await buildStandaloneHtmlExport(stage, scenes, {
-            strings,
-            lang: locale,
-            classroomUrl,
-            includeNarration,
-          });
+        const {
+          format,
+          blob,
+          fileName,
+          inlineFailures,
+          unresolvedMedia,
+          missingAudioCount,
+          byteSize,
+          singleFileBytes,
+        } = await buildStandaloneHtmlExport(stage, scenes, {
+          strings,
+          lang: locale,
+          classroomUrl,
+          includeNarration,
+          // Too large for one file: the page plus its media folders, zipped.
+          format: 'auto',
+          zipReadme: t('export.htmlZipReadme'),
+        });
 
         saveAs(blob, fileName);
 
         const partialCount = inlineFailures.length + unresolvedMedia.length + missingAudioCount;
-        if (byteSize > STANDALONE_HTML_SIZE_WARNING_BYTES) {
+        const partial =
+          partialCount > 0 ? t('export.inlinePartial', { count: partialCount }) : undefined;
+        if (format === 'zip') {
+          // The ZIP only plays once extracted, which nobody expects from an
+          // "HTML" export: say why it is a ZIP and what to do with it, and
+          // leave the toast up long enough to read.
+          log.warn('Standalone HTML export saved as a ZIP:', { singleFileBytes, byteSize });
+          toast.warning(
+            t('export.htmlZipFallback', { size: formatMegabytes(singleFileBytes ?? byteSize) }),
+            {
+              id: toastId,
+              description: [t('export.htmlZipFallbackDesc'), partial].filter(Boolean).join(' '),
+              duration: ZIP_FALLBACK_TOAST_MS,
+            },
+          );
+        } else if (byteSize > STANDALONE_HTML_SIZE_WARNING_BYTES) {
           log.warn('Standalone HTML export is large:', { byteSize });
           toast.warning(t('export.htmlLarge', { size: formatMegabytes(byteSize) }), {
             id: toastId,
-            description:
-              partialCount > 0 ? t('export.inlinePartial', { count: partialCount }) : undefined,
+            description: partial,
           });
         } else if (partialCount > 0) {
           log.warn('Some referenced assets could not be embedded:', {
@@ -93,8 +121,7 @@ export function useExportHtml() {
         }
       } catch (error) {
         if (error instanceof StandaloneHtmlTooLargeError) {
-          // Too large to build or open reliably as one file; a page plus a
-          // media folder is the alternative for this case.
+          // Too large even for the ZIP (4 GiB).
           log.warn('Standalone HTML export refused as too large:', error.estimatedBytes);
           toast.error(t('export.htmlTooLarge', { size: formatMegabytes(error.estimatedBytes) }), {
             id: toastId,
