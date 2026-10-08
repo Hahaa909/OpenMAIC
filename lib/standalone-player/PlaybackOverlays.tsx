@@ -2,17 +2,26 @@ import { ExternalLink, MessagesSquare, Play, X } from 'lucide-react';
 import type { StandalonePlayerStrings } from '@/lib/export/standalone-html/contract';
 import { safeClassroomUrl } from './scenes/PblScene';
 
-/** The current speech line, over the bottom of the scene. */
+/**
+ * The current speech line. Over the bottom of the scene on wide screens; on
+ * narrow ones a strip of its own below the scene (space kept while captions
+ * are on, so the scene does not resize with every line).
+ */
 export function CaptionBar({ text }: { text: string }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-6">
-      <p
-        className="max-w-3xl rounded-lg bg-slate-900/80 px-4 py-2 text-center text-[15px] leading-relaxed text-white shadow-lg"
-        data-testid="caption"
-        aria-live="polite"
-      >
-        {text}
-      </p>
+    <div
+      className="pointer-events-none z-20 flex min-h-[4.25rem] shrink-0 items-center justify-center bg-slate-900 px-3 py-1.5 sm:absolute sm:inset-x-0 sm:bottom-3 sm:min-h-0 sm:bg-transparent sm:px-6 sm:py-0"
+      data-testid="caption-bar"
+    >
+      {text && (
+        <p
+          className="max-h-24 max-w-3xl overflow-y-auto text-center text-[13px] leading-snug text-white sm:max-h-none sm:overflow-visible sm:rounded-lg sm:bg-slate-900/80 sm:px-4 sm:py-2 sm:text-[15px] sm:leading-relaxed sm:shadow-lg"
+          data-testid="caption"
+          aria-live="polite"
+        >
+          {text}
+        </p>
+      )}
     </div>
   );
 }

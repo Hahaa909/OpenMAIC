@@ -170,5 +170,30 @@ describe('standalone player linked media', () => {
       probes()[0].dispatchEvent(new Event('loadedmetadata'));
     });
     expect(notice()).toBeNull();
+
+describe('standalone player static fallback', () => {
+  it('replaces the root content the file ships with when the player mounts', () => {
+    host = document.createElement('div');
+    host.innerHTML = '<p class="openmaic-fallback">needs JavaScript</p>';
+    document.body.append(host);
+    expect(host.querySelector('.openmaic-fallback')).not.toBeNull();
+    root = createRoot(host);
+    act(() => root.render(createElement(App, { data })));
+    expect(host.querySelector('.openmaic-fallback')).toBeNull();
+    expect(host.querySelector('[data-testid=scene]')).not.toBeNull();
+  });
+});
+
+describe('standalone player captions', () => {
+  it('sits in its own strip on narrow screens and overlays the scene from sm up', () => {
+    render();
+    const bar = host.querySelector('[data-testid=caption-bar]') as HTMLElement;
+    expect(bar).not.toBeNull();
+    const classes = bar.className.split(/\s+/);
+    // Never absolutely positioned below the sm breakpoint.
+    expect(classes).not.toContain('absolute');
+    expect(classes).toContain('sm:absolute');
+    // A sibling of the scene, not inside it.
+    expect(host.querySelector('[data-testid=scene]')!.contains(bar)).toBe(false);
   });
 });
