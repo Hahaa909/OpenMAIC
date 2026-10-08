@@ -116,7 +116,8 @@
       "captions": "字幕",
       "discussionTitle": "討論",
       "discussionContinueOnline": "在線上課堂中參與討論",
-      "discussionDismiss": "關閉"
+      "discussionDismiss": "關閉",
+      "mediaFolderMissing": "缺少旁白和影片檔案，課堂將在沒有它們的情況下播放。請完整解壓縮 ZIP 檔案，然後從解壓縮後的資料夾中開啟 classroom.html。"
     },
     "scriptMd": "下載演講稿 (.md)",
     "scriptMdDesc": "以 Markdown 匯出語音播報文字",

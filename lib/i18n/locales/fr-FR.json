@@ -116,7 +116,8 @@
       "captions": "Sous-titres",
       "discussionTitle": "Discussion",
       "discussionContinueOnline": "En discuter dans la classe en ligne",
-      "discussionDismiss": "Fermer"
+      "discussionDismiss": "Fermer",
+      "mediaFolderMissing": "Les fichiers de narration et de vidéo sont introuvables : le cours se lit sans eux. Extrayez tout le fichier ZIP, puis ouvrez classroom.html depuis le dossier extrait."
     },
     "scriptMd": "Télécharger le script (.md)",
     "scriptMdDesc": "Texte de narration en Markdown",

@@ -112,6 +112,7 @@ export const STANDALONE_PLAYER_STRING_KEYS = [
   'discussionTitle',
   'discussionContinueOnline',
   'discussionDismiss',
+  'mediaFolderMissing',
 ] as const;
 
 export type StandalonePlayerStringKey = (typeof STANDALONE_PLAYER_STRING_KEYS)[number];

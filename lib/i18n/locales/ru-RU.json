@@ -116,7 +116,8 @@
       "captions": "Субтитры",
       "discussionTitle": "Обсуждение",
       "discussionContinueOnline": "Обсудить в онлайн-классе",
-      "discussionDismiss": "Закрыть"
+      "discussionDismiss": "Закрыть",
+      "mediaFolderMissing": "Файлы озвучки и видео не найдены, поэтому урок воспроизводится без них. Распакуйте весь ZIP-файл и откройте classroom.html из распакованной папки."
     },
     "scriptMd": "Скачать сценарий (.md)",
     "scriptMdDesc": "Текст озвучки в Markdown",

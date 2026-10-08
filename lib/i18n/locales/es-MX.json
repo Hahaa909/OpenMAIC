@@ -116,7 +116,8 @@
       "captions": "Subtítulos",
       "discussionTitle": "Debate",
       "discussionContinueOnline": "Debatirlo en el aula en línea",
-      "discussionDismiss": "Cerrar"
+      "discussionDismiss": "Cerrar",
+      "mediaFolderMissing": "Faltan los archivos de narración y video, así que la clase se reproduce sin ellos. Extrae todo el archivo ZIP y abre classroom.html desde la carpeta extraída."
     },
     "scriptMd": "Descargar guion (.md)",
     "scriptMdDesc": "Texto de narración como Markdown",

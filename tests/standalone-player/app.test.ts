@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@/lib/standalone-player/App';
 import type { PlayerData } from '@/lib/standalone-player/read-data';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
@@ -118,5 +118,57 @@ describe('standalone player Space key', () => {
     expect(host.querySelector('[data-testid=play-toggle]')?.getAttribute('data-mode')).toBe(
       'playing',
     );
+  });
+});
+
+describe('standalone player linked media', () => {
+  let table: HTMLScriptElement | undefined;
+  afterEach(() => {
+    table?.remove();
+    table = undefined;
+    vi.restoreAllMocks();
+  });
+
+  function withLinkedMedia() {
+    table = document.createElement('script');
+    table.type = 'application/json';
+    table.id = 'openmaic-media';
+    table.textContent = JSON.stringify({
+      'audio/audio-1.mp3': { mimeType: 'audio/mpeg', src: 'audio/audio-1.mp3' },
+    });
+    document.body.append(table);
+    const created: HTMLMediaElement[] = [];
+    const createElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      const element = createElement(tag);
+      if (element instanceof HTMLMediaElement) created.push(element);
+      return element;
+    }) as typeof document.createElement);
+    // The probe, as opposed to the (idle) narration element.
+    return () => created.filter((element) => element.getAttribute('src') === 'audio/audio-1.mp3');
+  }
+  const notice = () => host.querySelector('[data-testid=media-missing]');
+
+  it('says the media folder is missing when the probe cannot load a file', () => {
+    const probes = withLinkedMedia();
+    render();
+    expect(notice()).toBeNull();
+    expect(probes()).toHaveLength(1);
+    act(() => {
+      probes()[0].dispatchEvent(new Event('error'));
+    });
+    expect(notice()?.textContent).toBe('[mediaFolderMissing]');
+    expect(notice()?.getAttribute('role')).toBe('alert');
+    // The classroom stays usable: the start overlay is still offered.
+    expect(overlay()).not.toBeNull();
+  });
+
+  it('shows nothing when the files load', () => {
+    const probes = withLinkedMedia();
+    render();
+    act(() => {
+      probes()[0].dispatchEvent(new Event('loadedmetadata'));
+    });
+    expect(notice()).toBeNull();
   });
 });

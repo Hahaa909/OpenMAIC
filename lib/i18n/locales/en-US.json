@@ -116,7 +116,8 @@
       "captions": "Captions",
       "discussionTitle": "Discussion",
       "discussionContinueOnline": "Discuss this in the online classroom",
-      "discussionDismiss": "Close"
+      "discussionDismiss": "Close",
+      "mediaFolderMissing": "Narration and video files are missing, so the classroom plays without them. Extract the whole ZIP file, then open classroom.html from the extracted folder."
     },
     "scriptMd": "Download Script (.md)",
     "scriptMdDesc": "Narration text as Markdown",

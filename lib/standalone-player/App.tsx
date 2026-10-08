@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  CircleAlert,
   ChevronLeft,
   ChevronRight,
   Captions,
@@ -268,6 +269,17 @@ export function App({ data }: { data: PlayerData }) {
           {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
         </button>
       </header>
+
+      {playback.linkedMediaMissing && (
+        <div
+          className="flex shrink-0 items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900"
+          role="alert"
+          data-testid="media-missing"
+        >
+          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p>{strings.mediaFolderMissing}</p>
+        </div>
+      )}
 
       <div className="relative flex min-h-0 flex-1">
         <main

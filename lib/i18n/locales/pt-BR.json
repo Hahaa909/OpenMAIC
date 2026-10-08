@@ -116,7 +116,8 @@
       "captions": "Legendas",
       "discussionTitle": "Discussão",
       "discussionContinueOnline": "Discutir na sala de aula online",
-      "discussionDismiss": "Fechar"
+      "discussionDismiss": "Fechar",
+      "mediaFolderMissing": "Os arquivos de narração e vídeo estão faltando, então a aula é reproduzida sem eles. Extraia o arquivo ZIP inteiro e abra classroom.html a partir da pasta extraída."
     },
     "scriptMd": "Baixar roteiro (.md)",
     "scriptMdDesc": "Texto da narração como Markdown",

@@ -113,7 +113,8 @@
       "captions": "الترجمة",
       "discussionTitle": "نقاش",
       "discussionContinueOnline": "ناقش ذلك في الفصل عبر الإنترنت",
-      "discussionDismiss": "إغلاق"
+      "discussionDismiss": "إغلاق",
+      "mediaFolderMissing": "ملفات التعليق الصوتي والفيديو مفقودة، لذا يُشغَّل الدرس من دونها. فك ضغط ملف ZIP بالكامل، ثم افتح classroom.html من المجلد الذي فُك ضغطه."
     },
     "scriptMd": "تنزيل النص (.md)",
     "scriptMdDesc": "نص السرد بتنسيق Markdown",

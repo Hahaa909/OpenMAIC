@@ -87,7 +87,10 @@ export class NarrationPlayer {
       const onEnded = () => finish(true);
       // A clip that fails before it starts is paced by the reading timer; one
       // that fails midway simply ends.
-      const onError = () => finish(started);
+      const onError = () => {
+        this.media.reportError(ref);
+        finish(started);
+      };
       const onAbort = () => {
         audio.pause();
         finish(true);

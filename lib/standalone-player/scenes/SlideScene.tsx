@@ -30,10 +30,12 @@ function EmbeddedVideo({
   element,
   src,
   videos,
+  onError,
 }: {
   element: PPTVideoElement;
   src: string;
   videos: VideoRegistry;
+  onError: () => void;
 }) {
   return (
     <video
@@ -46,6 +48,7 @@ function EmbeddedVideo({
       controls
       playsInline
       preload="auto"
+      onError={onError}
       className="h-full w-full bg-black object-contain"
       data-testid="slide-video"
       data-element-id={element.id}
@@ -75,7 +78,12 @@ export function SlideScene({
         renderVideo={(element) => {
           const src = media.resolve(element.mediaRef);
           return src ? (
-            <EmbeddedVideo element={element} src={src} videos={videos} />
+            <EmbeddedVideo
+              element={element}
+              src={src}
+              videos={videos}
+              onError={() => media.reportError(element.mediaRef)}
+            />
           ) : (
             <VideoPoster element={element} label={strings.videoUnavailable} />
           );

@@ -82,10 +82,15 @@ afterEach(() => {
 });
 
 describe('NarrationPlayer', () => {
+  const reportError = vi.fn();
   const media = (src: string | undefined): MediaLibrary => ({
     resolve: () => src,
     has: () => !!src,
     dispose: () => {},
+    reportError,
+    linkedMediaMissing: () => false,
+    subscribe: () => () => {},
+    probeLinkedMedia: () => {},
   });
 
   function player(src: string | null = 'blob:clip') {
@@ -138,6 +143,7 @@ describe('NarrationPlayer', () => {
   });
 
   it('an error before the clip starts falls back to the timer; after it started it just ends', async () => {
+    reportError.mockClear();
     const first = player();
     const early = first.narration.play('k', control());
     first.element.dispatchEvent(new Event('error'));
@@ -149,6 +155,9 @@ describe('NarrationPlayer', () => {
     await flush();
     second.element.dispatchEvent(new Event('error'));
     await expect(late).resolves.toBe(true);
+    // Both failures reach the library, which decides whether a file is missing.
+    expect(reportError).toHaveBeenCalledTimes(2);
+    expect(reportError).toHaveBeenCalledWith('k');
   });
 
   it('cancelling pauses the clip', async () => {
