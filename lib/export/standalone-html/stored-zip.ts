@@ -12,8 +12,10 @@
  * compute it, and the archive Blob then references the original Blobs
  * instead of copying them.
  *
- * Plain ZIP (no ZIP64): each entry and the archive must stay below 4 GiB, and
- * the writer refuses anything larger rather than emit a corrupt archive.
+ * Plain ZIP (no ZIP64): every 16- and 32-bit field must hold its value below
+ * the all-ones sentinel that announces a ZIP64 record (fewer than 65,535
+ * entries, sizes and offsets below 0xFFFFFFFF), and the writer refuses
+ * anything larger rather than emit an archive readers misinterpret.
  */
 
 export interface StoredZipEntry {
@@ -25,13 +27,20 @@ export interface StoredZipEntry {
 export interface StoredZipOptions {
   /** Modification time recorded for every entry; defaults to now. */
   date?: Date;
+  /** Bytes read at a time while computing an entry's CRC-32 (default 8 MiB). */
+  crcChunkBytes?: number;
 }
 
-/** Largest size plain (non-ZIP64) ZIP fields can record. */
-export const STORED_ZIP_MAX_BYTES = 0xffffffff;
+/**
+ * Largest archive the writer emits: every size and offset field, the end
+ * record's included, then stays below the ZIP64 sentinel 0xFFFFFFFF.
+ */
+export const STORED_ZIP_MAX_BYTES = 0xfffffffe;
 
-/** Bytes read at a time while computing an entry's CRC-32. */
-const CRC_CHUNK_BYTES = 8 * 1024 * 1024;
+/** Most entries a plain ZIP holds: 0xFFFF in the end record means ZIP64. */
+export const STORED_ZIP_MAX_ENTRIES = 0xfffe;
+
+const DEFAULT_CRC_CHUNK_BYTES = 8 * 1024 * 1024;
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -52,10 +61,10 @@ export function crc32(bytes: Uint8Array, crc = 0): number {
   return ~c >>> 0;
 }
 
-async function blobCrc32(blob: Blob): Promise<number> {
+async function blobCrc32(blob: Blob, chunkBytes: number): Promise<number> {
   let crc = 0;
-  for (let offset = 0; offset < blob.size; offset += CRC_CHUNK_BYTES) {
-    const chunk = blob.slice(offset, offset + CRC_CHUNK_BYTES);
+  for (let offset = 0; offset < blob.size; offset += chunkBytes) {
+    const chunk = blob.slice(offset, offset + chunkBytes);
     crc = crc32(new Uint8Array(await chunk.arrayBuffer()), crc);
   }
   return crc;
@@ -67,7 +76,7 @@ async function blobCrc32(blob: Blob): Promise<number> {
  * entry that could land outside the extraction folder is refused.
  */
 export function isSafeArchivePath(path: string): boolean {
-  if (!path || path.length > 0xffff || /[\\:\u0000-\u001f\u007f]/.test(path)) return false;
+  if (!path || /[\\:\u0000-\u001f\u007f]/.test(path)) return false;
   return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
@@ -95,7 +104,8 @@ export async function buildStoredZip(
   entries: readonly StoredZipEntry[],
   options: StoredZipOptions = {},
 ): Promise<Blob> {
-  if (entries.length > 0xffff) throw new Error('Stored ZIP: too many entries');
+  if (entries.length > STORED_ZIP_MAX_ENTRIES) throw new Error('Stored ZIP: too many entries');
+  const chunkBytes = options.crcChunkBytes ?? DEFAULT_CRC_CHUNK_BYTES;
   const encoder = new TextEncoder();
   const stamp = dosDateTime(options.date ?? new Date());
   const seen = new Set<string>();
@@ -111,10 +121,14 @@ export async function buildStoredZip(
     seen.add(entry.path);
     const data = typeof entry.data === 'string' ? new Blob([entry.data]) : entry.data;
     const name = encoder.encode(entry.path);
+    // The name length field holds UTF-8 bytes, not UTF-16 units.
+    if (name.length > 0xffff) throw new Error('Stored ZIP: entry path too long');
+    // Covers this entry's size and the next offset (the central directory's
+    // included), all of which stay below the sentinel.
     if (offset + 30 + name.length + data.size > STORED_ZIP_MAX_BYTES) {
       throw new Error('Stored ZIP: archive exceeds 4 GiB');
     }
-    const crc = await blobCrc32(data);
+    const crc = await blobCrc32(data, chunkBytes);
 
     const local = new Uint8Array(30 + name.length);
     const lv = new DataView(local.buffer);
