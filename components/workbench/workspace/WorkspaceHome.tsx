@@ -50,6 +50,7 @@ export function WorkspaceHome({
   discoveryContent,
   courseOptions,
   onOpenSession,
+  onOpenSessionAfterLeaving,
   onExitPro,
   materialSeed,
   onMaterialSeedConsumed,
@@ -62,6 +63,8 @@ export function WorkspaceHome({
    */
   readonly courseOptions: readonly CourseMentionSource[];
   readonly onOpenSession: (sessionId: string) => void;
+  /** The composer's conversation exists, but home was left meanwhile. */
+  readonly onOpenSessionAfterLeaving: (sessionId: string) => void;
   readonly onExitPro: () => void;
   /** A knowledge base hand-over, passed through to the composer. */
   readonly materialSeed?: MaterialSeed | null;
@@ -179,6 +182,7 @@ export function WorkspaceHome({
               variant="workspace"
               courseOptions={courseOptions}
               onSessionCreated={onOpenSession}
+              onSessionCreatedAfterLeaving={onOpenSessionAfterLeaving}
               materialSeed={materialSeed}
               onMaterialSeedConsumed={onMaterialSeedConsumed}
             />

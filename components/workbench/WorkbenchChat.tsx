@@ -115,6 +115,7 @@ const NO_COURSE_REFS: CourseRef[] = [];
 export function WorkbenchChat({
   hosted = false,
   adjacentPanelOpen = false,
+  covered = false,
   materialSeed,
   onMaterialSeedConsumed,
 }: {
@@ -131,6 +132,12 @@ export function WorkbenchChat({
    * changes, so a hosted chat must not use that value to size its transcript.
    */
   adjacentPanelOpen?: boolean;
+  /**
+   * Another page covers this conversation (the knowledge base). Its Escapes
+   * close that page's own search, menus and dialogs; none of them is the
+   * teacher asking to stop a run they cannot see.
+   */
+  covered?: boolean;
   /** A knowledge base hand-over; this composer takes the ones for its own owner key. */
   materialSeed?: MaterialSeed | null;
   onMaterialSeedConsumed?: (key: number) => void;
@@ -258,12 +265,33 @@ export function WorkbenchChat({
   const [pendingStop, setPendingStop] = useState(false);
   // Durable material assets can be attached mid-conversation too.
   const materials = useComposerMaterials();
+  const seedTargeted =
+    materialSeed?.target.kind === 'chat' && materialSeed.target.ownerKey === composerOwnerId;
+  // A hand-over from the knowledge base starts a new conversation: what was
+  // typed or staged for the one before stays behind. This composer is not
+  // remounted for it -- the same draft key, or a session it showed before --
+  // so it is cleared here, once per hand-over. Declared before
+  // `useMaterialSeed`: in the same commit it clears, then the source is staged.
+  const handOverKey = seedTargeted ? materialSeed.key : null;
+  useEffect(() => {
+    if (handOverKey === null) return;
+    replaceDraft('');
+    setSlashDismissed(null);
+    setMentionDismissed(null);
+    materials.startOver();
+    const elementRefs = useElementRefsStore.getState();
+    if (elementRefs.ownerSessionId === composerOwnerId) elementRefs.clear();
+    const courseRefs = useCourseRefsStore.getState();
+    if (courseRefs.ownerSessionId === composerOwnerId) courseRefs.clear();
+    // Once per hand-over key; `materials.startOver` and the owner are read as
+    // they are then (the same event-like reset as the home composer's).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handOverKey]);
   // While the material handed over is waiting for the gate, a send would
   // leave without it: the button and Enter (via `send`) both wait.
   const awaitingMaterial = useMaterialSeed({
     seed: materialSeed,
-    targeted:
-      materialSeed?.target.kind === 'chat' && materialSeed.target.ownerKey === composerOwnerId,
+    targeted: seedTargeted,
     materials,
     onConsumed: onMaterialSeedConsumed,
   });
@@ -629,7 +657,7 @@ export function WorkbenchChat({
   }, [busy, pendingStop, sessionId, t]);
 
   useDoubleEscapeStop({
-    generating: live && !busy && !pendingStop && !!sessionId,
+    generating: live && !busy && !pendingStop && !!sessionId && !covered,
     onStop: () => {
       void stop();
     },

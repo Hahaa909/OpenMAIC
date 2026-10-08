@@ -295,6 +295,13 @@ export interface ComposerMaterials {
   /** Remove only the staged objects accepted by this send. Later picks survive. */
   removeSent: (sent: readonly WorkbenchMaterial[]) => void;
   clear: () => void;
+  /**
+   * A new conversation in this composer: nothing staged, uploading or failed
+   * is kept, and an upload still in flight is no longer this draft's -- it
+   * may finish into the library, but its pill, failure and slot stay with
+   * the draft it was picked for. `clear` keeps such uploads.
+   */
+  startOver: () => void;
   /** True while any upload is in flight — submits should wait for it. */
   busy: boolean;
 }
@@ -375,6 +382,8 @@ export function useComposerMaterials(
   const seq = useRef(0);
   const slotLedger = useRef(new MaterialSlotLedger(initial.current.length));
   const identityGate = useRef(createMaterialUploadIdentityGate());
+  /** Bumped by `startOver`; an upload belongs to the draft it was picked in. */
+  const draft = useRef(0);
 
   const addFiles = (files: FileList | File[]) => {
     if (!enabled) return;
@@ -383,7 +392,9 @@ export function useComposerMaterials(
       toast.error(t('workbench.material.maxSelected', { count: MAX_COMPOSER_MATERIALS }));
       return;
     }
-    slotLedger.current.reserve(selected.length);
+    const ledger = slotLedger.current;
+    const pickedIn = draft.current;
+    ledger.reserve(selected.length);
 
     // Register every picked file as a pending chip BEFORE any upload runs, so
     // a slow first upload never hides later selections. Uploads are settled
@@ -407,11 +418,14 @@ export function useComposerMaterials(
       let succeeded = false;
       try {
         const staged = await retryMaterialUpload(() => uploadWorkbenchMaterial(file));
-        stagedObjects.current.add(staged);
-        setMaterials((current) => [...current, staged]);
         succeeded = true;
+        if (draft.current === pickedIn) {
+          stagedObjects.current.add(staged);
+          setMaterials((current) => [...current, staged]);
+        }
         return true;
       } catch (err) {
+        if (draft.current !== pickedIn) return false;
         setFailed((items) => [...items, entry]);
         toast.error(
           err instanceof WorkbenchMaterialUploadError
@@ -422,7 +436,7 @@ export function useComposerMaterials(
         );
         return false;
       } finally {
-        slotLedger.current.settle(succeeded);
+        ledger.settle(succeeded);
         setUploading((items) => items.filter((item) => item.id !== entry.id));
       }
     };
@@ -484,6 +498,15 @@ export function useComposerMaterials(
       stagedObjects.current.clear();
       slotLedger.current.clearCompleted();
       setMaterials([]);
+      setFailed([]);
+    },
+    startOver: () => {
+      draft.current += 1;
+      stagedObjects.current.clear();
+      // A fresh ledger: uploads in flight settle into the old one.
+      slotLedger.current = new MaterialSlotLedger(0);
+      setMaterials([]);
+      setUploading([]);
       setFailed([]);
     },
     busy: uploading.length > 0,

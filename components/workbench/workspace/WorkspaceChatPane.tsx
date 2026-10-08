@@ -34,6 +34,7 @@ export function WorkspaceChatPane({
   width,
   fill,
   hidden,
+  covered,
   navigation,
   draftConversation = null,
   onCollapse,
@@ -62,6 +63,8 @@ export function WorkspaceChatPane({
    * hundred bytes of an unmounted subtree.
    */
   readonly hidden: boolean;
+  /** Hidden under the knowledge base page, not merely collapsed. */
+  readonly covered: boolean;
   /** Course links in hosted chat read and drive this one shell-owned seam. */
   readonly navigation: WorkbenchCourseNavigation;
   /**
@@ -190,6 +193,7 @@ export function WorkspaceChatPane({
             <WorkbenchChat
               hosted
               adjacentPanelOpen={!fill}
+              covered={covered}
               materialSeed={materialSeed}
               onMaterialSeedConsumed={onMaterialSeedConsumed}
             />

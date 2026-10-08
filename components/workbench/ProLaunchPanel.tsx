@@ -77,6 +77,7 @@ export function ProLaunchPanel({
   variant = 'default',
   courseOptions = NO_COURSE_OPTIONS,
   onSessionCreated,
+  onSessionCreatedAfterLeaving,
   materialSeed,
   onMaterialSeedConsumed,
 }: {
@@ -97,6 +98,12 @@ export function ProLaunchPanel({
   courseOptions?: readonly CourseMentionSource[];
   /** Opens the new conversation through the workspace's client-owned pane controller. */
   onSessionCreated: (sessionId: string) => void;
+  /**
+   * The conversation was created after this composer left the tree (its POST
+   * was in flight). The host decides whether that leaving was the teacher
+   * moving on; without it, such an answer is dropped.
+   */
+  onSessionCreatedAfterLeaving?: (sessionId: string) => void;
   /** A knowledge base hand-over; this composer takes the ones for `home`. */
   materialSeed?: MaterialSeed | null;
   onMaterialSeedConsumed?: (key: number) => void;
@@ -104,8 +111,10 @@ export function ProLaunchPanel({
   const { t } = useI18n();
   const [prompt, setPrompt] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  /** Invalidates a slow create when this panel is reset or leaves the tree. */
+  /** Invalidates a slow create when this panel is reset or sends again. */
   const requestGeneration = useRef(0);
+  /** This panel left the tree: a slow create's answer goes to the host. */
+  const left = useRef(false);
   /** The draft an Escape closed the `@` menu on — same rule as the chat composer. */
   const [mentionDismissed, setMentionDismissed] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -114,12 +123,12 @@ export function ProLaunchPanel({
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
 
-  useLayoutEffect(
-    () => () => {
-      requestGeneration.current += 1;
-    },
-    [],
-  );
+  useLayoutEffect(() => {
+    left.current = false;
+    return () => {
+      left.current = true;
+    };
+  }, []);
 
   // The textarea grows with its content instead of scrolling at a fixed
   // height: a composer that starts as two lines and becomes six is the whole
@@ -346,12 +355,16 @@ export function ProLaunchPanel({
         ...(courseRefs.length ? { courseRefs } : {}),
       });
       if (requestGeneration.current !== generation) return;
+      if (left.current) {
+        onSessionCreatedAfterLeaving?.(session.id);
+        return;
+      }
       if (session.courseRefsAccepted === false) {
         toast.warning(t('workspace.courseMention.notAccepted'));
       }
       onSessionCreated(session.id);
     } catch (error) {
-      if (requestGeneration.current !== generation) return;
+      if (requestGeneration.current !== generation || left.current) return;
       toast.error(error instanceof Error ? error.message : t('workbench.launch.createFailed'));
       setSubmitting(false);
     }

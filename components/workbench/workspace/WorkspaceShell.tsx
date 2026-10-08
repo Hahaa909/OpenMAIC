@@ -222,6 +222,41 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
 
   const panes = navigation.panes;
   /**
+   * Which visit to the home surface this is. Going from home to the knowledge
+   * base page over it keeps the visit; every other move -- leaving the page,
+   * home again, a conversation, a classroom -- starts a new one. A home
+   * message answered after its composer left belongs only to the visit it
+   * was sent in (`openCreatedSessionAfterLeaving`).
+   */
+  const surface =
+    panes.sessionId !== null || panes.courseId !== null
+      ? 'elsewhere'
+      : panes.library
+        ? 'library'
+        : 'home';
+  const [homeVisit, setHomeVisit] = useState({ surface, visit: 0 });
+  if (homeVisit.surface !== surface) {
+    setHomeVisit({
+      surface,
+      visit:
+        homeVisit.surface === 'home' && surface === 'library'
+          ? homeVisit.visit
+          : homeVisit.visit + 1,
+    });
+  }
+  // What a late answer is checked against. -1 once the shell is gone: an
+  // answer arriving after the teacher left the workspace navigates nothing.
+  const currentHomeVisit = useRef(homeVisit.visit);
+  useLayoutEffect(() => {
+    currentHomeVisit.current = homeVisit.visit;
+  }, [homeVisit.visit]);
+  useEffect(
+    () => () => {
+      currentHomeVisit.current = -1;
+    },
+    [],
+  );
+  /**
    * A pane change the teacher did not make just now: an agent-created course,
    * a conversation that finished being created, a deletion the server
    * confirmed, a bootstrap. It is decided from the panes as they are when it
@@ -551,12 +586,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     [collapse, goTo, panes],
   );
 
-  /**
-   * The home composer's conversation exists now. Its POST may have been in
-   * flight while the teacher opened the knowledge base, so this is a
-   * background change: it attaches the session under the page instead of
-   * taking the teacher off it.
-   */
+  /** The home composer's conversation exists now, the composer still on screen. */
   const openCreatedSession = useCallback(
     (sessionId: string) => {
       // Opening the pane is immediate, but the rail still needs a pull fallback
@@ -567,6 +597,36 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       navigateInBackground((current) => withSession(current, sessionId), 'push');
     },
     [collapse, loadSessions, navigateInBackground],
+  );
+
+  /**
+   * The home composer's conversation exists now, but its composer left the
+   * tree while the POST was in flight. Leaving home for the knowledge base
+   * page is not leaving the conversation: it attaches under the page, which
+   * stays (replace, so one Back still leaves it) -- if the teacher is still
+   * on the page they opened from that home. Anything else, even the same
+   * page reached again after leaving it, was the teacher moving on; the
+   * conversation stays in the rail, as before. The composer calls the
+   * callback of the render it sent from, which carries that visit.
+   */
+  const sentInHomeVisit = homeVisit.visit;
+  const openCreatedSessionAfterLeaving = useCallback(
+    (sessionId: string) => {
+      loadSessions();
+      if (currentHomeVisit.current !== sentInHomeVisit) return;
+      let attached = false;
+      navigateInBackground((current) => {
+        if (!current.library || current.sessionId !== null || current.courseId !== null) {
+          return null;
+        }
+        attached = true;
+        return withSession(current, sessionId);
+      }, 'replace');
+      if (!attached) return;
+      setNewConversationRequested(false);
+      collapse.expandChat();
+    },
+    [collapse, loadSessions, navigateInBackground, sentInHomeVisit],
   );
 
   const activateCourse = useCallback(
@@ -1168,6 +1228,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
       {chatOpen || chatMounted ? (
         <WorkspaceChatPane
           hidden={!chatOpen}
+          covered={render.library}
           fill={chatFills}
           width={chatWidth.value}
           navigation={courseNavigation}
@@ -1233,6 +1294,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           // the rail and the conversation composer use.
           courseOptions={courseOptions}
           onOpenSession={openCreatedSession}
+          onOpenSessionAfterLeaving={openCreatedSessionAfterLeaving}
           onExitPro={exitPro}
           materialSeed={materialSeed}
           onMaterialSeedConsumed={consumeMaterialSeed}
