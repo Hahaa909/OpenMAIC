@@ -50,16 +50,29 @@ function imageMimeFromUrl(url: string): string | undefined {
   return IMAGE_EXTENSION_MIME[extension];
 }
 
+/** Encode bytes as base64; works in the browser and in Node. */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  // Encoded in chunks (a multiple of 3 bytes, so the pieces concatenate into
+  // one valid string) to keep the intermediate binary strings small for
+  // multi-megabyte media.
+  const parts: string[] = [];
+  const chunk = 0x8000 * 3;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    const slice = bytes.subarray(offset, offset + chunk);
+    let binary = '';
+    for (let index = 0; index < slice.length; index += 0x8000) {
+      binary += String.fromCharCode(...slice.subarray(index, index + 0x8000));
+    }
+    parts.push(btoa(binary));
+  }
+  return parts.join('');
+}
+
 /** Encode bytes as a `data:` URI; works in the browser and in Node. */
 export async function blobToDataUri(blob: Blob, fallbackMimeType?: string): Promise<string> {
   const mimeType = blob.type || fallbackMimeType || 'application/octet-stream';
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  const chunk = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
-  }
-  return `data:${mimeType};base64,${btoa(binary)}`;
+  return `data:${mimeType};base64,${await blobToBase64(blob)}`;
 }
 
 /** Fetch a concrete image URL through the app's media fetch path; `null` on any failure. */
@@ -126,17 +139,68 @@ export async function resolveStandaloneMedia(
 
   const dataUris = new Map<string, string>();
   const videoPosters = new Map<string, string>();
+  const videos = new Map<string, string>();
   const references = collectStandaloneMediaReferences(snapshot.manifest);
   await mapWithConcurrency(references, 4, async ({ ref, role }) => {
     if (role === 'video') {
       const poster = snapshot.videoPosters.get(ref);
       if (poster) videoPosters.set(ref, await blobToDataUri(poster, 'image/jpeg'));
+      // Video bytes are present only when the snapshot collected them.
+      const path = pathByRef.get(ref);
+      if (path && isPlayableArchivePath(snapshot, path, 'video/')) videos.set(ref, path);
       return;
     }
     const dataUri = await resolveRef(ref);
     if (dataUri) dataUris.set(ref, dataUri);
   });
-  return { dataUris, videoPosters };
+
+  const audio = new Set<string>();
+  for (const [path, entry] of Object.entries(snapshot.manifest.mediaIndex)) {
+    if (entry.type === 'audio' && !entry.missing && isPlayableArchivePath(snapshot, path)) {
+      audio.add(path);
+    }
+  }
+  return { dataUris, videoPosters, playback: { audio, videos } };
+}
+
+/** Whether the snapshot carries non-empty bytes at `path` (of the given MIME family). */
+function isPlayableArchivePath(
+  snapshot: Pick<ClassroomExportSnapshot, 'manifest' | 'files'>,
+  path: string,
+  mimePrefix?: string,
+): boolean {
+  const blob = snapshot.files.get(path);
+  if (!blob || blob.size === 0) return false;
+  if (!mimePrefix) return true;
+  const mimeType = snapshot.manifest.mediaIndex[path]?.mimeType || blob.type;
+  return mimeType.startsWith(mimePrefix);
+}
+
+/** One playback media payload: its key (archive path), MIME type and bytes. */
+export interface StandalonePlaybackPayload {
+  key: string;
+  mimeType: string;
+  blob: Blob;
+}
+
+/**
+ * The bytes of the playback media a prepared manifest names, read from the
+ * snapshot. Format-neutral: the single file embeds them, and an export that
+ * ships a `media/` folder next to the page can write the same payloads.
+ */
+export function collectStandalonePlaybackPayloads(
+  snapshot: Pick<ClassroomExportSnapshot, 'manifest' | 'files'>,
+  paths: readonly string[],
+): StandalonePlaybackPayload[] {
+  const payloads: StandalonePlaybackPayload[] = [];
+  for (const key of paths) {
+    const blob = snapshot.files.get(key);
+    if (!blob || blob.size === 0) continue;
+    const mimeType =
+      snapshot.manifest.mediaIndex[key]?.mimeType || blob.type || 'application/octet-stream';
+    payloads.push({ key, mimeType, blob });
+  }
+  return payloads;
 }
 
 /**
@@ -191,8 +255,33 @@ async function fetchPlayerAsset(path: string): Promise<string> {
   return response.text();
 }
 
+/** UTF-8 length of a string without materializing its encoding. */
+export function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 export interface StandaloneHtmlExportOptions extends StandaloneMediaDeps {
   strings: StandalonePlayerStrings;
+  /**
+   * Embed narration audio (stored and legacy URL narration) and video clips
+   * so the file plays like the classroom. Without it the file stays small:
+   * speech plays on the reading timer with captions and videos show their
+   * poster frame. Defaults to false.
+   */
+  includeNarration?: boolean;
   lang: string;
   /**
    * Address of the online classroom (see {@link classroomUrlFor}). PBL scenes
@@ -211,6 +300,10 @@ export interface StandaloneHtmlExport {
   inlineFailures: InlineReport['failed'];
   /** Media references that could not be embedded and were dropped. */
   unresolvedMedia: string[];
+  /** Narration referenced by the classroom whose bytes resolved nowhere. */
+  missingAudioCount: number;
+  /** Size of the encoded file in bytes (UTF-8). */
+  byteSize: number;
 }
 
 export async function buildStandaloneHtmlExport(
@@ -219,14 +312,23 @@ export async function buildStandaloneHtmlExport(
   options: StandaloneHtmlExportOptions,
 ): Promise<StandaloneHtmlExport> {
   const fetchAsset = options.fetchAsset ?? fetchPlayerAsset;
-  // No narration or video bytes in this format yet: skip collecting them
+  const includeNarration = options.includeNarration === true;
+  // Without narration, skip collecting audio and video bytes altogether
   // (posters captured for generated videos are still collected).
   const snapshot = await buildClassroomExportSnapshot(stage, scenes, options.documentDeps, {
-    audio: false,
-    videoBytes: false,
+    audio: includeNarration,
+    videoBytes: includeNarration,
   });
   const media = await resolveStandaloneMedia(snapshot, options);
-  const { manifest, unresolved } = prepareStandaloneManifest(snapshot.manifest, media);
+  const { manifest, unresolved, playbackMedia } = prepareStandaloneManifest(
+    snapshot.manifest,
+    media,
+  );
+  const embeddedMedia = await Promise.all(
+    collectStandalonePlaybackPayloads(snapshot, playbackMedia).map(
+      async ({ key, mimeType, blob }) => ({ key, mimeType, base64: await blobToBase64(blob) }),
+    ),
+  );
 
   const [playerScript, playerStyle, mathFonts, chartsScript] = await Promise.all([
     fetchAsset(STANDALONE_PLAYER_ASSETS.script),
@@ -246,6 +348,7 @@ export async function buildStandaloneHtmlExport(
     playerStyle,
     extraStyles: mathFonts ? [mathFonts] : [],
     extraScripts: chartsScript ? [chartsScript] : [],
+    embeddedMedia,
     lang: options.lang,
   });
 
@@ -254,5 +357,7 @@ export async function buildStandaloneHtmlExport(
     fileName: `${classroomExportBaseName(snapshot.stageName)}${STANDALONE_HTML_EXTENSION}`,
     inlineFailures: snapshot.inlineFailures,
     unresolvedMedia: unresolved,
+    missingAudioCount: snapshot.missingAudioCount,
+    byteSize: utf8ByteLength(html),
   };
 }

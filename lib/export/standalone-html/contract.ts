@@ -13,6 +13,50 @@ export const STANDALONE_MANIFEST_ELEMENT_ID = 'openmaic-classroom';
 /** `<script type="application/json">` holding the {@link StandalonePlayerConfig}. */
 export const STANDALONE_CONFIG_ELEMENT_ID = 'openmaic-player-config';
 
+/**
+ * `<script type="application/json">` holding the {@link StandaloneMediaTable}:
+ * the playback media (narration audio, video clips) the actions and video
+ * elements name by key. Absent in files exported without narration.
+ */
+export const STANDALONE_MEDIA_TABLE_ELEMENT_ID = 'openmaic-media';
+
+/**
+ * Element id prefix of the `<script type="application/octet-stream">` blocks
+ * carrying embedded media bytes as base64. Data blocks are never executed, and
+ * the player decodes one only when its media is first played, so a large
+ * file does not hold every clip twice in memory.
+ */
+export const STANDALONE_MEDIA_BLOCK_ID_PREFIX = 'openmaic-media-';
+
+/**
+ * Where the bytes of one playback media key live. Exactly one of `embedded`
+ * (the id of a base64 data block in this document) or `src` (a URL, e.g. a
+ * relative path for an export that ships its media next to the page) is set.
+ */
+export interface StandaloneMediaEntry {
+  mimeType?: string;
+  embedded?: string;
+  src?: string;
+}
+
+/** Playback media key (the archive path the manifest names) → its bytes. */
+export type StandaloneMediaTable = Record<string, StandaloneMediaEntry>;
+
+/**
+ * Size above which the export warns about the file's size (it still saves).
+ *
+ * Opening is not the bottleneck: embedded media sits in data blocks the
+ * browser keeps as plain text until a clip plays, and a 400 MB file opened
+ * from disk reached the player in about 1.3 s in both desktop Chromium and
+ * WebKit (100 MB: under 0.9 s). The limits are elsewhere: the exporting tab
+ * holds the media, its base64 and the assembled document at once (roughly
+ * three times the file size), a single JavaScript string cannot exceed about
+ * 512 MiB in V8, mobile browsers evict tabs far earlier, and files this size
+ * no longer fit mail or chat attachments. 100 MB keeps the export well clear
+ * of the hard limits and flags the files that are awkward to share.
+ */
+export const STANDALONE_HTML_SIZE_WARNING_BYTES = 100 * 1024 * 1024;
+
 /** Mount point of the player app. */
 export const STANDALONE_ROOT_ELEMENT_ID = 'openmaic-player';
 

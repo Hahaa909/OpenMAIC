@@ -7,7 +7,10 @@ import type { ClassroomManifest } from '../classroom-zip-types';
 import {
   STANDALONE_CONFIG_ELEMENT_ID,
   STANDALONE_MANIFEST_ELEMENT_ID,
+  STANDALONE_MEDIA_BLOCK_ID_PREFIX,
+  STANDALONE_MEDIA_TABLE_ELEMENT_ID,
   STANDALONE_ROOT_ELEMENT_ID,
+  type StandaloneMediaTable,
   type StandalonePlayerConfig,
 } from './contract';
 
@@ -98,8 +101,42 @@ export interface StandaloneHtmlInput {
   extraStyles?: readonly string[];
   /** Additional scripts run before the player (e.g. the charts runtime). */
   extraScripts?: readonly string[];
+  /**
+   * Playback media embedded as base64 data blocks, keyed as the manifest
+   * names them (speech `audioRef`, video `mediaRef`).
+   */
+  embeddedMedia?: readonly StandaloneEmbeddedMedia[];
   /** BCP 47 language tag of the player UI. */
   lang: string;
+}
+
+export interface StandaloneEmbeddedMedia {
+  key: string;
+  mimeType: string;
+  base64: string;
+}
+
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * The media table and its data blocks. Base64 cannot end a `<script>` element,
+ * but the payload is checked anyway since it is written verbatim.
+ */
+function mediaBlocks(media: readonly StandaloneEmbeddedMedia[]): string[] {
+  if (media.length === 0) return [];
+  const table: StandaloneMediaTable = {};
+  const blocks = media.map((entry, index) => {
+    if (!BASE64_PATTERN.test(entry.base64)) {
+      throw new Error(`Standalone HTML: media ${entry.key} is not base64`);
+    }
+    const id = `${STANDALONE_MEDIA_BLOCK_ID_PREFIX}${index + 1}`;
+    table[entry.key] = { mimeType: entry.mimeType, embedded: id };
+    return `<script type="application/octet-stream" id="${id}">${entry.base64}</script>`;
+  });
+  return [
+    `<script type="application/json" id="${STANDALONE_MEDIA_TABLE_ELEMENT_ID}">${serializeJsonForHtmlScript(table)}</script>`,
+    ...blocks,
+  ];
 }
 
 /** Assemble the complete standalone document. */
@@ -126,6 +163,7 @@ export function assembleStandaloneHtml(input: StandaloneHtmlInput): string {
     `<div id="${STANDALONE_ROOT_ELEMENT_ID}"></div>`,
     `<script type="application/json" id="${STANDALONE_MANIFEST_ELEMENT_ID}">${serializeJsonForHtmlScript(input.manifest)}</script>`,
     `<script type="application/json" id="${STANDALONE_CONFIG_ELEMENT_ID}">${serializeJsonForHtmlScript(input.config)}</script>`,
+    ...mediaBlocks(input.embeddedMedia ?? []),
     ...(input.extraScripts ?? []).map(
       (js, index) => `<script>${assertRawText(js, 'script', `script ${index + 1}`)}</script>`,
     ),

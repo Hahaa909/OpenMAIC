@@ -13,22 +13,44 @@
  * - every slide image, background, shape pattern, chart point image and video
  *   poster is replaced by a `data:` URI (or dropped when its bytes could not
  *   be resolved), so the player never names a network address;
- * - video and audio sources are dropped (P1 ships no audio/video bytes; a
- *   video shows its poster frame only);
+ * - video sources are replaced by the key of their embedded bytes when the
+ *   export carries them (`mediaRef`, resolved through the player's media
+ *   table), and dropped otherwise, so the video shows its poster frame only;
+ *   audio elements keep no source;
+ * - playback actions are reduced to what the offline player replays (see
+ *   {@link prepareStandaloneActions}): narration keeps its text and, when the
+ *   bytes ship, its `audioRef` key; whiteboard actions and agent internals
+ *   are left out;
  * - interactive HTML is patched for iframe display exactly as the classroom
  *   does;
  * - PBL content is resolved to the representation the classroom shows and
  *   reduced to its briefing;
- * - data the player does not use is left out: whiteboards, playback actions,
- *   multi-agent settings, the agent roster, the video manifest and the media
- *   index (which only describes archive payloads).
+ * - data the player does not use is left out: whiteboards, multi-agent
+ *   settings, the agent roster, the video manifest and the media index
+ *   (which only describes archive payloads).
+ *
+ * Media bytes themselves never enter the manifest here: actions and video
+ * elements name them by archive path, and the caller decides how those paths
+ * resolve (embedded data blocks for the single file; a later variant can ship
+ * the same paths as files next to the page).
  */
 import type { PPTElement, Slide } from '@openmaic/dsl';
+import type {
+  DiscussionAction,
+  LaserAction,
+  PlayVideoAction,
+  SpeechAction,
+  SpotlightAction,
+  WidgetAnnotationAction,
+  WidgetHighlightAction,
+  WidgetRevealAction,
+  WidgetSetStateAction,
+} from '@openmaic/dsl';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
 import { sanitizeSlideRichText } from './rich-text';
 import { pblBriefing } from '../pbl-briefing';
 import type { PBLContent, SlideContent } from '@/lib/types/stage';
-import type { ClassroomManifest, ManifestScene } from '../classroom-zip-types';
+import type { ClassroomManifest, ManifestAction, ManifestScene } from '../classroom-zip-types';
 import { orderManifestScenes } from './order-scenes';
 
 /** Which slot of a slide a media reference was found in. */
@@ -51,12 +73,31 @@ export interface StandaloneMediaResolution {
   readonly dataUris: ReadonlyMap<string, string>;
   /** Video ref (`src` or `mediaRef`) → data URI of the poster captured for that video. */
   readonly videoPosters?: ReadonlyMap<string, string>;
+  /**
+   * Playback media whose bytes ship with the export, by archive path. Absent
+   * (or empty) for an export without narration: speech then plays on the
+   * reading timer and videos show their poster.
+   */
+  readonly playback?: StandalonePlaybackMedia;
+}
+
+export interface StandalonePlaybackMedia {
+  /** Archive paths of narration audio whose bytes ship. */
+  readonly audio: ReadonlySet<string>;
+  /** Video ref (`src` or `mediaRef`) → archive path of its bytes. */
+  readonly videos: ReadonlyMap<string, string>;
 }
 
 export interface PreparedStandaloneManifest {
   manifest: ClassroomManifest;
   /** Image-like refs (not video/audio sources) that had to be dropped. */
   unresolved: string[];
+  /**
+   * Archive paths of the playback media the prepared manifest names (speech
+   * `audioRef`s and video `mediaRef`s), in first-use order. The caller ships
+   * exactly these.
+   */
+  playbackMedia: string[];
 }
 
 export function isDataUri(value: string | undefined): value is string {
@@ -114,6 +155,8 @@ interface MediaResolver {
   /** The data URI for a ref, without recording a miss. */
   lookup(ref: string | undefined): string | undefined;
   markUnresolved(ref: string): void;
+  /** Record that the prepared manifest names this playback media path. */
+  usePlaybackMedia(path: string): void;
 }
 
 function prepareElement(
@@ -153,7 +196,18 @@ function prepareElement(
         (src ? media.videoPosters?.get(src) : undefined) ??
         (mediaRef ? media.videoPosters?.get(mediaRef) : undefined);
       if (!poster && rawPoster) resolver.markUnresolved(rawPoster);
-      return { ...rest, src: '', ...(poster ? { poster } : {}) };
+      // The bytes, when they ship, are named by their archive path; the
+      // player resolves it through its media table.
+      const videos = media.playback?.videos;
+      const playable =
+        (src ? videos?.get(src) : undefined) ?? (mediaRef ? videos?.get(mediaRef) : undefined);
+      if (playable) resolver.usePlaybackMedia(playable);
+      return {
+        ...rest,
+        src: '',
+        ...(poster ? { poster } : {}),
+        ...(playable ? { mediaRef: playable } : {}),
+      };
     }
     case 'audio':
       return { ...element, src: '' };
@@ -192,16 +246,127 @@ function preparePblContent(content: PBLContent): PBLContent {
   return { type: 'pbl', projectV2: briefing as unknown as PBLContent['projectV2'] };
 }
 
+/**
+ * Action types the offline player replays. Whiteboard actions never reach a
+ * generated scene (only live chat produces them) and the player has no
+ * whiteboard, so they are left out with any type this build does not know.
+ */
+/** A replayed action as the standalone manifest carries it. */
+export type StandaloneAction =
+  | (Omit<SpeechAction, 'audioId'> & { audioRef?: string })
+  | SpotlightAction
+  | LaserAction
+  | PlayVideoAction
+  | DiscussionAction
+  | WidgetHighlightAction
+  | WidgetSetStateAction
+  | WidgetAnnotationAction
+  | WidgetRevealAction;
+
+const REPLAYED_ACTION_TYPES = new Set<string>([
+  'speech',
+  'spotlight',
+  'laser',
+  'play_video',
+  'discussion',
+  'widget_highlight',
+  'widget_setState',
+  'widget_annotation',
+  'widget_reveal',
+]);
+
+/**
+ * The scene's playback actions as the offline player replays them, each
+ * reduced to the fields it reads:
+ *
+ * - speech keeps its text, and its `audioRef` only when those bytes ship
+ *   (otherwise the player paces it with the reading timer);
+ * - discussion keeps its topic only; the agent binding and prompt drive a
+ *   live AI discussion the file cannot hold;
+ * - effects, video and widget actions keep their targets.
+ */
+export function prepareStandaloneActions(
+  actions: readonly ManifestAction[] | undefined,
+  shippedAudio: ReadonlySet<string> | undefined,
+  resolver?: Pick<MediaResolver, 'usePlaybackMedia'>,
+): ManifestAction[] {
+  const prepared: StandaloneAction[] = [];
+  for (const entry of actions ?? []) {
+    if (!entry || !REPLAYED_ACTION_TYPES.has(entry.type)) continue;
+    // `ManifestAction` is an Omit over the action union, which keeps only the
+    // common fields; read each action through its own member type.
+    const action = entry as unknown as StandaloneAction;
+    const base = { id: action.id };
+    switch (action.type) {
+      case 'speech': {
+        const audioRef =
+          action.audioRef && shippedAudio?.has(action.audioRef) ? action.audioRef : undefined;
+        if (audioRef) resolver?.usePlaybackMedia(audioRef);
+        prepared.push({
+          ...base,
+          type: 'speech',
+          text: typeof action.text === 'string' ? action.text : '',
+          ...(audioRef ? { audioRef } : {}),
+        });
+        break;
+      }
+      case 'spotlight':
+        prepared.push({
+          ...base,
+          type: 'spotlight',
+          elementId: action.elementId,
+          ...(action.dimOpacity !== undefined ? { dimOpacity: action.dimOpacity } : {}),
+        });
+        break;
+      case 'laser':
+        prepared.push({
+          ...base,
+          type: 'laser',
+          elementId: action.elementId,
+          ...(action.color ? { color: action.color } : {}),
+        });
+        break;
+      case 'play_video':
+        prepared.push({ ...base, type: 'play_video', elementId: action.elementId });
+        break;
+      case 'discussion':
+        prepared.push({ ...base, type: 'discussion', topic: action.topic ?? '' });
+        break;
+      case 'widget_highlight':
+      case 'widget_annotation':
+      case 'widget_reveal':
+        prepared.push({
+          ...base,
+          type: action.type,
+          target: action.target,
+          ...(action.content ? { content: action.content } : {}),
+        });
+        break;
+      case 'widget_setState':
+        prepared.push({
+          ...base,
+          type: 'widget_setState',
+          state: action.state ?? {},
+          ...(action.content ? { content: action.content } : {}),
+        });
+        break;
+    }
+  }
+  return prepared as unknown as ManifestAction[];
+}
+
 function prepareScene(
   scene: ManifestScene,
   media: StandaloneMediaResolution,
   resolver: MediaResolver,
 ): ManifestScene {
+  const actions = prepareStandaloneActions(scene.actions, media.playback?.audio, resolver);
   const rest: ManifestScene = {
     type: scene.type,
     title: scene.title,
     order: scene.order,
     content: scene.content,
+    ...(actions.length > 0 ? { actions } : {}),
   };
   const content = scene.content;
   if (content.type === 'slide') {
@@ -234,6 +399,7 @@ export function prepareStandaloneManifest(
   media: StandaloneMediaResolution,
 ): PreparedStandaloneManifest {
   const unresolved = new Set<string>();
+  const playbackMedia = new Set<string>();
   const lookup = (ref: string | undefined): string | undefined => {
     if (!ref) return undefined;
     if (isDataUri(ref)) return ref;
@@ -247,6 +413,7 @@ export function prepareStandaloneManifest(
       return dataUri;
     },
     markUnresolved: (ref) => unresolved.add(ref),
+    usePlaybackMedia: (path) => playbackMedia.add(path),
   };
   const scenes = orderManifestScenes(manifest.scenes).map((scene) =>
     prepareScene(scene, media, resolver),
@@ -255,5 +422,6 @@ export function prepareStandaloneManifest(
   return {
     manifest: { ...manifest, stage, agents: [], scenes, mediaIndex: {} },
     unresolved: [...unresolved],
+    playbackMedia: [...playbackMedia],
   };
 }
