@@ -690,6 +690,16 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
   }, [goTo, panes]);
 
   /**
+   * The page's own way back (its compact header, where the rail is hidden):
+   * the panes it covers come back as they were. A navigation that drops the
+   * view, not a history step, so a page opened from a pasted link leaves too.
+   */
+  const leaveLibrary = useCallback(() => {
+    setMaterialSeed(null);
+    goTo(withLibrary(panes, false));
+  }, [goTo, panes]);
+
+  /**
    * The title a chat is displaying right now, wherever it is displayed: the
    * rail row and — when this is the attached conversation — the pane header,
    * which reads its own copy out of the session store.
@@ -1322,7 +1332,9 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
           classroom panes above stay mounted, hidden (`render` turns both off),
           so leaving the page finds them as they were and the run's stream is
           never detached. */}
-      {render.library ? <MaterialLibraryPage onChatWithMaterial={chatWithMaterial} /> : null}
+      {render.library ? (
+        <MaterialLibraryPage onChatWithMaterial={chatWithMaterial} onLeave={leaveLibrary} />
+      ) : null}
     </div>
   );
 }

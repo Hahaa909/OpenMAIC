@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Base de conhecimento",
+      "back": "Voltar",
       "search": "Pesquisar por nome ou tipo de arquivo",
       "loading": "Carregando…",
       "retry": "Tentar novamente",
       "loadMore": "Carregar mais",
       "scope": {
-        "aria": "Seções da base de conhecimento",
-        "all": "Tudo",
-        "unfiled": "Sem pasta",
-        "folders": "Pastas"
-      },
-      "view": {
-        "aria": "Visualização",
-        "cards": "Cartões",
-        "list": "Lista"
+        "unfiled": "Sem pasta"
       },
       "status": {
         "uploading": "Enviando",
         "stored": "Armazenado · não analisado",
         "parsing": "Analisando",
         "searchable": "Pesquisável",
-        "failed": "Falha na análise",
-        "failedReason": "Motivo: {{reason}}"
+        "failed": "Falha na análise"
       },
       "column": {
         "name": "Nome",
         "status": "Status",
         "folder": "Pasta",
         "size": "Tamanho",
-        "added": "Adicionado em"
+        "date": "Data"
       },
       "limits": {
-        "perFile": "Até {{document}} por documento ou imagem, {{media}} por áudio ou vídeo",
-        "usage": "{{count}} de {{maxCount}} arquivos, {{bytes}} de {{maxBytes}}",
-        "storage": "Armazenamento {{used}} de {{quota}}",
-        "storageUnlimited": "Armazenamento {{used}} usado, sem limite"
+        "perFile": "Até {{document}} por documento ou imagem, {{media}} por áudio ou vídeo"
+      },
+      "usage": {
+        "bytes": "{{used}} usados de {{max}}",
+        "count": "{{count}} de {{maxCount}} arquivos"
       },
       "empty": {
         "title": "Sua base de conhecimento está vazia",
         "body": "Envie seus materiais didáticos, deixe o assistente organizá-los e analisá-los, e escolha-os com @ ao preparar um curso.",
         "folder": "Ainda não há materiais nesta pasta",
-        "unfiled": "Nenhum material sem pasta",
         "query": "Nenhum material corresponde a “{{query}}”"
       },
       "upload": {
         "button": "Enviar materiais",
-        "toUnfiled": "Os envios vão para “Sem pasta”",
         "dismiss": "Dispensar"
-      },
-      "folderGone": {
-        "message": "Esta pasta não existe mais",
-        "back": "Voltar para Tudo"
       },
       "error": {
         "load": "Não foi possível carregar a base de conhecimento",
@@ -2067,7 +2054,6 @@
         "more": "Mais ações para {{name}}",
         "rename": "Renomear",
         "move": "Mover para…",
-        "column": "Ações",
         "delete": "Excluir",
         "open": "Abrir o original",
         "chat": "Conversar sobre este material"
@@ -2080,7 +2066,6 @@
         "cancel": "Cancelar",
         "save": "Salvar",
         "create": "Criar",
-        "createFolderTitle": "Nova pasta",
         "renameFolderTitle": "Renomear pasta",
         "renameMaterialTitle": "Renomear material",
         "moveTitle": "Mover “{{name}}”",

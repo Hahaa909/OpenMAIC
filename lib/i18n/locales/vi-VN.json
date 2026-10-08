@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Kho kiến thức",
+      "back": "Quay lại",
       "search": "Tìm theo tên hoặc loại tệp",
       "loading": "Đang tải…",
       "retry": "Thử lại",
       "loadMore": "Tải thêm",
       "scope": {
-        "aria": "Các mục của kho kiến thức",
-        "all": "Tất cả",
-        "unfiled": "Chưa phân loại",
-        "folders": "Thư mục"
-      },
-      "view": {
-        "aria": "Chế độ xem",
-        "cards": "Thẻ",
-        "list": "Danh sách"
+        "unfiled": "Chưa phân loại"
       },
       "status": {
         "uploading": "Đang tải lên",
         "stored": "Đã lưu · chưa phân tích",
         "parsing": "Đang phân tích",
         "searchable": "Có thể tìm kiếm",
-        "failed": "Phân tích thất bại",
-        "failedReason": "Lý do: {{reason}}"
+        "failed": "Phân tích thất bại"
       },
       "column": {
         "name": "Tên",
         "status": "Trạng thái",
         "folder": "Thư mục",
         "size": "Kích thước",
-        "added": "Ngày thêm"
+        "date": "Ngày"
       },
       "limits": {
-        "perFile": "Tối đa {{document}} cho mỗi tài liệu hoặc hình ảnh, {{media}} cho mỗi âm thanh hoặc video",
-        "usage": "{{count}}/{{maxCount}} tệp, {{bytes}}/{{maxBytes}}",
-        "storage": "Dung lượng {{used}}/{{quota}}",
-        "storageUnlimited": "Dung lượng đã dùng {{used}}, không giới hạn"
+        "perFile": "Tối đa {{document}} cho mỗi tài liệu hoặc hình ảnh, {{media}} cho mỗi âm thanh hoặc video"
+      },
+      "usage": {
+        "bytes": "Đã dùng {{used}} / {{max}}",
+        "count": "{{count}} / {{maxCount}} tệp"
       },
       "empty": {
         "title": "Kho kiến thức của bạn đang trống",
         "body": "Tải lên tài liệu giảng dạy, để trợ lý sắp xếp và phân tích, rồi chọn chúng bằng @ khi soạn bài.",
         "folder": "Thư mục này chưa có tài liệu",
-        "unfiled": "Không có tài liệu chưa phân loại",
         "query": "Không có tài liệu nào khớp với “{{query}}”"
       },
       "upload": {
         "button": "Tải tài liệu lên",
-        "toUnfiled": "Tài liệu tải lên sẽ nằm trong “Chưa phân loại”",
         "dismiss": "Bỏ qua"
-      },
-      "folderGone": {
-        "message": "Thư mục này không còn tồn tại",
-        "back": "Quay lại Tất cả"
       },
       "error": {
         "load": "Không thể tải kho kiến thức",
@@ -2067,7 +2054,6 @@
         "more": "Thao tác khác cho {{name}}",
         "rename": "Đổi tên",
         "move": "Chuyển đến…",
-        "column": "Thao tác",
         "delete": "Xóa",
         "open": "Mở tệp gốc",
         "chat": "Trò chuyện với tài liệu này"
@@ -2080,7 +2066,6 @@
         "cancel": "Hủy",
         "save": "Lưu",
         "create": "Tạo",
-        "createFolderTitle": "Thư mục mới",
         "renameFolderTitle": "Đổi tên thư mục",
         "renameMaterialTitle": "Đổi tên tài liệu",
         "moveTitle": "Chuyển “{{name}}”",

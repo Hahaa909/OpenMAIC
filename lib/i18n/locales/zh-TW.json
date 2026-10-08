@@ -1981,57 +1981,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "知識庫",
+      "back": "返回",
       "search": "搜尋名稱或檔案類型",
       "loading": "載入中…",
       "retry": "重試",
       "loadMore": "載入更多",
       "scope": {
-        "aria": "知識庫分類",
-        "all": "全部",
-        "unfiled": "未歸檔",
-        "folders": "資料夾"
-      },
-      "view": {
-        "aria": "顯示方式",
-        "cards": "卡片",
-        "list": "清單"
+        "unfiled": "未歸檔"
       },
       "status": {
         "uploading": "上傳中",
         "stored": "已存入 · 未解析",
         "parsing": "解析中",
         "searchable": "可檢索",
-        "failed": "解析失敗",
-        "failedReason": "原因：{{reason}}"
+        "failed": "解析失敗"
       },
       "column": {
         "name": "名稱",
         "status": "狀態",
         "folder": "資料夾",
         "size": "大小",
-        "added": "新增時間"
+        "date": "日期"
       },
       "limits": {
-        "perFile": "單一文件或圖片不超過 {{document}}，音訊與影片不超過 {{media}}",
-        "usage": "已用 {{count}}/{{maxCount}} 份，{{bytes}}/{{maxBytes}}",
-        "storage": "儲存空間 {{used}}/{{quota}}",
-        "storageUnlimited": "儲存空間已用 {{used}}，不限額"
+        "perFile": "單一文件或圖片不超過 {{document}}，音訊與影片不超過 {{media}}"
+      },
+      "usage": {
+        "bytes": "已用 {{used}} / {{max}}",
+        "count": "{{count}} / {{maxCount}} 個檔案"
       },
       "empty": {
         "title": "知識庫還是空的",
         "body": "上傳教學資料，讓助理幫你歸檔與解析，備課時用 @ 選用。",
         "folder": "這個資料夾裡還沒有資料",
-        "unfiled": "沒有未歸檔的資料",
         "query": "找不到與「{{query}}」相符的資料"
       },
       "upload": {
         "button": "上傳資料",
-        "toUnfiled": "上傳的資料會放在「未歸檔」",
         "dismiss": "移除"
-      },
-      "folderGone": {
-        "message": "這個資料夾已不存在",
-        "back": "回到全部"
       },
       "error": {
         "load": "知識庫載入失敗",
@@ -2052,7 +2039,6 @@
         "more": "{{name}} 的更多操作",
         "rename": "重新命名",
         "move": "移動到…",
-        "column": "操作",
         "delete": "刪除",
         "open": "開啟原始檔案",
         "chat": "用這份資料對話"
@@ -2065,7 +2051,6 @@
         "cancel": "取消",
         "save": "儲存",
         "create": "建立",
-        "createFolderTitle": "新增資料夾",
         "renameFolderTitle": "重新命名資料夾",
         "renameMaterialTitle": "重新命名資料",
         "moveTitle": "移動「{{name}}」",

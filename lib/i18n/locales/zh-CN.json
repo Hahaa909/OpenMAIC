@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "知识库",
+      "back": "返回",
       "search": "搜索名称或文件类型",
       "loading": "加载中…",
       "retry": "重试",
       "loadMore": "加载更多",
       "scope": {
-        "aria": "知识库分类",
-        "all": "全部",
-        "unfiled": "未归档",
-        "folders": "文件夹"
-      },
-      "view": {
-        "aria": "显示方式",
-        "cards": "卡片",
-        "list": "列表"
+        "unfiled": "未归档"
       },
       "status": {
         "uploading": "上传中",
         "stored": "已存入 · 未解析",
         "parsing": "解析中",
         "searchable": "可检索",
-        "failed": "解析失败",
-        "failedReason": "原因：{{reason}}"
+        "failed": "解析失败"
       },
       "column": {
         "name": "名称",
         "status": "状态",
         "folder": "文件夹",
         "size": "大小",
-        "added": "添加时间"
+        "date": "日期"
       },
       "limits": {
-        "perFile": "单个文档或图片不超过 {{document}}，音视频不超过 {{media}}",
-        "usage": "已用 {{count}}/{{maxCount}} 份，{{bytes}}/{{maxBytes}}",
-        "storage": "存储 {{used}}/{{quota}}",
-        "storageUnlimited": "存储已用 {{used}}，不限额"
+        "perFile": "单个文档或图片不超过 {{document}}，音视频不超过 {{media}}"
+      },
+      "usage": {
+        "bytes": "已用 {{used}} / {{max}}",
+        "count": "{{count}} / {{maxCount}} 个文件"
       },
       "empty": {
         "title": "知识库还是空的",
         "body": "上传教学资料，让助手帮你归档和解析，备课时用 @ 选用。",
         "folder": "这个文件夹里还没有资料",
-        "unfiled": "没有未归档的资料",
         "query": "没有找到与“{{query}}”匹配的资料"
       },
       "upload": {
         "button": "上传资料",
-        "toUnfiled": "上传的资料会放在“未归档”",
         "dismiss": "移除"
-      },
-      "folderGone": {
-        "message": "这个文件夹已不存在",
-        "back": "回到全部"
       },
       "error": {
         "load": "知识库加载失败",
@@ -2067,7 +2054,6 @@
         "more": "{{name}} 的更多操作",
         "rename": "改名",
         "move": "移动到…",
-        "column": "操作",
         "delete": "删除",
         "open": "打开原文件",
         "chat": "用这份资料对话"
@@ -2080,7 +2066,6 @@
         "cancel": "取消",
         "save": "保存",
         "create": "创建",
-        "createFolderTitle": "新建文件夹",
         "renameFolderTitle": "重命名文件夹",
         "renameMaterialTitle": "重命名资料",
         "moveTitle": "移动“{{name}}”",

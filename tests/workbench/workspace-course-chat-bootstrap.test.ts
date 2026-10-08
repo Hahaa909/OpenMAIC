@@ -1389,6 +1389,44 @@ describe('the knowledge base page', () => {
       expect(mocks.routerPush).toHaveBeenCalledTimes(1);
     });
 
+    it('leaves the page by its way back to what it covered, and Back returns to the page', async () => {
+      await render();
+      await openLibrary();
+      expect(window.location.search).toBe('?session=session-1&view=library');
+      const onLeave = mocks.libraryProps?.onLeave as () => void;
+      expect(onLeave).toBeTypeOf('function');
+
+      await act(async () => onLeave());
+      // A navigation that drops the view (pushed), not a history step.
+      expect(mocks.routerPush).toHaveBeenLastCalledWith('/workspace?session=session-1');
+      expect(window.location.search).toBe('?session=session-1');
+      expect(libraryShown()).toBe(false);
+      expect(mocks.chatPaneProps?.hidden).toBe(false);
+
+      await travel('back');
+      expect(window.location.search).toBe('?session=session-1&view=library');
+      expect(libraryShown()).toBe(true);
+    });
+
+    it('leaves a page opened from a pasted link, with no history to go back to', async () => {
+      useRealHistory('/workspace?view=library');
+      mocks.searchParams = new URLSearchParams('view=library');
+      mocks.store.sessionId = null;
+      mocks.sessionRows = [];
+      await render();
+      expect(libraryShown()).toBe(true);
+
+      await act(async () => (mocks.libraryProps?.onLeave as () => void)());
+      expect(mocks.routerPush).toHaveBeenLastCalledWith('/workspace');
+      expect(window.location.search).toBe('');
+      expect(libraryShown()).toBe(false);
+      expect(layout()).toBe('home');
+      // Pushed: Back still reaches the page the link opened.
+      await travel('back');
+      expect(window.location.search).toBe('?view=library');
+      expect(libraryShown()).toBe(true);
+    });
+
     it('does not reopen an agent-created course after Back without the page either', async () => {
       await render();
       mocks.store.stageLinkStageIds = ['stage-1'];

@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Wissensbasis",
+      "back": "Zurück",
       "search": "Namen und Dateitypen durchsuchen",
       "loading": "Wird geladen…",
       "retry": "Erneut versuchen",
       "loadMore": "Mehr laden",
       "scope": {
-        "aria": "Bereiche der Wissensbasis",
-        "all": "Alle",
-        "unfiled": "Nicht abgelegt",
-        "folders": "Ordner"
-      },
-      "view": {
-        "aria": "Ansicht",
-        "cards": "Karten",
-        "list": "Liste"
+        "unfiled": "Nicht abgelegt"
       },
       "status": {
         "uploading": "Wird hochgeladen",
         "stored": "Gespeichert · nicht analysiert",
         "parsing": "Wird analysiert",
         "searchable": "Durchsuchbar",
-        "failed": "Analyse fehlgeschlagen",
-        "failedReason": "Grund: {{reason}}"
+        "failed": "Analyse fehlgeschlagen"
       },
       "column": {
         "name": "Name",
         "status": "Status",
         "folder": "Ordner",
         "size": "Größe",
-        "added": "Hinzugefügt"
+        "date": "Datum"
       },
       "limits": {
-        "perFile": "Bis {{document}} pro Dokument oder Bild, {{media}} pro Audio oder Video",
-        "usage": "{{count}} von {{maxCount}} Dateien, {{bytes}} von {{maxBytes}}",
-        "storage": "Speicher {{used}} von {{quota}}",
-        "storageUnlimited": "Speicher {{used}} belegt, ohne Limit"
+        "perFile": "Bis {{document}} pro Dokument oder Bild, {{media}} pro Audio oder Video"
+      },
+      "usage": {
+        "bytes": "{{used}} von {{max}} belegt",
+        "count": "{{count}} von {{maxCount}} Dateien"
       },
       "empty": {
         "title": "Deine Wissensbasis ist leer",
         "body": "Lade Unterrichtsmaterialien hoch, lass den Assistenten sie ablegen und analysieren, und wähle sie bei der Kursvorbereitung mit @ aus.",
         "folder": "In diesem Ordner sind noch keine Materialien",
-        "unfiled": "Keine nicht abgelegten Materialien",
         "query": "Keine Materialien passen zu „{{query}}“"
       },
       "upload": {
         "button": "Materialien hochladen",
-        "toUnfiled": "Hochgeladene Dateien landen in „Nicht abgelegt“",
         "dismiss": "Ausblenden"
-      },
-      "folderGone": {
-        "message": "Diesen Ordner gibt es nicht mehr",
-        "back": "Zurück zu „Alle“"
       },
       "error": {
         "load": "Die Wissensbasis konnte nicht geladen werden",
@@ -2067,7 +2054,6 @@
         "more": "Weitere Aktionen für {{name}}",
         "rename": "Umbenennen",
         "move": "Verschieben nach…",
-        "column": "Aktionen",
         "delete": "Löschen",
         "open": "Original öffnen",
         "chat": "Mit diesem Material chatten"
@@ -2080,7 +2066,6 @@
         "cancel": "Abbrechen",
         "save": "Speichern",
         "create": "Erstellen",
-        "createFolderTitle": "Neuer Ordner",
         "renameFolderTitle": "Ordner umbenennen",
         "renameMaterialTitle": "Material umbenennen",
         "moveTitle": "„{{name}}“ verschieben",

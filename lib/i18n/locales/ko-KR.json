@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "지식 베이스",
+      "back": "뒤로",
       "search": "이름 또는 파일 형식 검색",
       "loading": "불러오는 중…",
       "retry": "다시 시도",
       "loadMore": "더 불러오기",
       "scope": {
-        "aria": "지식 베이스 구분",
-        "all": "전체",
-        "unfiled": "미분류",
-        "folders": "폴더"
-      },
-      "view": {
-        "aria": "보기",
-        "cards": "카드",
-        "list": "목록"
+        "unfiled": "미분류"
       },
       "status": {
         "uploading": "업로드 중",
         "stored": "저장됨 · 분석 전",
         "parsing": "분석 중",
         "searchable": "검색 가능",
-        "failed": "분석 실패",
-        "failedReason": "이유: {{reason}}"
+        "failed": "분석 실패"
       },
       "column": {
         "name": "이름",
         "status": "상태",
         "folder": "폴더",
         "size": "크기",
-        "added": "추가일"
+        "date": "날짜"
       },
       "limits": {
-        "perFile": "문서·이미지는 최대 {{document}}, 오디오·동영상은 최대 {{media}}",
-        "usage": "{{count}}/{{maxCount}}개, {{bytes}}/{{maxBytes}}",
-        "storage": "저장 공간 {{used}}/{{quota}}",
-        "storageUnlimited": "저장 공간 {{used}} 사용 중, 제한 없음"
+        "perFile": "문서·이미지는 최대 {{document}}, 오디오·동영상은 최대 {{media}}"
+      },
+      "usage": {
+        "bytes": "{{max}} 중 {{used}} 사용",
+        "count": "파일 {{count}} / {{maxCount}}개"
       },
       "empty": {
         "title": "지식 베이스가 비어 있습니다",
         "body": "수업 자료를 업로드하면 어시스턴트가 정리하고 분석합니다. 수업을 준비할 때 @로 선택하세요.",
         "folder": "이 폴더에는 아직 자료가 없습니다",
-        "unfiled": "미분류 자료가 없습니다",
         "query": "“{{query}}”와 일치하는 자료가 없습니다"
       },
       "upload": {
         "button": "자료 업로드",
-        "toUnfiled": "업로드한 자료는 ‘미분류’에 들어갑니다",
         "dismiss": "닫기"
-      },
-      "folderGone": {
-        "message": "이 폴더는 더 이상 없습니다",
-        "back": "전체로 돌아가기"
       },
       "error": {
         "load": "지식 베이스를 불러오지 못했습니다",
@@ -2067,7 +2054,6 @@
         "more": "{{name}} 추가 작업",
         "rename": "이름 변경",
         "move": "이동…",
-        "column": "작업",
         "delete": "삭제",
         "open": "원본 파일 열기",
         "chat": "이 자료로 대화하기"
@@ -2080,7 +2066,6 @@
         "cancel": "취소",
         "save": "저장",
         "create": "만들기",
-        "createFolderTitle": "새 폴더",
         "renameFolderTitle": "폴더 이름 변경",
         "renameMaterialTitle": "자료 이름 변경",
         "moveTitle": "“{{name}}” 이동",

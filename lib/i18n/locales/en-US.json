@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Knowledge base",
+      "back": "Back",
       "search": "Search names and file types",
       "loading": "Loading…",
       "retry": "Retry",
       "loadMore": "Load more",
       "scope": {
-        "aria": "Knowledge base sections",
-        "all": "All",
-        "unfiled": "Unfiled",
-        "folders": "Folders"
-      },
-      "view": {
-        "aria": "View",
-        "cards": "Cards",
-        "list": "List"
+        "unfiled": "Unfiled"
       },
       "status": {
         "uploading": "Uploading",
         "stored": "Stored · not parsed",
         "parsing": "Parsing",
         "searchable": "Searchable",
-        "failed": "Parse failed",
-        "failedReason": "Reason: {{reason}}"
+        "failed": "Parse failed"
       },
       "column": {
         "name": "Name",
         "status": "Status",
         "folder": "Folder",
         "size": "Size",
-        "added": "Added"
+        "date": "Date"
       },
       "limits": {
-        "perFile": "Up to {{document}} per document or image, {{media}} per audio or video",
-        "usage": "{{count}} of {{maxCount}} files, {{bytes}} of {{maxBytes}}",
-        "storage": "Storage {{used}} of {{quota}}",
-        "storageUnlimited": "Storage {{used}} used, no limit"
+        "perFile": "Up to {{document}} per document or image, {{media}} per audio or video"
+      },
+      "usage": {
+        "bytes": "Used {{used}} of {{max}}",
+        "count": "{{count}} of {{maxCount}} files"
       },
       "empty": {
         "title": "Your knowledge base is empty",
         "body": "Upload your teaching materials, let the assistant file and parse them, then pick them with @ while you prepare a course.",
         "folder": "No materials in this folder yet",
-        "unfiled": "No unfiled materials",
         "query": "No materials match “{{query}}”"
       },
       "upload": {
         "button": "Upload materials",
-        "toUnfiled": "Uploads go to Unfiled",
         "dismiss": "Dismiss"
-      },
-      "folderGone": {
-        "message": "This folder no longer exists",
-        "back": "Back to All"
       },
       "error": {
         "load": "The knowledge base could not be loaded",
@@ -2067,7 +2054,6 @@
         "more": "More actions for {{name}}",
         "rename": "Rename",
         "move": "Move to…",
-        "column": "Actions",
         "delete": "Delete",
         "open": "Open original",
         "chat": "Chat with this material"
@@ -2080,7 +2066,6 @@
         "cancel": "Cancel",
         "save": "Save",
         "create": "Create",
-        "createFolderTitle": "New folder",
         "renameFolderTitle": "Rename folder",
         "renameMaterialTitle": "Rename material",
         "moveTitle": "Move “{{name}}”",

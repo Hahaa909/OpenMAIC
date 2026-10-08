@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Base de conocimientos",
+      "back": "Volver",
       "search": "Buscar por nombre o tipo de archivo",
       "loading": "Cargando…",
       "retry": "Reintentar",
       "loadMore": "Cargar más",
       "scope": {
-        "aria": "Secciones de la base de conocimientos",
-        "all": "Todo",
-        "unfiled": "Sin clasificar",
-        "folders": "Carpetas"
-      },
-      "view": {
-        "aria": "Vista",
-        "cards": "Tarjetas",
-        "list": "Lista"
+        "unfiled": "Sin clasificar"
       },
       "status": {
         "uploading": "Subiendo",
         "stored": "Guardado · sin analizar",
         "parsing": "Analizando",
         "searchable": "Consultable",
-        "failed": "Error al analizar",
-        "failedReason": "Motivo: {{reason}}"
+        "failed": "Error al analizar"
       },
       "column": {
         "name": "Nombre",
         "status": "Estado",
         "folder": "Carpeta",
         "size": "Tamaño",
-        "added": "Agregado"
+        "date": "Fecha"
       },
       "limits": {
-        "perFile": "Hasta {{document}} por documento o imagen, {{media}} por audio o video",
-        "usage": "{{count}} de {{maxCount}} archivos, {{bytes}} de {{maxBytes}}",
-        "storage": "Almacenamiento {{used}} de {{quota}}",
-        "storageUnlimited": "Almacenamiento {{used}} en uso, sin límite"
+        "perFile": "Hasta {{document}} por documento o imagen, {{media}} por audio o video"
+      },
+      "usage": {
+        "bytes": "{{used}} usados de {{max}}",
+        "count": "{{count}} de {{maxCount}} archivos"
       },
       "empty": {
         "title": "Tu base de conocimientos está vacía",
         "body": "Sube tus materiales didácticos, deja que el asistente los clasifique y analice, y elígelos con @ al preparar un curso.",
         "folder": "Esta carpeta aún no tiene materiales",
-        "unfiled": "No hay materiales sin clasificar",
         "query": "Ningún material coincide con “{{query}}”"
       },
       "upload": {
         "button": "Subir materiales",
-        "toUnfiled": "Lo que subas va a “Sin clasificar”",
         "dismiss": "Descartar"
-      },
-      "folderGone": {
-        "message": "Esta carpeta ya no existe",
-        "back": "Volver a Todo"
       },
       "error": {
         "load": "No se pudo cargar la base de conocimientos",
@@ -2067,7 +2054,6 @@
         "more": "Más acciones para {{name}}",
         "rename": "Cambiar nombre",
         "move": "Mover a…",
-        "column": "Acciones",
         "delete": "Eliminar",
         "open": "Abrir el original",
         "chat": "Conversar sobre este material"
@@ -2080,7 +2066,6 @@
         "cancel": "Cancelar",
         "save": "Guardar",
         "create": "Crear",
-        "createFolderTitle": "Nueva carpeta",
         "renameFolderTitle": "Cambiar nombre de la carpeta",
         "renameMaterialTitle": "Cambiar nombre del material",
         "moveTitle": "Mover “{{name}}”",

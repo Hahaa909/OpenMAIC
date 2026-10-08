@@ -37,6 +37,8 @@ export interface LibraryFolder {
   readonly name: string;
   /** Ready sources filed in it (what the listing shows), not a deletion check. */
   readonly materialCount: number;
+  /** Last renamed or created, epoch milliseconds; absent when the answer has none. */
+  readonly updatedAt?: number;
 }
 
 /** The limits upload admission applies, and the owner's usage of them (§8). */
@@ -249,6 +251,7 @@ export async function fetchMaterialLibraryFolders(
         id: folder.id,
         name: folder.name,
         materialCount: typeof folder.materialCount === 'number' ? folder.materialCount : 0,
+        ...(typeof folder.updatedAt === 'number' ? { updatedAt: folder.updatedAt } : {}),
       },
     ];
   });
@@ -325,12 +328,15 @@ export async function renameLibraryFolder(folderId: string, name: string): Promi
  * Create a folder, or get the owner's folder of that name back
  * (`created: false`): either way, the folder the name now names.
  */
-export async function createLibraryFolder(name: string): Promise<{ folderId: string }> {
+export async function createLibraryFolder(
+  name: string,
+): Promise<{ folderId: string; created: boolean }> {
   const body = (await libraryWrite('/api/materials/folders', 'POST', { name })) as {
     folder?: { id?: unknown };
+    created?: unknown;
   };
   if (typeof body.folder?.id !== 'string') throw new MaterialLibraryRequestError(500);
-  return { folderId: body.folder.id };
+  return { folderId: body.folder.id, created: body.created !== false };
 }
 
 /** Move sources into a folder, or into Unfiled with `null`: all of them or none. */

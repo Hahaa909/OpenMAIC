@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "Base de connaissances",
+      "back": "Retour",
       "search": "Rechercher par nom ou type de fichier",
       "loading": "Chargement…",
       "retry": "Réessayer",
       "loadMore": "Charger plus",
       "scope": {
-        "aria": "Sections de la base de connaissances",
-        "all": "Tout",
-        "unfiled": "Non classés",
-        "folders": "Dossiers"
-      },
-      "view": {
-        "aria": "Affichage",
-        "cards": "Cartes",
-        "list": "Liste"
+        "unfiled": "Non classés"
       },
       "status": {
         "uploading": "Importation",
         "stored": "Enregistré · non analysé",
         "parsing": "Analyse en cours",
         "searchable": "Consultable",
-        "failed": "Échec de l’analyse",
-        "failedReason": "Raison : {{reason}}"
+        "failed": "Échec de l’analyse"
       },
       "column": {
         "name": "Nom",
         "status": "État",
         "folder": "Dossier",
         "size": "Taille",
-        "added": "Ajouté le"
+        "date": "Date"
       },
       "limits": {
-        "perFile": "Jusqu’à {{document}} par document ou image, {{media}} par audio ou vidéo",
-        "usage": "{{count}} sur {{maxCount}} fichiers, {{bytes}} sur {{maxBytes}}",
-        "storage": "Stockage {{used}} sur {{quota}}",
-        "storageUnlimited": "Stockage {{used}} utilisé, sans limite"
+        "perFile": "Jusqu’à {{document}} par document ou image, {{media}} par audio ou vidéo"
+      },
+      "usage": {
+        "bytes": "{{used}} utilisés sur {{max}}",
+        "count": "{{count}} fichiers sur {{maxCount}}"
       },
       "empty": {
         "title": "Votre base de connaissances est vide",
         "body": "Importez vos supports de cours, laissez l’assistant les classer et les analyser, puis choisissez-les avec @ en préparant un cours.",
         "folder": "Aucun document dans ce dossier pour l’instant",
-        "unfiled": "Aucun document non classé",
         "query": "Aucun document ne correspond à « {{query}} »"
       },
       "upload": {
         "button": "Importer des documents",
-        "toUnfiled": "Les fichiers importés vont dans « Non classés »",
         "dismiss": "Masquer"
-      },
-      "folderGone": {
-        "message": "Ce dossier n’existe plus",
-        "back": "Revenir à Tout"
       },
       "error": {
         "load": "Impossible de charger la base de connaissances",
@@ -2067,7 +2054,6 @@
         "more": "Autres actions pour {{name}}",
         "rename": "Renommer",
         "move": "Déplacer vers…",
-        "column": "Actions",
         "delete": "Supprimer",
         "open": "Ouvrir l’original",
         "chat": "Discuter de ce document"
@@ -2080,7 +2066,6 @@
         "cancel": "Annuler",
         "save": "Enregistrer",
         "create": "Créer",
-        "createFolderTitle": "Nouveau dossier",
         "renameFolderTitle": "Renommer le dossier",
         "renameMaterialTitle": "Renommer le document",
         "moveTitle": "Déplacer « {{name}} »",

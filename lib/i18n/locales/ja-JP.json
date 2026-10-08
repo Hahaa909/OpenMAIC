@@ -1996,57 +1996,44 @@
   "workspace": {
     "knowledgeBase": {
       "title": "ナレッジベース",
+      "back": "戻る",
       "search": "名前やファイル形式で検索",
       "loading": "読み込み中…",
       "retry": "再試行",
       "loadMore": "さらに読み込む",
       "scope": {
-        "aria": "ナレッジベースの区分",
-        "all": "すべて",
-        "unfiled": "未分類",
-        "folders": "フォルダー"
-      },
-      "view": {
-        "aria": "表示",
-        "cards": "カード",
-        "list": "リスト"
+        "unfiled": "未分類"
       },
       "status": {
         "uploading": "アップロード中",
         "stored": "保存済み · 未解析",
         "parsing": "解析中",
         "searchable": "検索可能",
-        "failed": "解析失敗",
-        "failedReason": "理由：{{reason}}"
+        "failed": "解析失敗"
       },
       "column": {
         "name": "名前",
         "status": "状態",
         "folder": "フォルダー",
         "size": "サイズ",
-        "added": "追加日"
+        "date": "日付"
       },
       "limits": {
-        "perFile": "文書・画像は {{document}} まで、音声・動画は {{media}} まで",
-        "usage": "{{count}}/{{maxCount}} 件、{{bytes}}/{{maxBytes}}",
-        "storage": "ストレージ {{used}}/{{quota}}",
-        "storageUnlimited": "ストレージ {{used}} 使用中（上限なし）"
+        "perFile": "文書・画像は {{document}} まで、音声・動画は {{media}} まで"
+      },
+      "usage": {
+        "bytes": "{{max}} 中 {{used}} を使用",
+        "count": "{{count}} / {{maxCount}} ファイル"
       },
       "empty": {
         "title": "ナレッジベースはまだ空です",
         "body": "教材をアップロードすると、アシスタントが整理・解析します。授業準備のときに @ で選べます。",
         "folder": "このフォルダーにはまだ資料がありません",
-        "unfiled": "未分類の資料はありません",
         "query": "「{{query}}」に一致する資料はありません"
       },
       "upload": {
         "button": "資料をアップロード",
-        "toUnfiled": "アップロードした資料は「未分類」に入ります",
         "dismiss": "閉じる"
-      },
-      "folderGone": {
-        "message": "このフォルダーはもう存在しません",
-        "back": "すべてに戻る"
       },
       "error": {
         "load": "ナレッジベースを読み込めませんでした",
@@ -2067,7 +2054,6 @@
         "more": "{{name}} のその他の操作",
         "rename": "名前を変更",
         "move": "移動…",
-        "column": "操作",
         "delete": "削除",
         "open": "元のファイルを開く",
         "chat": "この資料で会話する"
@@ -2080,7 +2066,6 @@
         "cancel": "キャンセル",
         "save": "保存",
         "create": "作成",
-        "createFolderTitle": "新しいフォルダー",
         "renameFolderTitle": "フォルダー名を変更",
         "renameMaterialTitle": "資料名を変更",
         "moveTitle": "「{{name}}」を移動",

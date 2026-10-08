@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 /**
- * The knowledge base page (RFC #1716 §1, §7, §8): what it asks the library
- * for, how it shows each source's state and the upload limits, that a failed
- * read is never an empty library, and that only the latest answer paints.
+ * The knowledge base page as one file-manager list (RFC #1716 §1, §7, §8;
+ * #1835 review): what it reads and shows, the inline new folder, the folder
+ * rows, uploads, organizing, deleting and the hand-over to a conversation.
+ * The tree's own paging and refresh rules are `material-library-tree.test.ts`;
+ * these are the page on top of them.
  */
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -16,19 +18,19 @@ vi.mock('@/lib/hooks/use-i18n', () => ({
   }),
 }));
 
-import { MaterialLibraryPage } from '@/components/workbench/workspace/MaterialLibraryPage';
 import {
-  MATERIAL_LIBRARY_POLL_MS,
-  useMaterialLibrary,
-  type MaterialLibraryData,
-} from '@/lib/workbench/use-material-library';
+  formatLibraryDate,
+  MaterialLibraryPage,
+} from '@/components/workbench/workspace/MaterialLibraryPage';
+import { MATERIAL_LIBRARY_TREE_POLL_MS } from '@/lib/workbench/use-material-library-tree';
 import { useWorkbenchStore } from '@/lib/workbench/session-store';
 import { deleteOutcomeOf } from '@/components/workbench/workspace/MaterialLibraryDialogs';
 import {
+  createLibraryFolder,
+  fetchMaterialLibraryFolders,
   formatMaterialBytes,
   MaterialLibraryRequestError,
   materialLibraryErrorOf,
-  type LibraryScope,
 } from '@/lib/workbench/material-library-client';
 
 const LIMITS = {
@@ -53,6 +55,8 @@ const source = (id: string, extra: Record<string, unknown> = {}) => ({
   createdAt: '2026-10-01T00:00:00.000Z',
   ...extra,
 });
+const inF1 = (id: string, extra: Record<string, unknown> = {}) =>
+  source(id, { folderId: 'f1', folderName: 'Unit 1', ...extra });
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -74,6 +78,7 @@ interface WriteCall {
 }
 let writeMaterial: (call: WriteCall) => Promise<Response> | Response;
 const writeCalls: WriteCall[] = [];
+let folderReads = 0;
 
 function stubFetch() {
   vi.stubGlobal(
@@ -96,7 +101,10 @@ function stubFetch() {
         writeCalls.push(call);
         return writeMaterial(call);
       }
-      if (url.pathname === '/api/materials/folders') return folders();
+      if (url.pathname === '/api/materials/folders') {
+        folderReads += 1;
+        return folders();
+      }
       if (url.pathname === '/api/materials' && init?.method === 'POST') {
         uploadCalls.push({ url: input, init });
         return uploadMaterial(init.body as File);
@@ -110,13 +118,20 @@ function stubFetch() {
   );
 }
 
-const settle = (milliseconds = 0) =>
+/** Let answers land: reading a response body takes several macrotasks in jsdom. */
+const settle = (milliseconds = 20) =>
   act(async () => {
     await new Promise((resolve) => setTimeout(resolve, milliseconds));
   });
 
 /** Mounted roots still alive; `afterEach` unmounts any a failed test left. */
 const mounted = new Set<() => Promise<void>>();
+
+const props = (extra: Record<string, unknown> = {}) => ({
+  onChatWithMaterial: () => {},
+  onLeave: () => {},
+  ...extra,
+});
 
 function mount() {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -140,6 +155,12 @@ function mount() {
     dispose,
   };
 }
+async function openPage(extra: Record<string, unknown> = {}) {
+  const page = mount();
+  await page.render(createElement(MaterialLibraryPage, props(extra)));
+  await settle();
+  return page;
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -149,10 +170,47 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const inDocument = (testId: string) =>
+  document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+const openMenu = async (testId: string) => {
+  const trigger = inDocument(testId)!;
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
+    );
+    trigger.click();
+  });
+};
+const choose = (testId: string) =>
+  act(async () => {
+    inDocument(testId)!.click();
+  });
+const typeInto = async (element: HTMLInputElement, value: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+};
+const typeName = (value: string) =>
+  typeInto(inDocument('kb-name-dialog-input') as HTMLInputElement, value);
+const submitName = async () => {
+  await choose('kb-name-dialog-submit');
+  await settle();
+};
+const search = async (value: string) => {
+  await typeInto(inDocument('kb-search') as HTMLInputElement, value);
+  await settle(350);
+};
+const expand = async (folderId: string) => {
+  await choose(`kb-folder-toggle-${folderId}`);
+  await settle();
+};
+
 beforeEach(() => {
   libraryCalls.length = 0;
   uploadCalls.length = 0;
   writeCalls.length = 0;
+  folderReads = 0;
   writeMaterial = ({ path }) =>
     path === '/api/materials/folders'
       ? json({ folder: { id: 'f-new', name: 'New' }, created: true }, 201)
@@ -168,145 +226,95 @@ beforeEach(() => {
       },
       201,
     );
-  library = () => json({ materials: [source('a')], limits: LIMITS });
+  library = (params) => {
+    const folderId = params.get('folderId');
+    return json({
+      materials:
+        folderId === 'f1'
+          ? [inF1('in-f1')]
+          : folderId && folderId !== 'unfiled'
+            ? []
+            : [source('a')],
+      ...(params.get('limits') === '0' ? {} : { limits: LIMITS }),
+    });
+  };
   folders = () =>
-    json({ folders: [{ id: 'f1', name: 'Unit 1', materialCount: 2, createdAt: 1, updatedAt: 1 }] });
+    json({
+      folders: [
+        { id: 'f1', name: 'Unit 1', materialCount: 2, createdAt: 1, updatedAt: 1 },
+        { id: 'f2', name: 'Unit 2', materialCount: 0, createdAt: 1, updatedAt: 1 },
+      ],
+    });
   stubFetch();
 });
 
 afterEach(async () => {
   for (const dispose of [...mounted]) await dispose();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
-describe('what the page asks the library for', () => {
-  it('lists sources of All, Unfiled or one folder, and always asks for the limits', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    await page.click('kb-scope-unfiled');
-    await settle();
-    await page.click('kb-scope-folder-f1');
-    await settle();
+// ── Reading and showing ────────────────────────────────────────────────────
 
-    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual([null, 'unfiled', 'f1']);
-    for (const params of libraryCalls) {
-      expect(params.get('sources')).toBe('1');
-      expect(params.get('limit')).toBe('200');
-      expect(params.has('limits')).toBe(false);
-    }
-    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
-    expect(page.query('kb-scope-folder-f1')?.textContent).toContain('2');
-    await page.dispose();
-  });
+describe('the list', () => {
+  it('reads the folders and the files in no folder; a folder’s files only once expanded', async () => {
+    const page = await openPage();
+    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual(['unfiled']);
+    expect(libraryCalls[0]!.get('sources')).toBe('1');
+    expect(libraryCalls[0]!.get('limit')).toBe('200');
+    expect(libraryCalls[0]!.has('limits')).toBe(false);
 
-  it('asks again with the typed query once typing settles', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    const input = page.query('kb-search') as HTMLInputElement;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-        input,
-        '  photosynthesis ',
-      );
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await settle(350);
-    expect(libraryCalls.at(-1)?.get('query')).toBe('photosynthesis');
-    await page.dispose();
-  });
-});
+    // Folders first, then the files in no folder.
+    const rows = [
+      ...page.container.querySelectorAll(
+        '[data-testid^="kb-folder-"], [data-testid^="kb-material-"]',
+      ),
+    ]
+      .map((row) => row.getAttribute('data-testid'))
+      .filter((id) => id === 'kb-folder-f1' || id === 'kb-folder-f2' || id === 'kb-material-a');
+    expect(rows).toEqual(['kb-folder-f1', 'kb-folder-f2', 'kb-material-a']);
+    expect(page.query('kb-folder-f1')?.textContent).toContain('(2)');
+    expect(page.query('kb-folder-toggle-f1')?.getAttribute('aria-expanded')).toBe('false');
+    expect(page.query('kb-material-in-f1')).toBeNull();
 
-describe('what the page shows', () => {
-  it('names every processing state, a failure with its reason', async () => {
-    library = () =>
-      json({
-        materials: [
-          source('idle', { extraction: { status: 'idle' } }),
-          source('pending', { extraction: { status: 'pending' } }),
-          source('running', { extraction: { status: 'running' } }),
-          source('done'),
-          source('failed', { extraction: { status: 'failed', reason: 'quota exceeded' } }),
-        ],
-        limits: LIMITS,
-      });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+    await expand('f1');
+    expect(libraryCalls.at(-1)?.get('folderId')).toBe('f1');
+    expect(libraryCalls.at(-1)?.get('limits')).toBe('0');
+    expect(page.query('kb-folder-toggle-f1')?.getAttribute('aria-expanded')).toBe('true');
+    expect(page.query('kb-folder-files-f1')?.contains(page.query('kb-material-in-f1'))).toBe(true);
 
-    const status = (id: string) => page.query(`kb-status-${id}`)?.textContent;
-    expect(status('idle')).toBe('workspace.knowledgeBase.status.stored');
-    expect(status('pending')).toBe('workspace.knowledgeBase.status.parsing');
-    expect(status('running')).toBe('workspace.knowledgeBase.status.parsing');
-    expect(status('done')).toBe('workspace.knowledgeBase.status.searchable');
-    expect(status('failed')).toBe(
-      'workspace.knowledgeBase.status.failed' +
-        'workspace.knowledgeBase.status.failedReason{"reason":"quota exceeded"}',
+    await expand('f1');
+    expect(page.query('kb-material-in-f1')).toBeNull();
+    // An empty folder says so when opened.
+    await expand('f2');
+    expect(page.query('kb-folder-empty-f2')?.textContent).toBe(
+      'workspace.knowledgeBase.empty.folder',
     );
     await page.dispose();
   });
 
-  it('shows the limits before any upload, a disabled pool quota as no limit', async () => {
-    library = () => json({ materials: [], limits: { ...LIMITS, assetQuotaBytes: null } });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-
-    const limits = page.query('kb-limits')?.textContent ?? '';
-    expect(limits).toContain('"document":"50 MB"');
-    expect(limits).toContain('"count":3,"maxCount":100');
-    expect(limits).toContain('"maxBytes":"2 GB"');
-    expect(limits).toContain('workspace.knowledgeBase.limits.storageUnlimited{"used":"4 KB"}');
-    await page.dispose();
-  });
-
-  it('says what the knowledge base is for when it is empty, and not for an empty folder', async () => {
-    library = () => json({ materials: [], limits: LIMITS });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    expect(page.query('kb-onboarding')?.textContent).toContain(
-      'workspace.knowledgeBase.empty.body',
+  it('searches as one flat list with each file’s folder, and is back to the tree once cleared', async () => {
+    library = (params) =>
+      params.get('query')
+        ? json({ materials: [inF1('hit'), source('loose')], limits: LIMITS })
+        : json({ materials: [source('a')], limits: LIMITS });
+    const page = await openPage();
+    await expand('f1');
+    await search('  photosynthesis ');
+    const asked = libraryCalls.at(-1)!;
+    expect(asked.get('query')).toBe('photosynthesis');
+    expect(asked.get('folderId')).toBeNull();
+    expect(page.query('kb-tree')).toBeNull();
+    expect(page.query('kb-material-hit')?.textContent).toContain('Unit 1');
+    expect(page.query('kb-material-loose')?.textContent).toContain(
+      'workspace.knowledgeBase.scope.unfiled',
     );
 
-    await page.click('kb-scope-folder-f1');
+    // Clearing goes back at once, with the folder still open.
+    await typeInto(inDocument('kb-search') as HTMLInputElement, '');
     await settle();
-    expect(page.query('kb-onboarding')).toBeNull();
-    expect(page.query('kb-empty')?.textContent).toContain('workspace.knowledgeBase.empty.folder');
-    await page.dispose();
-  });
-
-  it('switches between cards and a list of the same sources', async () => {
-    library = () => json({ materials: [source('a', { folderId: 'f1', folderName: 'Unit 1' })] });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    expect(page.query('kb-cards')?.textContent).toContain('Unit 1');
-
-    await page.click('kb-view-list');
-    expect(page.query('kb-cards')).toBeNull();
-    expect(page.query('kb-list')?.textContent).toContain('a.pdf');
-    expect(page.query('kb-view-list')?.getAttribute('aria-pressed')).toBe('true');
-    await page.dispose();
-  });
-
-  it('reports a failed read as an error, never as an empty library, and retries', async () => {
-    library = () =>
-      json({ success: false, errorCode: 'INTERNAL_ERROR', error: 'boom', reason: 'x' }, 500);
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-
-    expect(page.query('kb-error')?.textContent).toContain('workspace.knowledgeBase.error.load');
-    expect(page.query('kb-onboarding')).toBeNull();
-    expect(page.query('kb-empty')).toBeNull();
-
-    library = () => json({ materials: [source('a')], limits: LIMITS });
-    await page.click('kb-retry');
-    await settle();
-    expect(page.query('kb-error')).toBeNull();
-    expect(page.query('kb-material-a')).not.toBeNull();
+    expect(page.query('kb-tree')).not.toBeNull();
+    expect(page.query('kb-folder-toggle-f1')?.getAttribute('aria-expanded')).toBe('true');
     await page.dispose();
   });
 
@@ -316,463 +324,327 @@ describe('what the page shows', () => {
       params.get('query') === 'old'
         ? slow.promise
         : json({ materials: [source(params.get('query') ?? 'all')], limits: LIMITS });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    const type = async (value: string) => {
-      const input = page.query('kb-search') as HTMLInputElement;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-          input,
-          value,
-        );
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await settle(350);
-    };
-    await type('old');
-    await type('new');
+    const page = await openPage();
+    await search('old');
+    await search('new');
     expect(page.query('kb-material-new')).not.toBeNull();
-
     await act(async () => slow.resolve(json({ materials: [source('old')], limits: LIMITS })));
     await settle();
     expect(page.query('kb-material-old')).toBeNull();
     expect(page.query('kb-material-new')).not.toBeNull();
     await page.dispose();
   });
-});
 
-describe('loading more, and refreshing what is loaded', () => {
-  /** Record what the hook returned, outside the component. */
-  function recorder(sink: { current: MaterialLibraryData | null }) {
-    return (value: MaterialLibraryData) => {
-      sink.current = value;
-    };
-  }
-
-  function Probe({
-    scope,
-    record,
-  }: {
-    readonly scope: LibraryScope;
-    readonly record: (value: MaterialLibraryData) => void;
-  }) {
-    record(useMaterialLibrary({ scope, query: '' }));
-    return null;
-  }
-
-  it('appends the next page, then refreshes both from the new cursors in one swap', async () => {
-    let round = 0;
-    library = (params) => {
-      const before = params.get('before');
-      if (!before) {
-        return json({
-          materials: [source(`r${round}-1`), source('shared')],
-          limits: LIMITS,
-          nextBefore: `cursor-${round}`,
-        });
-      }
-      return json({ materials: [source('shared'), source(`after-${before}`)], limits: LIMITS });
-    };
-    const sink = { current: null as MaterialLibraryData | null };
-    const page = mount();
-    await page.render(createElement(Probe, { scope: { kind: 'all' }, record: recorder(sink) }));
-    await settle();
-    expect(sink.current?.hasMore).toBe(true);
-
-    await act(async () => sink.current!.loadMore());
-    await settle();
-    expect(libraryCalls.at(-1)?.get('before')).toBe('cursor-0');
-    // A material on both pages is listed once.
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual([
-      'r0-1',
-      'shared',
-      'after-cursor-0',
-    ]);
-    expect(sink.current?.hasMore).toBe(false);
-
-    round = 1;
-    libraryCalls.length = 0;
-    await act(async () => sink.current!.reload());
-    await settle();
-    // Two pages again, the second from the cursor THIS refresh's first page gave.
-    expect(libraryCalls.map((params) => params.get('before'))).toEqual([null, 'cursor-1']);
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual([
-      'r1-1',
-      'shared',
-      'after-cursor-1',
-    ]);
+  it('names every processing state; a parse shows a turning mark; a failure only that it failed', async () => {
+    library = () =>
+      json({
+        materials: [
+          source('idle', { extraction: { status: 'idle' } }),
+          source('pending', { extraction: { status: 'pending' } }),
+          source('running', { extraction: { status: 'running' } }),
+          source('done'),
+          source('failed', {
+            extraction: { status: 'failed', reason: 'MinerU base URL is required' },
+          }),
+        ],
+        limits: LIMITS,
+      });
+    const page = await openPage();
+    const status = (id: string) => page.query(`kb-status-${id}`)?.textContent;
+    expect(status('idle')).toBe('workspace.knowledgeBase.status.stored');
+    expect(status('pending')).toBe('workspace.knowledgeBase.status.parsing');
+    expect(status('running')).toBe('workspace.knowledgeBase.status.parsing');
+    expect(status('done')).toBe('workspace.knowledgeBase.status.searchable');
+    expect(status('failed')).toBe('workspace.knowledgeBase.status.failed');
+    expect(page.query('kb-status-running-spinner')).not.toBeNull();
+    expect(page.query('kb-status-done-spinner')).toBeNull();
+    // The backend's own text is not shown in the row.
+    expect(page.container.textContent).not.toContain('MinerU');
     await page.dispose();
   });
 
-  it('keeps the shown list when a refresh fails part-way, and says so', async () => {
-    let failSecond = false;
-    library = (params) => {
-      if (!params.get('before')) {
-        return json({ materials: [source('one')], limits: LIMITS, nextBefore: 'c' });
-      }
-      return failSecond
-        ? json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503)
-        : json({ materials: [source('two')], limits: LIMITS });
-    };
-    const sink = { current: null as MaterialLibraryData | null };
-    const page = mount();
-    await page.render(createElement(Probe, { scope: { kind: 'all' }, record: recorder(sink) }));
-    await settle();
-    await act(async () => sink.current!.loadMore());
-    await settle();
-
-    failSecond = true;
-    await act(async () => sink.current!.reload());
-    await settle();
-    expect(sink.current?.status).toBe('ready');
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual(['one', 'two']);
-    expect(sink.current?.error).toMatchObject({ status: 503, code: 'OWNER_BUSY' });
+  it('shows the usage as one bar with the file count, the per-file limits on the upload, no pool quota', async () => {
+    const page = await openPage();
+    const bar = page.query('kb-usage-bar')!;
+    expect(bar.getAttribute('role')).toBe('progressbar');
+    expect(bar.getAttribute('aria-valuenow')).toBe(String(LIMITS.usedBytes));
+    expect(bar.getAttribute('aria-valuemax')).toBe(String(LIMITS.maxTotalBytes));
+    expect(page.query('kb-usage')?.textContent).toContain(
+      'workspace.knowledgeBase.usage.bytes{"used":"2 KB","max":"2 GB"}',
+    );
+    expect(page.query('kb-usage-count')?.textContent).toBe(
+      'workspace.knowledgeBase.usage.count{"count":3,"maxCount":100}',
+    );
+    // The upload button is described by the per-file limits, written out
+    // where there is no hover.
+    const upload = page.query('kb-upload')!;
+    const describedBy = upload.getAttribute('aria-describedby')!;
+    expect(document.getElementById(describedBy)?.textContent).toBe(
+      'workspace.knowledgeBase.limits.perFile{"document":"50 MB","media":"50 MB"}',
+    );
+    expect(page.query('kb-upload-limits')?.className).toContain('md:hidden');
+    // The pool quota stays off the page.
+    expect(page.container.textContent).not.toContain('10 GB');
+    expect(page.container.textContent).not.toContain('4 KB');
     await page.dispose();
   });
 
-  it('ignores load more while a refresh rereads the list, then pages from the fresh cursor', async () => {
-    library = () => json({ materials: [source('initial')], limits: LIMITS, nextBefore: 'old' });
-    const sink = { current: null as MaterialLibraryData | null };
-    const page = mount();
-    await page.render(createElement(Probe, { scope: { kind: 'all' }, record: recorder(sink) }));
+  it('says what the knowledge base is for only when it holds nothing, and not while uploading', async () => {
+    library = () => json({ materials: [], limits: LIMITS });
+    folders = () => json({ folders: [] });
+    const stored = deferred<Response>();
+    uploadMaterial = () => stored.promise;
+    const page = await openPage();
+    expect(page.query('kb-onboarding')?.textContent).toContain(
+      'workspace.knowledgeBase.empty.body',
+    );
+
+    const input = page.query('kb-upload-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['%PDF'], 'first.pdf', { type: 'application/pdf' })],
+    });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(page.query('kb-onboarding')).toBeNull();
+    expect(page.query('kb-upload-1')?.textContent).toContain(
+      'workspace.knowledgeBase.status.uploading',
+    );
+    await act(async () => stored.resolve(json({ materialId: 'm1' }, 201)));
     await settle();
 
-    const refreshing = deferred<Response>();
-    library = (params) =>
-      params.get('before')
-        ? json({ materials: [source(`after-${params.get('before')}`)], limits: LIMITS })
-        : refreshing.promise;
-    libraryCalls.length = 0;
-    await act(async () => sink.current!.reload());
-    expect(sink.current?.refreshing).toBe(true);
-    await act(async () => sink.current!.loadMore());
+    // With folders, an empty top level is not an empty knowledge base.
+    folders = () => json({ folders: [{ id: 'f1', name: 'Unit 1', materialCount: 0 }] });
+    await act(async () => window.dispatchEvent(new Event('focus')));
     await settle();
-    // No page was read from the old cursor while the list is being reread.
-    expect(libraryCalls.map((params) => params.get('before'))).toEqual([null]);
+    expect(page.query('kb-onboarding')).toBeNull();
+    await page.dispose();
+  });
 
+  it('reports a failed read as an error, never as an empty library, and retries', async () => {
+    library = () =>
+      json({ success: false, errorCode: 'INTERNAL_ERROR', error: 'boom', reason: 'x' }, 500);
+    const page = await openPage();
+    expect(page.query('kb-error')?.textContent).toContain('workspace.knowledgeBase.error.load');
+    expect(page.query('kb-onboarding')).toBeNull();
+
+    library = () => json({ materials: [source('a')], limits: LIMITS });
+    await page.click('kb-retry');
+    await settle();
+    expect(page.query('kb-error')).toBeNull();
+    expect(page.query('kb-material-a')).not.toBeNull();
+    await page.dispose();
+  });
+
+  it('keeps what is shown when a later read fails, and says it may be out of date', async () => {
+    const page = await openPage();
+    library = () => json({ success: false, errorCode: 'X', error: 'x' }, 503);
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+    expect(page.query('kb-material-a')).not.toBeNull();
+    expect(page.query('kb-stale')?.textContent).toContain('workspace.knowledgeBase.error.busy');
+    await page.dispose();
+  });
+
+  it('pages each node from its own "load more", disabled while a refresh rereads the list', async () => {
+    let refreshed = false;
+    const reread = deferred<Response>();
+    library = (params) => {
+      if (params.get('before')) return json({ materials: [source('older')] });
+      if (refreshed) return reread.promise;
+      return json({ materials: [source('a')], nextBefore: 'a', limits: LIMITS });
+    };
+    const page = await openPage();
+    expect(page.query('kb-load-more')).not.toBeNull();
+    refreshed = true;
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect((page.query('kb-load-more') as HTMLButtonElement).disabled).toBe(true);
     await act(async () =>
-      refreshing.resolve(
-        json({ materials: [source('refreshed')], limits: LIMITS, nextBefore: 'fresh' }),
-      ),
+      reread.resolve(json({ materials: [source('a')], nextBefore: 'fresh', limits: LIMITS })),
     );
     await settle();
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual(['refreshed']);
-    expect(sink.current?.refreshing).toBe(false);
-    expect(sink.current?.hasMore).toBe(true);
-
-    await act(async () => sink.current!.loadMore());
+    expect((page.query('kb-load-more') as HTMLButtonElement).disabled).toBe(false);
+    await page.click('kb-load-more');
     await settle();
     expect(libraryCalls.at(-1)?.get('before')).toBe('fresh');
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual(['refreshed', 'after-fresh']);
+    expect(page.query('kb-material-older')).not.toBeNull();
+    await page.dispose();
+  });
+});
+
+// ── Staying fresh (option B) on the page ───────────────────────────────────
+
+describe('staying fresh without moving the teacher', () => {
+  it('a background refresh keeps the open folders and the rows already shown', async () => {
+    const page = await openPage();
+    await expand('f1');
+    const row = page.query('kb-material-a');
+    const nested = page.query('kb-material-in-f1');
+    const toggle = page.query('kb-folder-toggle-f1');
+    library = (params) =>
+      json({
+        materials:
+          params.get('folderId') === 'f1' ? [inF1('in-f1')] : [source('new-on-top'), source('a')],
+        limits: LIMITS,
+      });
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+    expect(page.query('kb-material-new-on-top')).not.toBeNull();
+    // The same elements, not rebuilt: the browser keeps its place on them.
+    expect(page.query('kb-material-a')).toBe(row);
+    expect(page.query('kb-material-in-f1')).toBe(nested);
+    expect(page.query('kb-folder-toggle-f1')).toBe(toggle);
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
     await page.dispose();
   });
 
-  it('drops a page still loading when a refresh starts, whichever answers first', async () => {
-    for (const order of ['page first', 'refresh first'] as const) {
-      library = () => json({ materials: [source('initial')], limits: LIMITS, nextBefore: 'old' });
-      const sink = { current: null as MaterialLibraryData | null };
-      const page = mount();
-      await page.render(createElement(Probe, { scope: { kind: 'all' }, record: recorder(sink) }));
+  it('keeps the visible row through refresh insertions and removals, following the teacher’s scroll', async () => {
+    folders = () => json({ folders: [] });
+    let ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    library = () => json({ materials: ids.map((id) => source(id)), limits: LIMITS });
+    const page = await openPage();
+    const main = page.query('pro-workspace-library')!;
+    // jsdom has no layout. Supply row geometry from the actual rendered order;
+    // Chromium/WebKit acceptance separately exercises the real CSS geometry.
+    const geometry = vi
+      .spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: Element) {
+        const rows = [...page.query('kb-tree')!.children];
+        const index = rows.indexOf(this);
+        return new DOMRect(
+          0,
+          index < 0 ? 0 : index * 40 - main.scrollTop,
+          400,
+          index < 0 ? 120 : 40,
+        );
+      });
+    const scroll = (top: number) => {
+      main.scrollTop = top;
+      main.dispatchEvent(new Event('scroll'));
+    };
+    const refresh = async () => {
+      await act(async () => {
+        window.dispatchEvent(new Event('blur'));
+        window.dispatchEvent(new Event('focus'));
+      });
       await settle();
-
-      const more = deferred<Response>();
-      const refreshing = deferred<Response>();
-      library = (params) => (params.get('before') ? more.promise : refreshing.promise);
-      await act(async () => sink.current!.loadMore());
-      await act(async () => sink.current!.reload());
-      const page2 = () => json({ materials: [source('stale-tail')], limits: LIMITS });
-      const fresh = () =>
-        json({ materials: [source('refreshed')], limits: LIMITS, nextBefore: 'fresh' });
-      if (order === 'page first') {
-        await act(async () => more.resolve(page2()));
-        await settle();
-        await act(async () => refreshing.resolve(fresh()));
-      } else {
-        await act(async () => refreshing.resolve(fresh()));
-        await settle();
-        await act(async () => more.resolve(page2()));
-      }
-      await settle();
-
-      expect(
-        sink.current?.materials.map((m) => m.materialId),
-        order,
-      ).toEqual(['refreshed']);
-      expect(sink.current?.hasMore, order).toBe(true);
-      expect(sink.current?.loadingMore, order).toBe(false);
-      await page.dispose();
+    };
+    try {
+      scroll(60);
+      const held = page.query('kb-material-b');
+      ids = ['new', ...ids];
+      await refresh();
+      expect(main.scrollTop).toBe(100);
+      expect(page.query('kb-material-b')).toBe(held);
+      scroll(140);
+      ids = ['newer', ...ids];
+      await refresh();
+      expect(main.scrollTop).toBe(180);
+      ids = ids.slice(2);
+      await refresh();
+      expect(main.scrollTop).toBe(100);
+      scroll(0);
+      ids = ['at-top', ...ids];
+      await refresh();
+      expect(main.scrollTop).toBe(0);
+    } finally {
+      geometry.mockRestore();
     }
   });
 
-  it('starts a new scope from one page', async () => {
-    library = (params) =>
-      params.get('before')
-        ? json({ materials: [source('older')], limits: LIMITS })
-        : json({ materials: [source('newest')], limits: LIMITS, nextBefore: 'c' });
-    const sink = { current: null as MaterialLibraryData | null };
-    const page = mount();
-    await page.render(createElement(Probe, { scope: { kind: 'all' }, record: recorder(sink) }));
-    await settle();
-    await act(async () => sink.current!.loadMore());
-    await settle();
-
-    libraryCalls.length = 0;
-    await page.render(createElement(Probe, { scope: { kind: 'unfiled' }, record: recorder(sink) }));
-    await settle();
-    expect(libraryCalls.map((params) => params.get('before'))).toEqual([null]);
-    expect(sink.current?.materials.map((m) => m.materialId)).toEqual(['newest']);
-    await page.dispose();
-  });
-});
-
-describe('load more on the page', () => {
-  it('is disabled while retry rereads the list, and then pages from the fresh cursor', async () => {
-    library = (params) =>
-      params.get('before')
-        ? json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503)
-        : json({ materials: [source('initial')], limits: LIMITS, nextBefore: 'old' });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    await page.click('kb-load-more');
-    await settle();
-    expect(page.query('kb-stale')).not.toBeNull();
-
-    const refreshing = deferred<Response>();
-    library = (params) =>
-      params.get('before')
-        ? json({ materials: [source(`after-${params.get('before')}`)], limits: LIMITS })
-        : refreshing.promise;
-    libraryCalls.length = 0;
-    await act(async () => page.query('kb-stale')!.querySelector('button')!.click());
-    const button = () => page.query('kb-load-more') as HTMLButtonElement;
-    expect(button().disabled).toBe(true);
-    await page.click('kb-load-more');
-    await settle();
-    expect(libraryCalls.map((params) => params.get('before'))).toEqual([null]);
-
+  it('reads again when a run reports a material change, with the same folders open', async () => {
+    const page = await openPage();
+    await expand('f1');
+    const reads = libraryCalls.length;
     await act(async () =>
-      refreshing.resolve(
-        json({ materials: [source('refreshed')], limits: LIMITS, nextBefore: 'fresh' }),
-      ),
-    );
-    await settle();
-    expect(button().disabled).toBe(false);
-    await page.click('kb-load-more');
-    await settle();
-    expect(libraryCalls.at(-1)?.get('before')).toBe('fresh');
-    expect(page.query('kb-material-refreshed')).not.toBeNull();
-    expect(page.query('kb-material-after-fresh')).not.toBeNull();
-    expect(page.query('kb-material-initial')).toBeNull();
-    await page.dispose();
-  });
-});
-
-describe('staying fresh outside a run (option B)', () => {
-  function FreshProbe({
-    scope,
-    record,
-  }: {
-    readonly scope: LibraryScope;
-    readonly record: (value: MaterialLibraryData) => void;
-  }) {
-    record(useMaterialLibrary({ scope, query: '' }));
-    return null;
-  }
-
-  let hidden = false;
-  const tick = (milliseconds: number) =>
-    act(async () => {
-      await vi.advanceTimersByTimeAsync(milliseconds);
-    });
-  const setHidden = async (value: boolean) => {
-    hidden = value;
-    await act(async () => {
-      document.dispatchEvent(new Event('visibilitychange'));
-    });
-  };
-
-  beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    hidden = false;
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      get: () => (hidden ? 'hidden' : 'visible'),
-    });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    // @ts-expect-error -- drop the test's own property, back to jsdom's
-    delete document.visibilityState;
-  });
-
-  async function mountProbe(scope: LibraryScope = { kind: 'all' }) {
-    const sink = { current: null as MaterialLibraryData | null };
-    const page = mount();
-    await page.render(
-      createElement(FreshProbe, {
-        scope,
-        record: (value: MaterialLibraryData) => {
-          sink.current = value;
-        },
+      useWorkbenchStore.setState({
+        materialLibraryRevision: useWorkbenchStore.getState().materialLibraryRevision + 1,
       }),
     );
-    await tick(0);
-    return { sink, page };
-  }
-
-  it('polls while a shown source is parsing, and stops once nothing is', async () => {
-    let status = 'running';
-    library = () => json({ materials: [source('a', { extraction: { status } })], limits: LIMITS });
-    const { page } = await mountProbe();
-    expect(libraryCalls).toHaveLength(1);
-
-    await tick(MATERIAL_LIBRARY_POLL_MS);
-    expect(libraryCalls).toHaveLength(2);
-    status = 'done';
-    await tick(MATERIAL_LIBRARY_POLL_MS);
-    expect(libraryCalls).toHaveLength(3);
-    await tick(MATERIAL_LIBRARY_POLL_MS * 4);
-    expect(libraryCalls).toHaveLength(3);
+    await settle();
+    expect(libraryCalls.length).toBe(reads + 2);
+    expect(page.query('kb-folder-toggle-f1')?.getAttribute('aria-expanded')).toBe('true');
     await page.dispose();
   });
 
   it('keeps polling after a failed read: a failure is not the parse finishing', async () => {
-    let fail = false;
-    library = () =>
-      fail
-        ? json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503)
-        : json({ materials: [source('a', { extraction: { status: 'pending' } })], limits: LIMITS });
-    const { sink, page } = await mountProbe();
-    fail = true;
-    await tick(MATERIAL_LIBRARY_POLL_MS);
-    expect(sink.current?.error).toMatchObject({ status: 503 });
-    fail = false;
-    await tick(MATERIAL_LIBRARY_POLL_MS);
-    expect(libraryCalls).toHaveLength(3);
-    expect(sink.current?.error).toBeNull();
-    await page.dispose();
-  });
-
-  it('does not poll a hidden tab, and reads again as soon as it is visible', async () => {
-    library = () =>
-      json({ materials: [source('a', { extraction: { status: 'running' } })], limits: LIMITS });
-    const { page } = await mountProbe();
-    await setHidden(true);
-    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
-    expect(libraryCalls).toHaveLength(1);
-
-    await setHidden(false);
-    await tick(0);
-    expect(libraryCalls).toHaveLength(2);
-    await page.dispose();
-  });
-
-  it('reads again on window focus, without polling when nothing is parsing', async () => {
-    const { page } = await mountProbe();
-    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
-    expect(libraryCalls).toHaveLength(1);
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    await tick(0);
-    expect(libraryCalls).toHaveLength(2);
-    await page.dispose();
-  });
-
-  it('reads once more after a read that was running when the teacher came back', async () => {
-    for (const outcome of ['answers', 'fails'] as const) {
-      const old = deferred<Response>();
-      library = () => old.promise;
-      libraryCalls.length = 0;
-      const { sink, page } = await mountProbe();
-      await setHidden(true);
-      // Meanwhile another tab changes the library; then the teacher returns,
-      // with both a visibility change and a focus.
-      library = () => json({ materials: [source('fresh')], limits: LIMITS });
-      await setHidden(false);
-      await act(async () => {
-        window.dispatchEvent(new Event('focus'));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const tick = (milliseconds: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(milliseconds);
       });
-      expect(libraryCalls, outcome).toHaveLength(1);
+    library = () =>
+      json({ materials: [source('p', { extraction: { status: 'running' } })], limits: LIMITS });
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage, props()));
+    await tick(0);
+    library = () => json({ success: false, errorCode: 'X', error: 'x' }, 500);
+    await tick(MATERIAL_LIBRARY_TREE_POLL_MS);
+    const failedAt = libraryCalls.length;
+    await tick(MATERIAL_LIBRARY_TREE_POLL_MS);
+    expect(libraryCalls.length).toBe(failedAt + 1);
+    await page.dispose();
+  });
 
+  it('does not read the list for a page the teacher left before a write answered', async () => {
+    for (const action of ['rename', 'move', 'create'] as const) {
+      const answer = deferred<Response>();
+      writeMaterial = () => answer.promise;
+      writeCalls.length = 0;
+      const page = await openPage();
+      if (action === 'create') {
+        await page.click('kb-folder-new');
+        await typeInto(inDocument('kb-new-folder-input') as HTMLInputElement, 'Later');
+        await choose('kb-new-folder-submit');
+      } else if (action === 'rename') {
+        await openMenu('kb-material-menu-a');
+        await choose('kb-material-menu-a-rename');
+        await typeName('Later');
+        await choose('kb-name-dialog-submit');
+      } else {
+        await openMenu('kb-material-menu-a');
+        await choose('kb-material-menu-a-move');
+        await choose('kb-move-to-f1');
+      }
+      expect(writeCalls, action).toHaveLength(1);
+
+      await page.dispose();
+      const reads = libraryCalls.length;
+      const foldersRead = folderReads;
       await act(async () =>
-        old.resolve(
-          outcome === 'answers'
-            ? json({ materials: [source('old')], limits: LIMITS })
-            : json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503),
+        answer.resolve(
+          action === 'create'
+            ? json({ folder: { id: 'f-late', name: 'Later' }, created: true }, 201)
+            : json({ status: 'renamed' }),
         ),
       );
-      await tick(0);
-      // Exactly one more read, however many signals arrived, and it wins.
-      expect(libraryCalls, outcome).toHaveLength(2);
-      expect(
-        sink.current?.materials.map((m) => m.materialId),
-        outcome,
-      ).toEqual(['fresh']);
-      await tick(MATERIAL_LIBRARY_POLL_MS * 3);
-      expect(libraryCalls, outcome).toHaveLength(2);
-      await page.dispose();
+      await settle();
+      expect(libraryCalls.length, action).toBe(reads);
+      expect(folderReads, action).toBe(foldersRead);
     }
   });
+});
 
-  it('reads again when the run reports a material change, in the same folder', async () => {
-    const { page } = await mountProbe({ kind: 'folder', folderId: 'f1' });
-    await act(async () => {
-      useWorkbenchStore.setState((state) => ({
-        materialLibraryRevision: state.materialLibraryRevision + 1,
-      }));
-    });
-    await tick(0);
-    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual(['f1', 'f1']);
-    await page.dispose();
-  });
+// ── Leaving ────────────────────────────────────────────────────────────────
 
-  it('leaves no timer or request behind once the page is gone', async () => {
-    library = () =>
-      json({ materials: [source('a', { extraction: { status: 'running' } })], limits: LIMITS });
-    const { page } = await mountProbe();
-    await page.dispose();
-    await tick(MATERIAL_LIBRARY_POLL_MS * 3);
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    expect(libraryCalls).toHaveLength(1);
-  });
-
-  it('says a folder deleted elsewhere is gone, and leaves going back to the teacher', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await tick(0);
-    await page.click('kb-scope-folder-f1');
-    await tick(0);
-    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
-
-    // Another tab deleted it; the next read no longer lists it.
-    folders = () => json({ folders: [] });
-    await act(async () => {
-      window.dispatchEvent(new Event('focus'));
-    });
-    await tick(0);
-    expect(page.query('kb-folder-gone')).not.toBeNull();
-    // The refresh did not navigate: still the same folder, no other scope read.
-    expect(libraryCalls.map((params) => params.get('folderId'))).toEqual([null, 'f1', 'f1']);
-    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBeNull();
-
-    await page.click('kb-folder-gone-back');
-    await tick(0);
-    expect(page.query('kb-folder-gone')).toBeNull();
-    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBe('page');
-    expect(libraryCalls.at(-1)?.get('folderId')).toBeNull();
+describe('the way back', () => {
+  it('is in the compact header for narrow screens, and leaves the page', async () => {
+    const onLeave = vi.fn();
+    const page = await openPage({ onLeave });
+    const back = page.query('kb-back')!;
+    expect(back.parentElement?.className).toContain('md:hidden');
+    await page.click('kb-back');
+    expect(onLeave).toHaveBeenCalledTimes(1);
     await page.dispose();
   });
 });
 
+// ── Uploading ──────────────────────────────────────────────────────────────
+
 describe('uploading from the page', () => {
   const file = (name: string) => new File(['%PDF'], name, { type: 'application/pdf' });
-  async function choose(page: ReturnType<typeof mount>, files: File[]) {
+  async function chooseFiles(page: ReturnType<typeof mount>, files: File[]) {
     const input = page.query('kb-upload-input') as HTMLInputElement;
     Object.defineProperty(input, 'files', { configurable: true, value: files });
     await act(async () => {
@@ -780,49 +652,27 @@ describe('uploading from the page', () => {
     });
   }
 
-  it('shows the file uploading, then reads the list again once it is stored', async () => {
+  it('shows the file uploading, then reads the list again once it is stored, into no folder', async () => {
     const stored = deferred<Response>();
     uploadMaterial = () => stored.promise;
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+    const page = await openPage();
+    await expand('f1');
     const reads = libraryCalls.length;
 
-    await choose(page, [file('lesson.pdf')]);
+    await chooseFiles(page, [file('lesson.pdf')]);
     await settle();
-    expect(page.query('kb-uploads')?.textContent).toContain('lesson.pdf');
-    expect(page.query('kb-uploads')?.textContent).toContain(
-      'workspace.knowledgeBase.status.uploading',
-    );
+    expect(page.query('kb-upload-1')?.textContent).toContain('lesson.pdf');
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0]!.url).toBe('/api/materials');
+    expect(JSON.stringify(uploadCalls[0]!.init.headers)).not.toMatch(/folder/i);
 
     await act(async () =>
       stored.resolve(json({ materialId: 'm1', originalName: 'lesson.pdf', bytes: 4 }, 201)),
     );
     await settle();
-    expect(page.query('kb-uploads')).toBeNull();
-    expect(libraryCalls.length).toBe(reads + 1);
-    await page.dispose();
-  });
-
-  it('uploads into Unfiled from a folder, and says so', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    await page.click('kb-scope-folder-f1');
-    await settle();
-
-    await choose(page, [file('notes.pdf')]);
-    await settle();
-    expect(uploadCalls).toHaveLength(1);
-    expect(uploadCalls[0]!.url).toBe('/api/materials');
-    expect(JSON.stringify(uploadCalls[0]!.init.headers)).not.toMatch(/folder/i);
-    expect(page.query('kb-upload-to-unfiled')?.textContent).toBe(
-      'workspace.knowledgeBase.upload.toUnfiled',
-    );
-    // The teacher stays in the folder; leaving it drops the note.
-    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
-    await page.click('kb-scope-unfiled');
-    expect(page.query('kb-upload-to-unfiled')).toBeNull();
+    expect(page.query('kb-upload-1')).toBeNull();
+    // One refresh: the top level and the open folder.
+    expect(libraryCalls.length).toBe(reads + 2);
     await page.dispose();
   });
 
@@ -839,22 +689,24 @@ describe('uploading from the page', () => {
       'full.pdf': pool,
     };
     uploadMaterial = (chosen) => refusals[chosen.name]!;
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+    const page = await openPage();
     const reads = libraryCalls.length;
 
-    await choose(page, [file('big.pdf'), file('quota.pdf'), file('odd.pdf'), file('full.pdf')]);
-    await settle();
-    const text = page.query('kb-uploads')?.textContent ?? '';
+    await chooseFiles(page, [
+      file('big.pdf'),
+      file('quota.pdf'),
+      file('odd.pdf'),
+      file('full.pdf'),
+    ]);
+    await settle(60);
+    const text = page.query('kb-tree')?.textContent ?? '';
     expect(text).toContain('workbench.material.fileTooLargeWithLimit{"limit":"50"}');
     expect(text).toContain('workbench.material.quotaExceeded');
     expect(text).toContain('workbench.material.unsupportedType');
-    // The pool quota has its own words; the trace stays out of the row.
+    // The pool quota is off the page, but hitting it still says so.
     expect(text).toContain('workbench.material.storageFull');
     expect(text).not.toContain('trace-507');
     expect(text).not.toContain('asset storage quota exceeded');
-    // Each file, once done, has the list read again.
     expect(libraryCalls.length).toBe(reads + 4);
 
     await page.click('kb-upload-1-dismiss');
@@ -864,8 +716,6 @@ describe('uploading from the page', () => {
   });
 
   it('shows a file the server stored even though its answer failed', async () => {
-    // The publication committed, then the reply was lost: the route answers
-    // 500 and the listing already has the source.
     let stored = false;
     uploadMaterial = () => {
       stored = true;
@@ -873,100 +723,289 @@ describe('uploading from the page', () => {
     };
     library = () =>
       json({ materials: stored ? [source('kept', { name: 'kept.pdf' })] : [], limits: LIMITS });
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-
-    await choose(page, [file('kept.pdf')]);
-    await settle();
+    const page = await openPage();
+    await chooseFiles(page, [file('kept.pdf')]);
+    await settle(60);
     expect(page.query('kb-material-kept')).not.toBeNull();
-    // The failure is still reported, not turned into a success.
     expect(page.query('kb-upload-1')?.textContent).toContain('upload failed');
     await page.dispose();
   });
 
   it('polls while an upload is in flight, though nothing shown is parsing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    try {
-      const stored = deferred<Response>();
-      uploadMaterial = () => stored.promise;
-      const tick = (milliseconds: number) =>
-        act(async () => {
-          await vi.advanceTimersByTimeAsync(milliseconds);
-        });
-      const page = mount();
-      await page.render(createElement(MaterialLibraryPage));
-      await tick(0);
-      await choose(page, [file('slow.pdf')]);
-      const reads = libraryCalls.length;
-
-      await tick(MATERIAL_LIBRARY_POLL_MS);
-      expect(libraryCalls.length).toBe(reads + 1);
-      await act(async () =>
-        stored.resolve(json({ materialId: 'm1', originalName: 'slow.pdf', bytes: 4 }, 201)),
-      );
-      await tick(0);
-      const settled = libraryCalls.length;
-      await tick(MATERIAL_LIBRARY_POLL_MS * 3);
-      expect(libraryCalls.length).toBe(settled);
-      await page.dispose();
-    } finally {
-      vi.useRealTimers();
-    }
+    const stored = deferred<Response>();
+    uploadMaterial = () => stored.promise;
+    const tick = (milliseconds: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(milliseconds);
+      });
+    const page = mount();
+    await page.render(createElement(MaterialLibraryPage, props()));
+    await tick(0);
+    await chooseFiles(page, [file('slow.pdf')]);
+    const reads = libraryCalls.length;
+    await tick(MATERIAL_LIBRARY_TREE_POLL_MS);
+    expect(libraryCalls.length).toBe(reads + 1);
+    await act(async () =>
+      stored.resolve(json({ materialId: 'm1', originalName: 'slow.pdf', bytes: 4 }, 201)),
+    );
+    await tick(0);
+    const settled = libraryCalls.length;
+    await tick(MATERIAL_LIBRARY_TREE_POLL_MS * 3);
+    expect(libraryCalls.length).toBe(settled);
+    await page.dispose();
   });
 });
 
-describe('organizing from the page', () => {
-  const inDocument = (testId: string) =>
-    document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-  const openMenu = async (testId: string) => {
-    const trigger = inDocument(testId)!;
-    await act(async () => {
-      trigger.dispatchEvent(
-        new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
-      );
-      trigger.click();
-    });
-  };
-  const choose = (testId: string) =>
-    act(async () => {
-      inDocument(testId)!.click();
-    });
-  const typeName = async (value: string) => {
-    const input = inDocument('kb-name-dialog-input') as HTMLInputElement;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  };
-  const submitName = async () => {
-    await choose('kb-name-dialog-submit');
-    await settle();
-  };
+// ── New folder, inline ─────────────────────────────────────────────────────
 
-  beforeEach(() => {
-    library = (params) =>
+describe('a new folder, in a row of the list', () => {
+  const input = () => inDocument('kb-new-folder-input') as HTMLInputElement;
+
+  it('creates it from a row, then gives the focus to the new folder once it is listed', async () => {
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    expect(document.activeElement).toBe(input());
+    folders = () =>
       json({
-        materials:
-          params.get('folderId') === 'f1'
-            ? [source('in-f1', { folderId: 'f1', folderName: 'Unit 1' })]
-            : [source('a')],
-        limits: LIMITS,
+        folders: [
+          { id: 'f1', name: 'Unit 1', materialCount: 2 },
+          { id: 'f-new', name: 'New', materialCount: 0 },
+        ],
       });
+    await typeInto(input(), '  New ');
+    await choose('kb-new-folder-submit');
+    await settle();
+    expect(writeCalls).toEqual([
+      { method: 'POST', path: '/api/materials/folders', body: { name: 'New' } },
+    ]);
+    expect(page.query('kb-new-folder-row')).toBeNull();
+    expect(document.activeElement).toBe(page.query('kb-folder-toggle-f-new'));
+    await page.dispose();
   });
 
-  it('renames a source from its menu, then reads the list again', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
+  it('points at the folder a name already names, and says so', async () => {
+    writeMaterial = () => json({ folder: { id: 'f1', name: 'Unit 1' }, created: false }, 200);
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'unit 1');
+    await choose('kb-new-folder-submit');
     await settle();
-    const reads = libraryCalls.length;
+    expect(page.query('kb-new-folder-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.nameTaken',
+    );
+    expect(page.query('kb-new-folder-row')).not.toBeNull();
+    expect(document.activeElement).toBe(page.query('kb-folder-toggle-f1'));
+    expect(page.query('kb-folder-toggle-f1')?.parentElement?.getAttribute('data-highlighted')).toBe(
+      'true',
+    );
+    await page.dispose();
+  });
 
+  it('does not start another folder draft while its creation is pending', async () => {
+    const answer = deferred<Response>();
+    writeMaterial = () => answer.promise;
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'First');
+    await choose('kb-new-folder-submit');
+    expect((page.query('kb-folder-new') as HTMLButtonElement).disabled).toBe(true);
+    await page.click('kb-folder-new');
+    expect(input().value).toBe('First');
+    expect(input().disabled).toBe(true);
+    expect(writeCalls).toHaveLength(1);
+    answer.resolve(json({ folder: { id: 'f-new' }, created: true }));
+    await settle();
+    expect((page.query('kb-folder-new') as HTMLButtonElement).disabled).toBe(false);
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'Second');
+    expect(input().value).toBe('Second');
+  });
+
+  it('does not steal search focus when the new folder arrives in a slow refresh', async () => {
+    const page = await openPage();
+    const reread = deferred<Response>();
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'New');
+    folders = () => reread.promise;
+    await choose('kb-new-folder-submit');
+    await settle();
+    const searchBox = page.query('kb-search')!;
+    searchBox.focus();
+    reread.resolve(json({ folders: [{ id: 'f-new', name: 'New', materialCount: 0 }] }));
+    await settle();
+    expect(page.query('kb-folder-toggle-f-new')).not.toBeNull();
+    expect(document.activeElement).toBe(searchBox);
+  });
+
+  it('does not revive a reveal after focus moved elsewhere and then returned to the body', async () => {
+    const page = await openPage();
+    const answer = deferred<Response>();
+    writeMaterial = () => answer.promise;
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'New');
+    await choose('kb-new-folder-submit');
+    const searchBox = page.query('kb-search')!;
+    searchBox.focus();
+    searchBox.blur();
+    expect(document.activeElement).toBe(document.body);
+    folders = () => json({ folders: [{ id: 'f-new', name: 'New', materialCount: 0 }] });
+    answer.resolve(json({ folder: { id: 'f-new' }, created: true }));
+    await settle();
+    expect(page.query('kb-folder-toggle-f-new')).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('reveals a duplicate created elsewhere only when it arrives, with a fresh highlight lifetime', async () => {
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'Elsewhere');
+    const reread = deferred<Response>();
+    folders = () => reread.promise;
+    writeMaterial = () => json({ folder: { id: 'external' }, created: false });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await choose('kb-new-folder-submit');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(page.query('kb-folder-toggle-external')).toBeNull();
+    await act(async () => {
+      reread.resolve(json({ folders: [{ id: 'external', name: 'Elsewhere', materialCount: 0 }] }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const toggle = page.query('kb-folder-toggle-external')!;
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.parentElement?.getAttribute('data-highlighted')).toBe('true');
+    expect(page.query('kb-new-folder-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.nameTaken',
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_499);
+    });
+    expect(toggle.parentElement?.getAttribute('data-highlighted')).toBe('true');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(toggle.parentElement?.hasAttribute('data-highlighted')).toBe(false);
+  });
+
+  it('hints at an empty or overlong name before asking the server', async () => {
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await typeInto(input(), '   ');
+    await choose('kb-new-folder-submit');
+    expect(page.query('kb-new-folder-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.folderNameEmpty',
+    );
+    await typeInto(input(), '一'.repeat(21));
+    await choose('kb-new-folder-submit');
+    expect(page.query('kb-new-folder-error')?.textContent).toBe(
+      'workspace.knowledgeBase.error.folderNameTooLong',
+    );
+    expect(writeCalls).toEqual([]);
+    await page.dispose();
+  });
+
+  it('names the folder limit, a vanished item and a busy owner', async () => {
+    const answers = [
+      json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'limit' }, 409),
+      new Response('Not found', { status: 404 }),
+      json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503),
+    ];
+    writeMaterial = () => answers.shift()!;
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await typeInto(input(), 'Another');
+    const shown: (string | null | undefined)[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await choose('kb-new-folder-submit');
+      await settle();
+      shown.push(page.query('kb-new-folder-error')?.textContent);
+    }
+    expect(shown).toEqual([
+      'workspace.knowledgeBase.error.folderLimit',
+      'workspace.knowledgeBase.error.gone',
+      'workspace.knowledgeBase.error.busy',
+    ]);
+    await page.dispose();
+  });
+
+  it('is cancelled by Escape or Cancel, giving the focus back to "New folder"', async () => {
+    const page = await openPage();
+    await page.click('kb-folder-new');
+    await act(async () => {
+      input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(page.query('kb-new-folder-row')).toBeNull();
+    expect(document.activeElement).toBe(page.query('kb-folder-new'));
+    await page.click('kb-folder-new');
+    await page.click('kb-new-folder-cancel');
+    expect(page.query('kb-new-folder-row')).toBeNull();
+    expect(document.activeElement).toBe(page.query('kb-folder-new'));
+    expect(writeCalls).toEqual([]);
+    await page.dispose();
+  });
+
+  it('leaves a search for the tree, by the teacher’s own hand', async () => {
+    const page = await openPage();
+    await search('photo');
+    expect(page.query('kb-results')).not.toBeNull();
+    await page.click('kb-folder-new');
+    await settle();
+    expect((inDocument('kb-search') as HTMLInputElement).value).toBe('');
+    expect(page.query('kb-tree')?.contains(page.query('kb-new-folder-row'))).toBe(true);
+    await page.dispose();
+  });
+});
+
+// ── Folder rows ────────────────────────────────────────────────────────────
+
+describe('a folder row', () => {
+  it('keeps its toggle and its ⋯ apart: the menu never expands or collapses it', async () => {
+    const page = await openPage();
+    const toggle = page.query('kb-folder-toggle-f1')!;
+    const menu = page.query('kb-folder-menu-f1')!;
+    expect(toggle.contains(menu)).toBe(false);
+    await openMenu('kb-folder-menu-f1');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    for (const key of ['Enter', ' ']) {
+      await act(async () => {
+        menu.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      });
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    }
+    expect(libraryCalls.some((params) => params.get('folderId') === 'f1')).toBe(false);
+    await page.dispose();
+  });
+
+  it('offers Delete only for an empty folder', async () => {
+    const page = await openPage();
+    await openMenu('kb-folder-menu-f1');
+    expect(inDocument('kb-folder-menu-f1-rename')).not.toBeNull();
+    expect(inDocument('kb-folder-menu-f1-delete')).toBeNull();
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    await settle();
+    await openMenu('kb-folder-menu-f2');
+    expect(inDocument('kb-folder-menu-f2-delete')).not.toBeNull();
+    await page.dispose();
+  });
+});
+
+// ── Organizing ─────────────────────────────────────────────────────────────
+
+describe('organizing from the page', () => {
+  it('renames a source from its menu, then reads the list again', async () => {
+    const page = await openPage();
+    const reads = libraryCalls.length;
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-rename');
     expect((inDocument('kb-name-dialog-input') as HTMLInputElement).value).toBe('a.pdf');
     await typeName('  Chapter 1  ');
     await submitName();
-
     expect(writeCalls).toEqual([
       { method: 'PATCH', path: '/api/materials/a', body: { name: 'Chapter 1' } },
     ]);
@@ -975,22 +1014,18 @@ describe('organizing from the page', () => {
     await page.dispose();
   });
 
-  it('keeps a refused rename in its dialog, in the server’s terms, and still re-reads', async () => {
+  it('keeps a refused folder rename in its dialog, in the server’s terms, and still re-reads', async () => {
     writeMaterial = () =>
       json(
         { success: false, errorCode: 'INVALID_REQUEST', error: 'taken', reason: 'name_taken' },
         409,
       );
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+    const page = await openPage();
     const reads = libraryCalls.length;
-
     await openMenu('kb-folder-menu-f1');
     await choose('kb-folder-menu-f1-rename');
     await typeName('Unit 2');
     await submitName();
-
     expect(writeCalls).toEqual([
       { method: 'PATCH', path: '/api/materials/folders/f1', body: { name: 'Unit 2' } },
     ]);
@@ -1002,13 +1037,10 @@ describe('organizing from the page', () => {
     await page.dispose();
   });
 
-  it('hints at an empty or overlong folder name before asking the server', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+  it('hints at an empty or overlong folder name in the rename dialog too', async () => {
+    const page = await openPage();
     await openMenu('kb-folder-menu-f1');
     await choose('kb-folder-menu-f1-rename');
-
     await typeName('   ');
     await submitName();
     expect(inDocument('kb-name-dialog-error')?.textContent).toBe(
@@ -1023,13 +1055,10 @@ describe('organizing from the page', () => {
     await page.dispose();
   });
 
-  it('moves a source into a folder, or back to Unfiled with null', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+  it('moves a source into a folder, or out of it with null', async () => {
+    const page = await openPage();
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-move');
-    // Already in Unfiled: only the folder is offered.
     expect(inDocument('kb-move-to-unfiled')).toBeNull();
     await choose('kb-move-to-f1');
     await settle();
@@ -1040,8 +1069,7 @@ describe('organizing from the page', () => {
     });
     expect(inDocument('kb-move-dialog')).toBeNull();
 
-    await page.click('kb-scope-folder-f1');
-    await settle();
+    await expand('f1');
     await openMenu('kb-material-menu-in-f1');
     await choose('kb-material-menu-in-f1-move');
     expect(inDocument('kb-move-to-f1')).toBeNull();
@@ -1053,127 +1081,6 @@ describe('organizing from the page', () => {
       body: { materialIds: ['in-f1'], folderId: null },
     });
     await page.dispose();
-  });
-
-  it('gives the focus back to the control that opened a dialog', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-
-    const newFolder = inDocument('kb-folder-new')!;
-    newFolder.focus();
-    await choose('kb-folder-new');
-    expect(inDocument('kb-name-dialog')?.contains(document.activeElement)).toBe(true);
-    await act(async () => {
-      document.activeElement!.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
-      );
-    });
-    await settle();
-    expect(inDocument('kb-name-dialog')).toBeNull();
-    expect(document.activeElement).toBe(newFolder);
-
-    await openMenu('kb-material-menu-a');
-    await choose('kb-material-menu-a-rename');
-    await typeName('Chapter 1');
-    await submitName();
-    await settle();
-    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
-
-    // Moved, but still in All: its ⋯ stays.
-    await openMenu('kb-material-menu-a');
-    await choose('kb-material-menu-a-move');
-    await choose('kb-move-to-f1');
-    await settle();
-    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
-    await page.dispose();
-  });
-
-  it('gives the focus to the heading when the source leaves the view', async () => {
-    let moved = false;
-    library = (params) =>
-      json({
-        materials:
-          params.get('folderId') === 'f1' && !moved
-            ? [source('in-f1', { folderId: 'f1', folderName: 'Unit 1' })]
-            : [],
-        limits: LIMITS,
-      });
-    writeMaterial = () => {
-      moved = true;
-      return json({ status: 'moved' });
-    };
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    await page.click('kb-scope-folder-f1');
-    await settle();
-
-    await openMenu('kb-material-menu-in-f1');
-    await choose('kb-material-menu-in-f1-move');
-    await choose('kb-move-to-unfiled');
-    await settle();
-    expect(document.activeElement?.id).toBe('pro-workspace-library-title');
-    await page.dispose();
-  });
-
-  describe('when the list read after a rename drops the source', () => {
-    // Searching its old name: renamed, it no longer matches. The dialog
-    // closes before that read answers.
-    let reread: ReturnType<typeof deferred<Response>>;
-    beforeEach(() => {
-      let renamed = false;
-      reread = deferred<Response>();
-      library = () =>
-        renamed
-          ? reread.promise
-          : json({ materials: [source('a', { name: 'Before' })], limits: LIMITS });
-      writeMaterial = () => {
-        renamed = true;
-        return json({ status: 'renamed' });
-      };
-    });
-    async function renameWhileSearching(page: ReturnType<typeof mount>) {
-      await page.render(createElement(MaterialLibraryPage));
-      await settle();
-      const search = page.query('kb-search') as HTMLInputElement;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-          search,
-          'Before',
-        );
-        search.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await settle(350);
-      expect(libraryCalls.at(-1)?.get('query')).toBe('Before');
-      await openMenu('kb-material-menu-a');
-      await choose('kb-material-menu-a-rename');
-      await typeName('After');
-      await submitName();
-      await settle(20);
-      expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
-    }
-
-    it('gives the focus to the heading once that read removes its ⋯', async () => {
-      const page = mount();
-      await renameWhileSearching(page);
-      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
-      await settle(20);
-      expect(inDocument('kb-material-menu-a')).toBeNull();
-      expect(document.activeElement?.id).toBe('pro-workspace-library-title');
-      await page.dispose();
-    });
-
-    it('leaves the focus alone once the teacher has moved it', async () => {
-      const page = mount();
-      await renameWhileSearching(page);
-      const search = page.query('kb-search')!;
-      search.focus();
-      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
-      await settle(20);
-      expect(document.activeElement).toBe(search);
-      await page.dispose();
-    });
   });
 
   it('says why a move was refused, never as a success', async () => {
@@ -1188,9 +1095,7 @@ describe('organizing from the page', () => {
         },
         422,
       );
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
+    const page = await openPage();
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-move');
     await choose('kb-move-to-f1');
@@ -1202,87 +1107,80 @@ describe('organizing from the page', () => {
     await page.dispose();
   });
 
-  it('creates a folder and opens it; a name already taken opens that folder', async () => {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
+  it('gives the focus back to the control that opened a dialog', async () => {
+    const page = await openPage();
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-rename');
+    await typeName('Chapter 1');
+    await submitName();
     await settle();
+    expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
 
-    folders = () =>
+    // Moved into a folder that is closed: its ⋯ is gone, the heading takes the focus.
+    await openMenu('kb-material-menu-a');
+    await choose('kb-material-menu-a-move');
+    library = (params) =>
       json({
-        folders: [
-          { id: 'f1', name: 'Unit 1', materialCount: 2 },
-          { id: 'f-new', name: 'New', materialCount: 0 },
-        ],
+        materials: params.get('folderId') === 'f1' ? [inF1('a')] : [],
+        limits: LIMITS,
       });
-    await page.click('kb-folder-new');
-    await typeName('New');
-    await submitName();
-    expect(writeCalls).toEqual([
-      { method: 'POST', path: '/api/materials/folders', body: { name: 'New' } },
-    ]);
-    expect(page.query('kb-scope-folder-f-new')?.getAttribute('aria-current')).toBe('page');
-    expect(libraryCalls.at(-1)?.get('folderId')).toBe('f-new');
-
-    writeMaterial = () => json({ folder: { id: 'f1', name: 'Unit 1' }, created: false }, 200);
-    await page.click('kb-folder-new');
-    await typeName('unit 1');
-    await submitName();
-    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
-    expect(inDocument('kb-name-dialog')).toBeNull();
+    await choose('kb-move-to-f1');
+    await settle();
+    expect(inDocument('kb-material-menu-a')).toBeNull();
+    expect(document.activeElement?.id).toBe('pro-workspace-library-title');
     await page.dispose();
   });
 
-  it('does not read the list for a page the teacher left before a write answered', async () => {
-    for (const action of ['rename', 'move', 'create'] as const) {
-      const answer = deferred<Response>();
-      writeMaterial = () => answer.promise;
-      writeCalls.length = 0;
-      const page = mount();
-      await page.render(createElement(MaterialLibraryPage));
+  describe('when the list read after a rename drops the source from the search', () => {
+    let reread: ReturnType<typeof deferred<Response>>;
+    beforeEach(() => {
+      let renamed = false;
+      reread = deferred<Response>();
+      library = () =>
+        renamed
+          ? reread.promise
+          : json({ materials: [source('a', { name: 'Before' })], limits: LIMITS });
+      writeMaterial = () => {
+        renamed = true;
+        return json({ status: 'renamed' });
+      };
+    });
+    async function renameWhileSearching() {
+      const page = await openPage();
+      await search('Before');
+      expect(libraryCalls.at(-1)?.get('query')).toBe('Before');
+      await openMenu('kb-material-menu-a');
+      await choose('kb-material-menu-a-rename');
+      await typeName('After');
+      await submitName();
       await settle();
-      if (action === 'create') {
-        await page.click('kb-folder-new');
-        await typeName('Later');
-        await choose('kb-name-dialog-submit');
-      } else if (action === 'rename') {
-        await openMenu('kb-material-menu-a');
-        await choose('kb-material-menu-a-rename');
-        await typeName('Later');
-        await choose('kb-name-dialog-submit');
-      } else {
-        await openMenu('kb-material-menu-a');
-        await choose('kb-material-menu-a-move');
-        await choose('kb-move-to-f1');
-      }
-      expect(writeCalls, action).toHaveLength(1);
-
-      await page.dispose();
-      const reads = libraryCalls.length;
-      const folderReads = vi
-        .mocked(fetch)
-        .mock.calls.filter(([input]) => String(input) === '/api/materials/folders').length;
-      await act(async () =>
-        answer.resolve(
-          action === 'create'
-            ? json({ folder: { id: 'f-late', name: 'Later' }, created: true }, 201)
-            : json({ status: 'renamed' }),
-        ),
-      );
-      await settle();
-      expect(libraryCalls.length, action).toBe(reads);
-      expect(
-        vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === '/api/materials/folders')
-          .length,
-        action,
-      ).toBe(folderReads);
+      expect(document.activeElement).toBe(inDocument('kb-material-menu-a'));
+      return page;
     }
+
+    it('gives the focus to the heading once that read removes its ⋯', async () => {
+      const page = await renameWhileSearching();
+      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
+      await settle();
+      expect(inDocument('kb-material-menu-a')).toBeNull();
+      expect(document.activeElement?.id).toBe('pro-workspace-library-title');
+      await page.dispose();
+    });
+
+    it('leaves the focus alone once the teacher has moved it', async () => {
+      const page = await renameWhileSearching();
+      const searchBox = page.query('kb-search')!;
+      searchBox.focus();
+      await act(async () => reread.resolve(json({ materials: [], limits: LIMITS })));
+      await settle();
+      expect(document.activeElement).toBe(searchBox);
+      await page.dispose();
+    });
   });
 
   it('opens the original in a new tab, and hands the source to a conversation', async () => {
     const onChat = vi.fn();
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage, { onChatWithMaterial: onChat }));
-    await settle();
+    const page = await openPage({ onChatWithMaterial: onChat });
     await openMenu('kb-material-menu-a');
     const link = inDocument('kb-material-menu-a-open') as HTMLAnchorElement;
     expect(link.tagName).toBe('A');
@@ -1303,49 +1201,11 @@ describe('organizing from the page', () => {
     expect(uploadCalls).toEqual([]);
     await page.dispose();
   });
-
-  it('names the folder limit, a vanished item and a busy owner', async () => {
-    const answers = [
-      json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'limit' }, 409),
-      new Response('Not found', { status: 404 }),
-      json({ error: { code: 'OWNER_BUSY', message: 'busy' } }, 503),
-    ];
-    writeMaterial = () => answers.shift()!;
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    await page.click('kb-folder-new');
-    await typeName('Another');
-    const shown: (string | null | undefined)[] = [];
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await submitName();
-      shown.push(inDocument('kb-name-dialog-error')?.textContent);
-    }
-    expect(shown).toEqual([
-      'workspace.knowledgeBase.error.folderLimit',
-      'workspace.knowledgeBase.error.gone',
-      'workspace.knowledgeBase.error.busy',
-    ]);
-    await page.dispose();
-  });
 });
 
+// ── Deleting ───────────────────────────────────────────────────────────────
+
 describe('deleting from the page', () => {
-  const inDocument = (testId: string) =>
-    document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-  const openMenu = async (testId: string) => {
-    const trigger = inDocument(testId)!;
-    await act(async () => {
-      trigger.dispatchEvent(
-        new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
-      );
-      trigger.click();
-    });
-  };
-  const choose = (testId: string) =>
-    act(async () => {
-      inDocument(testId)!.click();
-    });
   const confirm = async () => {
     await choose('kb-delete-dialog-confirm');
     await settle();
@@ -1353,20 +1213,12 @@ describe('deleting from the page', () => {
   const deletes = () => writeCalls.filter((call) => call.method === 'DELETE');
   const noContent = () => new Response(null, { status: 204 });
 
-  async function openPage() {
-    const page = mount();
-    await page.render(createElement(MaterialLibraryPage));
-    await settle();
-    return page;
-  }
-
   it('says what deleting a source means, then deletes it and reads the list again', async () => {
     writeMaterial = () => noContent();
     const page = await openPage();
     const reads = libraryCalls.length;
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-delete');
-
     const text = inDocument('kb-delete-dialog')?.textContent ?? '';
     expect(text).toContain('workspace.knowledgeBase.delete.materialTitle{"name":"a.pdf"}');
     expect(text).toContain('workspace.knowledgeBase.delete.materialLinks');
@@ -1387,10 +1239,8 @@ describe('deleting from the page', () => {
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-delete');
     await settle();
-    const dialog = inDocument('kb-delete-dialog')!;
-    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(inDocument('kb-delete-dialog')!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).toBe(inDocument('kb-delete-dialog-cancel'));
-
     await choose('kb-delete-dialog-cancel');
     expect(inDocument('kb-delete-dialog')).toBeNull();
     expect(deletes()).toEqual([]);
@@ -1412,7 +1262,6 @@ describe('deleting from the page', () => {
   });
 
   it('takes a 404 on the retry after a failed delete as done', async () => {
-    // The deletion committed, its reply was lost (500); the retry finds nothing.
     const answers = [
       json({ success: false, errorCode: 'INTERNAL_ERROR', error: 'lost' }, 500),
       new Response('Not found', { status: 404 }),
@@ -1422,7 +1271,6 @@ describe('deleting from the page', () => {
     const reads = libraryCalls.length;
     await openMenu('kb-material-menu-a');
     await choose('kb-material-menu-a-delete');
-
     await confirm();
     expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
       'workspace.knowledgeBase.error.save',
@@ -1468,19 +1316,19 @@ describe('deleting from the page', () => {
     await page.dispose();
   });
 
-  it('refuses to delete a folder that still holds materials, in the server’s word', async () => {
+  it('still refuses an "empty" folder the server finds not empty, in its word', async () => {
     writeMaterial = () =>
       json({ success: false, errorCode: 'INVALID_REQUEST', error: 'x', reason: 'not_empty' }, 409);
     const page = await openPage();
     const reads = libraryCalls.length;
-    await openMenu('kb-folder-menu-f1');
-    await choose('kb-folder-menu-f1-delete');
+    await openMenu('kb-folder-menu-f2');
+    await choose('kb-folder-menu-f2-delete');
     expect(inDocument('kb-delete-dialog')?.textContent).toContain(
       'workspace.knowledgeBase.delete.folderOnlyEmpty',
     );
     await confirm();
     expect(deletes()).toEqual([
-      { method: 'DELETE', path: '/api/materials/folders/f1', body: undefined },
+      { method: 'DELETE', path: '/api/materials/folders/f2', body: undefined },
     ]);
     expect(inDocument('kb-delete-dialog-message')?.textContent).toBe(
       'workspace.knowledgeBase.error.notEmpty',
@@ -1490,36 +1338,17 @@ describe('deleting from the page', () => {
     await page.dispose();
   });
 
-  it('goes back to All after deleting the folder being looked at, and only then', async () => {
+  it('a deleted folder leaves the list; another open folder stays open', async () => {
     writeMaterial = () => noContent();
     const page = await openPage();
-    await page.click('kb-scope-folder-f1');
-    await settle();
-    folders = () => json({ folders: [] });
-    await openMenu('kb-folder-menu-f1');
-    await choose('kb-folder-menu-f1-delete');
-    await confirm();
-    expect(page.query('kb-scope-all')?.getAttribute('aria-current')).toBe('page');
-    expect(page.query('kb-folder-gone')).toBeNull();
-    await page.dispose();
-  });
-
-  it('stays in the open folder after deleting another one', async () => {
-    writeMaterial = () => noContent();
-    folders = () =>
-      json({
-        folders: [
-          { id: 'f1', name: 'Unit 1', materialCount: 2 },
-          { id: 'f2', name: 'Unit 2', materialCount: 0 },
-        ],
-      });
-    const page = await openPage();
-    await page.click('kb-scope-folder-f1');
-    await settle();
+    await expand('f1');
+    await expand('f2');
+    folders = () => json({ folders: [{ id: 'f1', name: 'Unit 1', materialCount: 2 }] });
     await openMenu('kb-folder-menu-f2');
     await choose('kb-folder-menu-f2-delete');
     await confirm();
-    expect(page.query('kb-scope-folder-f1')?.getAttribute('aria-current')).toBe('page');
+    expect(page.query('kb-folder-f2')).toBeNull();
+    expect(page.query('kb-folder-toggle-f1')?.getAttribute('aria-expanded')).toBe('true');
     await page.dispose();
   });
 });
@@ -1547,7 +1376,7 @@ describe('reading a delete attempt', () => {
   });
 });
 
-describe('the library client', () => {
+describe('the library client and formats', () => {
   it('reads all three refusal shapes', async () => {
     await expect(
       materialLibraryErrorOf(
@@ -1562,9 +1391,25 @@ describe('the library client', () => {
     ).resolves.toMatchObject({ status: 404, reason: undefined, code: undefined });
   });
 
-  it('formats byte counts for people', () => {
+  it('passes a folder’s date through, and says whether a new folder was created', async () => {
+    folders = () => json({ folders: [{ id: 'f1', name: 'A', materialCount: 1, updatedAt: 42 }] });
+    await expect(fetchMaterialLibraryFolders()).resolves.toEqual([
+      { id: 'f1', name: 'A', materialCount: 1, updatedAt: 42 },
+    ]);
+    writeMaterial = () => json({ folder: { id: 'f1', name: 'A' }, created: false }, 200);
+    await expect(createLibraryFolder('a')).resolves.toEqual({ folderId: 'f1', created: false });
+    writeMaterial = () => json({ folder: { id: 'f9', name: 'B' }, created: true }, 201);
+    await expect(createLibraryFolder('B')).resolves.toEqual({ folderId: 'f9', created: true });
+  });
+
+  it('formats byte counts and the date column for people', () => {
     expect(formatMaterialBytes(512, 'en-US')).toBe('512 B');
     expect(formatMaterialBytes(1536, 'en-US')).toBe('1.5 KB');
     expect(formatMaterialBytes(50 * 1024 * 1024, 'en-US')).toBe('50 MB');
+    const thisYear = new Date().getFullYear();
+    expect(formatLibraryDate(`${thisYear}-03-04T12:00:00Z`, 'en-US')).toBe('03/04');
+    expect(formatLibraryDate('2020-03-04T12:00:00Z', 'en-US')).toBe('03/04/2020');
+    expect(formatLibraryDate(undefined, 'en-US')).toBe('');
+    expect(formatLibraryDate('not a date', 'en-US')).toBe('');
   });
 });
