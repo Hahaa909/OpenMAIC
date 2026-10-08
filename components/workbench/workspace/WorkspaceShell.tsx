@@ -209,6 +209,11 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
     window.addEventListener('popstate', dropMaterialSeed);
     return () => window.removeEventListener('popstate', dropMaterialSeed);
   }, []);
+  /**
+   * Bumped once per hand-over, so it also numbers them: a draft's first
+   * message that was already on its way when a hand-over started a new draft
+   * belongs to the draft before it (see `draftConversation`).
+   */
   const materialSeedKeys = useRef(0);
   const consumeMaterialSeed = useCallback((key: number) => {
     setMaterialSeed((current) => (current?.key === key ? null : current));
@@ -991,6 +996,7 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
               readonly elementRefs: readonly ElementRef[];
               readonly courseRefs: readonly CourseRef[];
             }) => {
+              const handOverAtSend = materialSeedKeys.current;
               const started = await startConversationWithFirstMessage({
                 stageId: draftCourseId,
                 ...message,
@@ -998,6 +1004,17 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
               // The rail should show the conversation that just came into being,
               // and the URL is what attaches it.
               loadSessions();
+              // A hand-over started a new draft while this was on its way --
+              // often under the same `draft:<course>` key. This conversation
+              // stays in the rail; attaching it would carry the new draft's
+              // next message into it.
+              if (materialSeedKeys.current !== handOverAtSend) {
+                return {
+                  accepted: true,
+                  elementRefsAccepted: started.elementRefsAccepted,
+                  courseRefsAccepted: started.courseRefsAccepted,
+                };
+              }
               // Decided when the session exists, not when the message was
               // sent: the teacher may have opened the knowledge base since.
               navigateInBackground(

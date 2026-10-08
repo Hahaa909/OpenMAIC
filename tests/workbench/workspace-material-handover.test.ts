@@ -576,3 +576,146 @@ describe('Escapes on the knowledge base page', () => {
     expect(cancels()).toEqual([]);
   });
 });
+
+describe('a draft message still on its way when the next hand-over arrives', () => {
+  type Started = { sessionId: string; elementRefsAccepted: boolean; courseRefsAccepted: boolean };
+  const started = (sessionId: string): Started => ({
+    sessionId,
+    elementRefsAccepted: true,
+    courseRefsAccepted: true,
+  });
+  const textarea = () => container!.querySelector('textarea')!;
+  const sendButton = () =>
+    container!.querySelector<HTMLButtonElement>('[data-testid="workbench-send"]');
+  const send = () => act(async () => sendButton()!.click());
+  const attachedTo = (sessionId: string) =>
+    [...mocks.routerPush.mock.calls, ...mocks.routerReplace.mock.calls].some(([url]) =>
+      String(url).includes(`session=${sessionId}`),
+    );
+
+  /** Beside classroom stage-1: hand over A, send about it, and keep that send pending. */
+  async function sendAboutA() {
+    const sendingA = deferred<Started>();
+    mocks.startFirstMessage.mockImplementationOnce(() => sendingA.promise);
+    serve();
+    await render();
+    await chatWith('A');
+    await type(textarea(), 'About A');
+    await send();
+    expect(mocks.startFirstMessage).toHaveBeenCalledTimes(1);
+    return sendingA;
+  }
+
+  it('control: nobody superseded it, so its success attaches the conversation', async () => {
+    const sendingA = await sendAboutA();
+    await act(async () => sendingA.resolve(started('session-A')));
+    expect(mocks.routerReplace).toHaveBeenLastCalledWith(
+      '/workspace?session=session-A&course=stage-1',
+    );
+  });
+
+  it('control: nobody superseded it, so its failure puts the text back', async () => {
+    const sendingA = await sendAboutA();
+    await act(async () => sendingA.reject(new Error('send A failed')));
+    expect(textarea().value).toBe('About A');
+    expect(mocks.toastError).toHaveBeenCalledWith('send A failed');
+  });
+
+  it('a late success stays in the rail and does not take the new draft over', async () => {
+    const sendingA = await sendAboutA();
+    await chatWith('B');
+    // The new draft is free at once: no STOP left over from A, and it can send.
+    expect(container!.querySelector('[data-testid="workbench-stop"]')).toBeNull();
+    expect(textarea().value).toBe('');
+    expect(container!.textContent).toContain('B.pdf');
+    await type(textarea(), 'Typing about B');
+    mocks.requestFullFetch.mockClear();
+
+    await act(async () => sendingA.resolve(started('session-A')));
+    // Created, so the rail reloads; not attached, and the draft is untouched.
+    expect(mocks.requestFullFetch).toHaveBeenCalled();
+    expect(attachedTo('session-A')).toBe(false);
+    expect(textarea().value).toBe('Typing about B');
+    expect(container!.textContent).toContain('B.pdf');
+
+    // B's message starts its own conversation, with B's source alone.
+    mocks.startFirstMessage.mockResolvedValueOnce(started('session-B'));
+    await send();
+    const sentB = mocks.startFirstMessage.mock.calls[1][0] as {
+      text: string;
+      materials: { materialId: string }[];
+    };
+    expect(sentB.text).toBe('Typing about B');
+    expect(sentB.materials.map((material) => material.materialId)).toEqual(['B']);
+    expect(mocks.routerReplace).toHaveBeenLastCalledWith(
+      '/workspace?session=session-B&course=stage-1',
+    );
+  });
+
+  it('a late failure is reported but its text never lands in the new draft', async () => {
+    const sendingA = await sendAboutA();
+    await chatWith('B');
+    await type(textarea(), 'Typing about B');
+
+    await act(async () => sendingA.reject(new Error('send A failed')));
+    expect(mocks.toastError).toHaveBeenCalledWith('send A failed');
+    expect(textarea().value).toBe('Typing about B');
+    expect(container!.textContent).toContain('B.pdf');
+    expect(container!.textContent).not.toContain('A.pdf');
+    expect(container!.querySelector('[data-testid="workbench-stop"]')).toBeNull();
+  });
+
+  it('a late completion does not release the new draft while its own send is pending', async () => {
+    const sendingA = await sendAboutA();
+    await chatWith('B');
+    const sendingB = deferred<Started>();
+    mocks.startFirstMessage.mockImplementationOnce(() => sendingB.promise);
+    await type(textarea(), 'About B');
+    await send();
+    expect(mocks.startFirstMessage).toHaveBeenCalledTimes(2);
+
+    expect(container!.querySelector('[data-testid="workbench-stop"]')).not.toBeNull();
+
+    await act(async () => sendingA.resolve(started('session-A')));
+    // B is still on its way: its STOP stays, and a second send (Enter) must not slip through.
+    expect(container!.querySelector('[data-testid="workbench-stop"]')).not.toBeNull();
+    await type(textarea(), 'Again');
+    await act(async () => {
+      textarea().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+      );
+    });
+    expect(mocks.startFirstMessage).toHaveBeenCalledTimes(2);
+
+    await act(async () => sendingB.resolve(started('session-B')));
+    expect(attachedTo('session-A')).toBe(false);
+    expect(mocks.routerReplace).toHaveBeenLastCalledWith(
+      '/workspace?session=session-B&course=stage-1',
+    );
+  });
+
+  it('home: a pending home message is not attached once a hand-over opened a new home draft', async () => {
+    mocks.searchParams = new URLSearchParams();
+    const created = deferred<Response>();
+    serve(() => created.promise);
+    await render();
+    await type(textarea(), 'Teach A');
+    await act(async () =>
+      container!.querySelector<HTMLButtonElement>('[data-testid="pro-launch-start"]')!.click(),
+    );
+    await chatWith('B');
+    expect(container!.querySelector('[data-testid="pro-launch-panel"]')).not.toBeNull();
+    expect(container!.textContent).toContain('B.pdf');
+    mocks.routerPush.mockClear();
+    mocks.routerReplace.mockClear();
+
+    await act(async () =>
+      created.resolve(
+        Response.json({ id: 'session-A', stageId: 'stage-created', status: 'queued' }),
+      ),
+    );
+    expect([...mocks.routerPush.mock.calls, ...mocks.routerReplace.mock.calls]).toEqual([]);
+    expect(container!.textContent).toContain('B.pdf');
+    expect(textarea().value).toBe('');
+  });
+});
