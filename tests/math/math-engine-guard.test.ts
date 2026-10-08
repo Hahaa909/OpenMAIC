@@ -19,10 +19,6 @@ const ALLOWLIST: Record<string, { kind: 'render-calls' | 'reviewed'; reason: str
   },
   'lib/edit/slide-edit-elements.ts': { kind: 'render-calls', reason: 'slide latex elements' },
   'lib/export/latex-to-omml.ts': { kind: 'render-calls', reason: 'PPTX export via Temml' },
-  'lib/export/standalone-html/rich-text.ts': {
-    kind: 'render-calls',
-    reason: 'standalone HTML inline math',
-  },
   'lib/quiz/math-text.ts': {
     kind: 'render-calls',
     reason: 'quiz math (also the standalone player)',
@@ -34,6 +30,10 @@ const ALLOWLIST: Record<string, { kind: 'render-calls' | 'reviewed'; reason: str
   'packages/@openmaic/editor/src/ui/latex/latex-editor.ts': {
     kind: 'render-calls',
     reason: 'editor latex dialog',
+  },
+  'packages/@openmaic/renderer/src/utils/inlineMath.ts': {
+    kind: 'render-calls',
+    reason: 'inline math in slide prose (players, thumbnails, standalone HTML)',
   },
   'packages/@openmaic/generation/src/scene-generator.ts': {
     kind: 'render-calls',

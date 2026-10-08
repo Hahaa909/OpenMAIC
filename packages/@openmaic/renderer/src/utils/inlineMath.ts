@@ -1,7 +1,8 @@
 'use client';
 
 import { useLayoutEffect, useMemo, type RefObject } from 'react';
-import katex, { type KatexOptions } from 'katex';
+import katex from 'katex';
+import { safeKatexOptions } from '@openmaic/dsl';
 
 /**
  * Inline formulas in slide prose. Stored prose carries each formula as LaTeX
@@ -38,37 +39,6 @@ export const INLINE_MATH_SYNC_FORMULA_BUDGET = 100;
 export const INLINE_MATH_MAX_ROOT_SOURCE = 50_000;
 export const INLINE_MATH_MAX_ROOT_FORMULAS = 1_000;
 
-/** Commands that define macros: mapped to nothing so user input cannot define any. */
-const MACRO_DEFINITIONS = [
-  '\\def',
-  '\\gdef',
-  '\\edef',
-  '\\xdef',
-  '\\let',
-  '\\futurelet',
-  '\\global',
-  '\\newcommand',
-  '\\renewcommand',
-  '\\providecommand',
-] as const;
-
-/**
- * KaTeX options for authored inline formulas, in one place: untrusted input,
- * no macro definitions, bounded expansion. A fresh `macros` object per render,
- * since KaTeX writes global definitions into it.
- */
-function inlineMathKatexOptions(): KatexOptions {
-  return {
-    displayMode: false,
-    output: 'html',
-    throwOnError: false,
-    trust: false,
-    strict: 'ignore',
-    maxExpand: 1000,
-    macros: Object.fromEntries(MACRO_DEFINITIONS.map((name) => [name, ''])),
-  };
-}
-
 /** Formula elements this module already handled, so a repeated pass skips them. */
 const handled = new WeakSet<Element>();
 
@@ -88,7 +58,19 @@ function typesetUncached(doc: Document, latex: string): Element | null {
   if (!latex.trim() || latex.length > MAX_INLINE_MATH_SOURCE) return null;
   const host = doc.createElement('span');
   try {
-    katex.render(latex, host, inlineMathKatexOptions());
+    // Authored input: `safeKatexOptions` forces `trust: false`, makes
+    // formula-defined macros inert, bounds expansion, and builds a fresh
+    // `macros` object per call (KaTeX writes global definitions into it).
+    katex.render(
+      latex,
+      host,
+      safeKatexOptions({
+        displayMode: false,
+        output: 'html',
+        throwOnError: false,
+        strict: 'ignore',
+      }),
+    );
   } catch {
     // KaTeX refuses to run in a quirks-mode document (no doctype); the source
     // then stays as text.

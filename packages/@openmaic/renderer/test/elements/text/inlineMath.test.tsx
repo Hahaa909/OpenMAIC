@@ -87,6 +87,63 @@ describe('renderInlineMath', () => {
     expect(root.textContent!.length).toBeLessThan(bomb.length * 2);
   });
 
+  it('typesets ordinary formulas exactly as the previous hardened options did', () => {
+    // The options this module used before it adopted `safeKatexOptions`.
+    const previous = {
+      displayMode: false,
+      output: 'html',
+      throwOnError: false,
+      trust: false,
+      strict: 'ignore',
+      maxExpand: 1000,
+      macros: Object.fromEntries(
+        [
+          '\\def',
+          '\\gdef',
+          '\\edef',
+          '\\xdef',
+          '\\let',
+          '\\futurelet',
+          '\\global',
+          '\\newcommand',
+          '\\renewcommand',
+          '\\providecommand',
+        ].map((name) => [name, '']),
+      ),
+    } as const;
+    for (const latex of [
+      LATEX,
+      'e^{i\\pi}+1=0',
+      '\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}',
+      '\\alpha \\neq \\beta \\iff \\gamma \\dots',
+      '\\mathbb{R}^n \\to \\mathbb{R}',
+    ]) {
+      const root = host(`<p>${stored(latex)}</p>`);
+      renderInlineMath(root);
+      const reference = document.createElement('span');
+      katex.render(latex, reference, { ...previous, macros: { ...previous.macros } });
+      reference.firstElementChild!.setAttribute('data-inline-math', latex);
+      expect(root.querySelector('[data-inline-math]')!.outerHTML).toBe(
+        reference.firstElementChild!.outerHTML,
+      );
+    }
+  });
+
+  it('keeps formula-defined macros inert, within and across formulas', () => {
+    const root = host(
+      `<p>${stored('\\def\\leak{LEAKED}\\leak')} ${stored('\\newcommand{\\nc}{LEAKED}\\nc')} ` +
+        `${stored('\\gdef\\shared{LEAKED}x')} ${stored('\\shared')}</p>`,
+    );
+    renderInlineMath(root);
+    const formulas = root.querySelectorAll('[data-inline-math]');
+    expect(formulas).toHaveLength(4);
+    for (const formula of formulas) expect(formula.classList.contains('katex')).toBe(true);
+    expect(root.textContent).not.toContain('LEAKED');
+    // The undefined names are shown like any unknown command, as their source.
+    const shown = [...formulas].map((formula) => formula.textContent);
+    expect(shown).toEqual(['\\leak', '\\nc', 'x', '\\shared']);
+  });
+
   it('typesets long legitimate formulas that expand many built-in macros', () => {
     // 30 × (\neq, \iff, \, and \dots): well over 100 built-in expansions.
     const latex = Array.from(
