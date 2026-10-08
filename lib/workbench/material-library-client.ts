@@ -187,12 +187,15 @@ function libraryParams(input: {
   readonly scope: LibraryScope;
   readonly query: string;
   readonly before?: string;
+  readonly withLimits?: boolean;
 }): URLSearchParams {
-  // Never `limits=0`: the page shows the limits before an upload (§8).
+  // The page shows the limits before an upload (§8), so one read of each
+  // refresh asks for them; the others say `limits=0` and skip the usage sums.
   const params = new URLSearchParams({
     sources: '1',
     limit: String(MATERIAL_LIBRARY_PAGE_SIZE),
   });
+  if (input.withLimits === false) params.set('limits', '0');
   if (input.scope.kind === 'unfiled') params.set('folderId', 'unfiled');
   if (input.scope.kind === 'folder') params.set('folderId', input.scope.folderId);
   const query = input.query.trim();
@@ -206,6 +209,8 @@ export async function fetchMaterialLibraryPage(input: {
   readonly scope: LibraryScope;
   readonly query: string;
   readonly before?: string;
+  /** `false`: skip the limits and usage (another read of the same refresh carries them). */
+  readonly withLimits?: boolean;
   readonly signal?: AbortSignal;
 }): Promise<LibraryPage> {
   const response = await fetch(`/api/materials/library?${libraryParams(input)}`, {
