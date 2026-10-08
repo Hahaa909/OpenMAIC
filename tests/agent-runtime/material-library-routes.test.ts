@@ -673,6 +673,37 @@ describe('material library routes and tools (PGlite)', () => {
     expect((await read('src-a', 'ses-other')).status).toBe(404);
   });
 
+  it('returns only whitelisted extraction codes on all owner HTTP projections', async () => {
+    const h = await boot();
+    await seedLinkedConversation(h);
+    for (const [status, code, expected] of [
+      ['failed', 'storage_full', { status: 'failed', reasonCode: 'storage_full' }],
+      ['failed', 'future_code', { status: 'failed' }],
+      ['failed', undefined, { status: 'failed' }],
+      ['pending', 'storage_full', { status: 'pending' }],
+    ] as const) {
+      await h.pool.query(
+        `UPDATE owner_material SET extraction = $1::jsonb, extraction_error = 'PRIVATE_UPSTREAM_BODY' WHERE id = 'src-a'`,
+        [JSON.stringify({ status, reasonCode: code, reason: 'PRIVATE_UPSTREAM_BODY' })],
+      );
+      const library = await libraryRoute(request('GET', '/api/materials/library'));
+      const session = await sessionMaterialsRoute(request('GET', '/api/materials?sessionId=ses-1'));
+      const detail = await sessionMaterialRoute(
+        request('GET', '/api/materials/src-a?sessionId=ses-1'),
+        params('src-a'),
+      );
+      for (const response of [library, session, detail]) {
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(JSON.stringify(body)).not.toContain('PRIVATE_UPSTREAM_BODY');
+        const material =
+          body.material ??
+          body.materials.find((item: { materialId: string }) => item.materialId === 'src-a');
+        expect(material.extraction).toEqual(expected);
+      }
+    }
+  });
+
   it('lists the owner’s library with the limits and usage uploads are held to', async () => {
     const h = await boot();
     await seedSource(h, 'src-a', { bytes: Buffer.from('12345') });
@@ -730,9 +761,11 @@ describe('material library routes and tools (PGlite)', () => {
     expect(body.materials.find((m) => m.materialId === 'src-a')).toMatchObject({
       name: 'src-a.pdf',
       folderId: null,
-      extraction: { status: 'failed', reason: 'the asset store has no room for this extraction' },
+      extraction: { status: 'failed' },
     });
-    expect(JSON.stringify(body)).not.toMatch(/ossKey|assetId|sha256|objects\//);
+    expect(JSON.stringify(body)).not.toMatch(
+      /ossKey|assetId|sha256|objects\/|the asset store has no room/,
+    );
     expect(body.limits).toMatchObject({
       usedCount: 3,
       usedBytes: 19,

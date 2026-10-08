@@ -6,6 +6,7 @@
  * The tree's own paging and refresh rules are `material-library-tree.test.ts`;
  * these are the page on top of them.
  */
+import { MATERIAL_EXTRACTION_REASON_CODES } from '@/lib/types/material-extraction-failure';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1411,5 +1412,82 @@ describe('the library client and formats', () => {
     expect(formatLibraryDate('2020-03-04T12:00:00Z', 'en-US')).toBe('03/04/2020');
     expect(formatLibraryDate(undefined, 'en-US')).toBe('');
     expect(formatLibraryDate('not a date', 'en-US')).toBe('');
+  });
+});
+
+describe('public extraction failure explanations', () => {
+  it.each(MATERIAL_EXTRACTION_REASON_CODES)(
+    'shows the localized %s explanation in a popover',
+    async (reasonCode) => {
+      library = () =>
+        json({
+          materials: [
+            source('bad', {
+              extraction: { status: 'failed', reasonCode, reason: 'PRIVATE_RAW_DETAIL' },
+            }),
+          ],
+          limits: LIMITS,
+        });
+      const page = await openPage();
+      const status = page.query('kb-status-bad')!;
+      expect(status.textContent).toBe(`workspace.knowledgeBase.failure.${reasonCode}.label`);
+      const button = status.querySelector('button')!;
+      await act(async () => {
+        button.focus();
+        button.click();
+      });
+      await settle();
+      const dialog = document.querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).toBe(`workspace.knowledgeBase.failure.${reasonCode}.description`);
+      expect(document.body.innerHTML).not.toContain('PRIVATE_RAW_DETAIL');
+      await act(async () => {
+        dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      await settle();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(button);
+      await page.dispose();
+    },
+  );
+
+  it('falls back for unknown and old errors, and clears a known explanation when parsing restarts', async () => {
+    let status = 'failed';
+    library = () =>
+      json({
+        materials: [
+          source('unknown', {
+            extraction: {
+              status: 'failed',
+              reasonCode: 'future_code',
+              reason: 'PRIVATE_RAW_DETAIL',
+            },
+          }),
+          source('old', { extraction: { status: 'failed', reason: 'PRIVATE_RAW_DETAIL' } }),
+          source('known', { extraction: { status, reasonCode: 'storage_full' } }),
+        ],
+        limits: LIMITS,
+      });
+    const page = await openPage();
+    for (const id of ['unknown', 'old']) {
+      expect(page.query(`kb-status-${id}`)!.textContent).toBe(
+        'workspace.knowledgeBase.status.failed',
+      );
+      expect(page.query(`kb-status-${id}`)!.querySelector('button')).toBeNull();
+    }
+    await act(async () => {
+      page.query('kb-status-known')!.querySelector('button')!.click();
+    });
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    status = 'pending';
+    // Changing query drives the real hook through a fresh read, including the search rendering.
+    await search('known');
+    expect(page.query('kb-status-known')!.textContent).toBe(
+      'workspace.knowledgeBase.status.parsing',
+    );
+    expect(page.query('kb-status-known')!.querySelector('button')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.innerHTML).not.toContain('PRIVATE_RAW_DETAIL');
+    await page.dispose();
   });
 });

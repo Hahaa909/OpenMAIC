@@ -14,6 +14,8 @@ import {
 import { buildMaterialTools } from '@/lib/server/agent-runtime/material-tools';
 import {
   decodeMediaAssetData,
+  planSourceExtraction,
+  runSourceExtraction,
   extractClaimedSessionMaterial,
 } from '@/lib/server/material-extraction/extract';
 import { runNextMaterialExtraction } from '@/lib/server/material-extraction/runner';
@@ -331,5 +333,31 @@ describe('uploaded material extraction lifecycle', () => {
       attempts: 0,
       error: expect.stringMatching(/Configure AliDocMind credentials.*install ffmpeg.*server ASR/i),
     });
+  });
+});
+
+it('preserves a local duration reason through the real media plan without changing retryability', async () => {
+  const { createLocalMediaExtractorProvider } =
+    await import('@/lib/document/extractors/local-media');
+  const local = createLocalMediaExtractorProvider({
+    commands: {
+      resolve: async (name) => name,
+      run: async () => ({
+        stdout: JSON.stringify({ format: { duration: 5401 }, streams: [{ codec_type: 'audio' }] }),
+        stderr: '',
+      }),
+    },
+  });
+  // Selection availability depends on deployment ASR settings; supply only that check.
+  const plan = await planSourceExtraction(
+    { bytes: Buffer.from('fixture'), mime: 'video/mp4' },
+    'long.mp4',
+    {
+      mediaProviders: () => [{ ...local, availability: async () => ({ available: true }) }],
+    },
+  );
+  await expect(runSourceExtraction(plan, 'long.mp4')).rejects.toMatchObject({
+    reasonCode: 'media_too_long',
+    retryable: false,
   });
 });

@@ -127,3 +127,16 @@ describe('GET /api/materials/[id]', () => {
     expect((await call()).status).toBe(404);
   });
 });
+
+it('removes legacy failed diagnostics from HTTP without changing model projections', async () => {
+  const record = material({
+    extraction: { status: 'failed', attempts: 3, error: 'PRIVATE_UPSTREAM_BODY' },
+  });
+  mocks.getSessionMaterial.mockResolvedValue(record);
+  const response = await call();
+  const body = await response.json();
+  expect(body.material.extraction).toEqual({ status: 'failed', attempts: 3 });
+  expect(JSON.stringify(body)).not.toContain('PRIVATE_UPSTREAM_BODY');
+  const { publicMaterialView } = await import('@/lib/server/agent-runtime/session-materials');
+  expect(publicMaterialView(record).extraction).toEqual(record.extraction);
+});

@@ -1989,6 +1989,33 @@
       "scope": {
         "unfiled": "未歸檔"
       },
+      "failure": {
+        "more": "失敗說明：{{reason}}",
+        "storage_full": {
+          "label": "儲存空間不足",
+          "description": "沒有足夠空間儲存解析結果，請釋放空間後重試。"
+        },
+        "source_unavailable": {
+          "label": "原始檔案無法使用",
+          "description": "無法讀取這份資料的原始檔案，請重新上傳後再試。"
+        },
+        "service_unavailable": {
+          "label": "解析服務無法使用",
+          "description": "目前無法使用解析服務，請稍後再試；若持續發生，請聯絡管理員。"
+        },
+        "media_too_long": {
+          "label": "音訊或影片過長",
+          "description": "目前的解析方式無法處理這段音訊或影片，請縮短或分段後重新上傳。"
+        },
+        "no_text_extracted": {
+          "label": "未擷取到文字",
+          "description": "這次解析未取得可用文字，請檢查資料內容，或嘗試其他檔案。"
+        },
+        "processing_interrupted": {
+          "label": "解析未完成",
+          "description": "本次解析未能完成，可以稍後重試。"
+        }
+      },
       "status": {
         "uploading": "上傳中",
         "stored": "已存入 · 未解析",

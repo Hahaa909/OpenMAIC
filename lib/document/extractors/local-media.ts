@@ -563,6 +563,7 @@ export async function extractMediaMaterial(
       throw new MaterialExtractionError(
         `Media duration ${Math.ceil(durationSec)} seconds exceeds the ${MEDIA_MAX_DURATION_SEC}-second limit; trim it before uploading`,
         false,
+        { reasonCode: 'media_too_long' },
       );
     }
 

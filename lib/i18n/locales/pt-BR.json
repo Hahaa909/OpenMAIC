@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Sem pasta"
       },
+      "failure": {
+        "more": "Sobre esta falha: {{reason}}",
+        "storage_full": {
+          "label": "Espaço insuficiente",
+          "description": "Não há espaço suficiente para salvar os resultados. Libere espaço e tente novamente."
+        },
+        "source_unavailable": {
+          "label": "Arquivo original indisponível",
+          "description": "Não foi possível ler o arquivo original. Envie-o novamente e tente outra vez."
+        },
+        "service_unavailable": {
+          "label": "Serviço de análise indisponível",
+          "description": "A análise está indisponível no momento. Tente mais tarde; se o problema persistir, contate o administrador."
+        },
+        "media_too_long": {
+          "label": "Áudio ou vídeo muito longo",
+          "description": "Este método de análise não consegue processar mídias dessa duração. Encurte ou divida o arquivo e envie-o novamente."
+        },
+        "no_text_extracted": {
+          "label": "Nenhum texto extraído",
+          "description": "Nenhum texto utilizável foi extraído desta vez. Confira o conteúdo ou tente outro arquivo."
+        },
+        "processing_interrupted": {
+          "label": "Análise não concluída",
+          "description": "Não foi possível concluir a análise. Você pode tentar novamente mais tarde."
+        }
+      },
       "status": {
         "uploading": "Enviando",
         "stored": "Armazenado · não analisado",

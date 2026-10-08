@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Sin clasificar"
       },
+      "failure": {
+        "more": "Información del error: {{reason}}",
+        "storage_full": {
+          "label": "Espacio insuficiente",
+          "description": "No hay espacio suficiente para guardar los resultados. Libera espacio e inténtalo de nuevo."
+        },
+        "source_unavailable": {
+          "label": "Archivo original no disponible",
+          "description": "No se pudo leer el archivo original. Súbelo de nuevo y vuelve a intentarlo."
+        },
+        "service_unavailable": {
+          "label": "Servicio de análisis no disponible",
+          "description": "El análisis no está disponible por el momento. Inténtalo más tarde; si el problema continúa, contacta a tu administrador."
+        },
+        "media_too_long": {
+          "label": "Audio o video demasiado largo",
+          "description": "Este método de análisis no puede procesar un archivo de esta duración. Acórtalo o divídelo y vuelve a subirlo."
+        },
+        "no_text_extracted": {
+          "label": "No se extrajo texto",
+          "description": "Esta vez no se extrajo texto utilizable. Revisa el contenido o prueba con otro archivo."
+        },
+        "processing_interrupted": {
+          "label": "Análisis sin completar",
+          "description": "No se pudo completar el análisis. Puedes volver a intentarlo más tarde."
+        }
+      },
       "status": {
         "uploading": "Subiendo",
         "stored": "Guardado · sin analizar",

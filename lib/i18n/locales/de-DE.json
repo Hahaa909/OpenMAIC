@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Nicht abgelegt"
       },
+      "failure": {
+        "more": "Hinweis zum Fehler: {{reason}}",
+        "storage_full": {
+          "label": "Nicht genügend Speicherplatz",
+          "description": "Die Analyseergebnisse können wegen Platzmangels nicht gespeichert werden. Geben Sie Speicherplatz frei und versuchen Sie es erneut."
+        },
+        "source_unavailable": {
+          "label": "Originaldatei nicht verfügbar",
+          "description": "Die Originaldatei konnte nicht gelesen werden. Laden Sie sie erneut hoch und versuchen Sie es noch einmal."
+        },
+        "service_unavailable": {
+          "label": "Analysedienst nicht verfügbar",
+          "description": "Die Analyse ist derzeit nicht verfügbar. Versuchen Sie es später erneut. Wenden Sie sich bei anhaltenden Problemen an die Administration."
+        },
+        "media_too_long": {
+          "label": "Audio oder Video zu lang",
+          "description": "Diese Analysemethode kann Medien dieser Länge nicht verarbeiten. Kürzen oder teilen Sie die Datei und laden Sie sie erneut hoch."
+        },
+        "no_text_extracted": {
+          "label": "Kein Text extrahiert",
+          "description": "Diesmal wurde kein nutzbarer Text extrahiert. Prüfen Sie den Inhalt oder versuchen Sie eine andere Datei."
+        },
+        "processing_interrupted": {
+          "label": "Analyse nicht abgeschlossen",
+          "description": "Die Analyse konnte nicht abgeschlossen werden. Sie können es später erneut versuchen."
+        }
+      },
       "status": {
         "uploading": "Wird hochgeladen",
         "stored": "Gespeichert · nicht analysiert",

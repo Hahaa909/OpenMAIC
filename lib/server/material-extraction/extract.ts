@@ -156,7 +156,10 @@ function wrapProviderError(error: unknown): MaterialExtractionError {
   return new MaterialExtractionError(
     error instanceof Error ? error.message : String(error),
     isTransientExtractionError(error),
-    { cause: error },
+    {
+      cause: error,
+      reasonCode: error instanceof MaterialExtractionError ? error.reasonCode : undefined,
+    },
   );
 }
 
@@ -234,6 +237,7 @@ export async function runSourceExtraction(
       throw new MaterialExtractionError(
         'media extraction produced no transcript; configure a working local ASR provider or a cloud media extractor',
         false,
+        { reasonCode: 'no_text_extracted' },
       );
     }
     const images: ExtractedSourceImage[] = [];

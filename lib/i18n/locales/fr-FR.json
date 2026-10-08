@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Non classés"
       },
+      "failure": {
+        "more": "À propos de cet échec : {{reason}}",
+        "storage_full": {
+          "label": "Espace de stockage insuffisant",
+          "description": "L’espace disponible ne permet pas d’enregistrer les résultats. Libérez de l’espace et réessayez."
+        },
+        "source_unavailable": {
+          "label": "Fichier original indisponible",
+          "description": "Le fichier original n’a pas pu être lu. Importez-le à nouveau et réessayez."
+        },
+        "service_unavailable": {
+          "label": "Service d’analyse indisponible",
+          "description": "L’analyse est actuellement indisponible. Réessayez plus tard ; si le problème persiste, contactez votre administrateur."
+        },
+        "media_too_long": {
+          "label": "Audio ou vidéo trop long",
+          "description": "Cette méthode d’analyse ne peut pas traiter un média de cette durée. Raccourcissez ou divisez le fichier, puis importez-le à nouveau."
+        },
+        "no_text_extracted": {
+          "label": "Aucun texte extrait",
+          "description": "Aucun texte exploitable n’a été extrait cette fois. Vérifiez le contenu ou essayez un autre fichier."
+        },
+        "processing_interrupted": {
+          "label": "Analyse non terminée",
+          "description": "L’analyse n’a pas pu être terminée. Vous pouvez réessayer plus tard."
+        }
+      },
       "status": {
         "uploading": "Importation",
         "stored": "Enregistré · non analysé",

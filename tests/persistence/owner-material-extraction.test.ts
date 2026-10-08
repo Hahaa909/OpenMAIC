@@ -9,6 +9,7 @@ import { afterEach, describe, it, vi } from 'vitest';
 
 import {
   bootExtractionHarness,
+  failureReasonScenario,
   cacheCollectorOrderScenario,
   claimIntoSameContentScenario,
   sameKeyConcurrentSourcesScenario,
@@ -76,6 +77,10 @@ describe('owner-level material extraction (PGlite)', () => {
 
   it('extracts a source two conversations start exactly once', async () => {
     await twoConversationsOneExtractionScenario(await boot());
+  });
+
+  it('keeps public failure reasons on current terminal claims only', async () => {
+    await failureReasonScenario(await boot());
   });
 
   it('spends the claim budget on takeovers and keeps a heartbeating lease', async () => {

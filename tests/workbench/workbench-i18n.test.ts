@@ -268,3 +268,27 @@ describe('workbench hardcoded-copy contract', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+it('defines all six knowledge-base failure explanations in all twelve locale files', () => {
+  const codes = [
+    'storage_full',
+    'source_unavailable',
+    'service_unavailable',
+    'media_too_long',
+    'no_text_extracted',
+    'processing_interrupted',
+  ];
+  for (const { code } of supportedLocales) {
+    const resource = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'lib/i18n/locales', `${code}.json`), 'utf8'),
+    );
+    const failure = resource.workspace.knowledgeBase.failure;
+    expect(Object.keys(failure).sort()).toEqual([...codes, 'more'].sort());
+    expect(interpolations(failure.more)).toEqual(['reason']);
+    for (const reason of codes) {
+      expect(Object.keys(failure[reason]).sort()).toEqual(['description', 'label']);
+      expect(failure[reason].label.trim()).not.toBe('');
+      expect(failure[reason].description.trim()).not.toBe('');
+    }
+  }
+});

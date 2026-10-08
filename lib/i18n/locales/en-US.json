@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Unfiled"
       },
+      "failure": {
+        "more": "About this failure: {{reason}}",
+        "storage_full": {
+          "label": "Not enough storage",
+          "description": "There is not enough space to save the parsed results. Free up space and try again."
+        },
+        "source_unavailable": {
+          "label": "Original file unavailable",
+          "description": "The original file could not be read. Upload it again and retry."
+        },
+        "service_unavailable": {
+          "label": "Parsing service unavailable",
+          "description": "Parsing is currently unavailable. Try again later; contact your administrator if this continues."
+        },
+        "media_too_long": {
+          "label": "Audio or video too long",
+          "description": "This parsing method cannot process media of this length. Shorten or split the file and upload it again."
+        },
+        "no_text_extracted": {
+          "label": "No text extracted",
+          "description": "No usable text was extracted this time. Check the content or try another file."
+        },
+        "processing_interrupted": {
+          "label": "Parsing did not finish",
+          "description": "Parsing could not be completed. You can try again later."
+        }
+      },
       "status": {
         "uploading": "Uploading",
         "stored": "Stored · not parsed",

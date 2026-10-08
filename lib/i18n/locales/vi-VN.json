@@ -2004,6 +2004,33 @@
       "scope": {
         "unfiled": "Chưa phân loại"
       },
+      "failure": {
+        "more": "Thông tin lỗi: {{reason}}",
+        "storage_full": {
+          "label": "Không đủ dung lượng",
+          "description": "Không đủ dung lượng để lưu kết quả phân tích. Hãy giải phóng dung lượng rồi thử lại."
+        },
+        "source_unavailable": {
+          "label": "Không đọc được tệp gốc",
+          "description": "Không thể đọc tệp gốc. Hãy tải tệp lên lại rồi thử lại."
+        },
+        "service_unavailable": {
+          "label": "Dịch vụ phân tích không khả dụng",
+          "description": "Hiện không thể sử dụng dịch vụ phân tích. Hãy thử lại sau; nếu tình trạng tiếp diễn, hãy liên hệ quản trị viên."
+        },
+        "media_too_long": {
+          "label": "Âm thanh hoặc video quá dài",
+          "description": "Phương thức phân tích này không xử lý được tệp dài như vậy. Hãy rút ngắn hoặc chia nhỏ tệp rồi tải lên lại."
+        },
+        "no_text_extracted": {
+          "label": "Không trích xuất được văn bản",
+          "description": "Lần phân tích này không thu được văn bản có thể sử dụng. Hãy kiểm tra nội dung hoặc thử tệp khác."
+        },
+        "processing_interrupted": {
+          "label": "Phân tích chưa hoàn tất",
+          "description": "Không thể hoàn tất phân tích. Bạn có thể thử lại sau."
+        }
+      },
       "status": {
         "uploading": "Đang tải lên",
         "stored": "Đã lưu · chưa phân tích",

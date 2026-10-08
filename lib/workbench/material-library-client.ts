@@ -8,6 +8,10 @@
  * through it, never organized on their own.
  */
 
+import {
+  extractionReasonCodeOf,
+  type MaterialExtractionReasonCode,
+} from '@/lib/types/material-extraction-failure';
 import type { WorkbenchMaterial } from '@/lib/workbench/session-store';
 
 /** How many sources one listing request asks for: the route's ceiling. */
@@ -27,7 +31,10 @@ export interface LibraryMaterial {
   readonly bytes: number;
   readonly folderId: string | null;
   readonly folderName?: string;
-  readonly extraction: { readonly status: MaterialExtractionStatus; readonly reason?: string };
+  readonly extraction: {
+    readonly status: MaterialExtractionStatus;
+    readonly reasonCode?: MaterialExtractionReasonCode;
+  };
   readonly createdAt: string;
 }
 
@@ -167,6 +174,8 @@ function materialOf(raw: unknown): LibraryMaterial | null {
       ? (item.extraction as Record<string, unknown>)
       : {};
   const status = extractionStatusOf(extraction.status);
+  const reasonCode =
+    status === 'failed' ? extractionReasonCodeOf(extraction.reasonCode) : undefined;
   return {
     materialId: item.materialId,
     name: item.name,
@@ -177,9 +186,7 @@ function materialOf(raw: unknown): LibraryMaterial | null {
     ...(typeof item.folderName === 'string' ? { folderName: item.folderName } : {}),
     extraction: {
       status,
-      ...(status === 'failed' && typeof extraction.reason === 'string'
-        ? { reason: extraction.reason }
-        : {}),
+      ...(reasonCode ? { reasonCode } : {}),
     },
     createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
   };

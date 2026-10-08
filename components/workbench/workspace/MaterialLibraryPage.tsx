@@ -32,11 +32,14 @@ import {
   FileVideo,
   Folder,
   FolderPlus,
+  Info,
   LoaderCircle,
   Search,
   Upload,
   X,
 } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import type { MaterialExtractionReasonCode } from '@/lib/types/material-extraction-failure';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils/cn';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -135,10 +138,34 @@ function MaterialIcon({ mime }: { readonly mime?: string }) {
   return <File className={className} aria-hidden="true" />;
 }
 
-/**
- * A source's state, with a turning mark while it parses. A failure says only
- * that it failed: the backend's own text is not for this row.
- */
+const failureCopy: Record<MaterialExtractionReasonCode, { label: string; description: string }> = {
+  storage_full: {
+    label: 'workspace.knowledgeBase.failure.storage_full.label',
+    description: 'workspace.knowledgeBase.failure.storage_full.description',
+  },
+  source_unavailable: {
+    label: 'workspace.knowledgeBase.failure.source_unavailable.label',
+    description: 'workspace.knowledgeBase.failure.source_unavailable.description',
+  },
+  service_unavailable: {
+    label: 'workspace.knowledgeBase.failure.service_unavailable.label',
+    description: 'workspace.knowledgeBase.failure.service_unavailable.description',
+  },
+  media_too_long: {
+    label: 'workspace.knowledgeBase.failure.media_too_long.label',
+    description: 'workspace.knowledgeBase.failure.media_too_long.description',
+  },
+  no_text_extracted: {
+    label: 'workspace.knowledgeBase.failure.no_text_extracted.label',
+    description: 'workspace.knowledgeBase.failure.no_text_extracted.description',
+  },
+  processing_interrupted: {
+    label: 'workspace.knowledgeBase.failure.processing_interrupted.label',
+    description: 'workspace.knowledgeBase.failure.processing_interrupted.description',
+  },
+};
+
+/** Only known reasons get a user explanation; diagnostic text never enters the row. */
 function StatusLabel({
   material,
   t,
@@ -148,7 +175,8 @@ function StatusLabel({
   readonly t: Translate;
   readonly testId?: string;
 }) {
-  const { status } = material.extraction;
+  const { status, reasonCode } = material.extraction;
+  const failure = status === 'failed' && reasonCode ? failureCopy[reasonCode] : undefined;
   return (
     <span
       data-testid={testId}
@@ -169,7 +197,27 @@ function StatusLabel({
           aria-hidden="true"
         />
       ) : null}
-      {t(extractionLabelKey(status))}
+      {t(failure ? failure.label : extractionLabelKey(status))}
+      {failure ? (
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={t('workspace.knowledgeBase.failure.more', { reason: t(failure.label) })}
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-2 focus-visible:outline-offset-2"
+            >
+              <Info className="size-3.5" aria-hidden="true" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            aria-label={t(failure.label)}
+            className="max-w-[calc(100vw-2rem)] text-sm"
+            collisionPadding={16}
+          >
+            {t(failure.description)}
+          </PopoverContent>
+        </Popover>
+      ) : null}
     </span>
   );
 }

@@ -4,6 +4,10 @@
  * (RFC #1716 §8). Pool pointers, object keys and digests never leave the
  * server.
  */
+import {
+  extractionReasonCodeOf,
+  type MaterialExtractionReasonCode,
+} from '@/lib/types/material-extraction-failure';
 import { assetPrincipalForOwner } from '@/lib/persistence/owner-assets';
 import { ownerLibraryUsage } from '@/lib/persistence/material-library';
 import type { OwnerMaterialEntry } from '@/lib/persistence/session-material-links';
@@ -29,8 +33,8 @@ export interface LibraryMaterialView {
   derivedFrom?: string;
   pageNumber?: number;
   timeMs?: number;
-  /** A source's extraction; `reason` says why it failed, quota refusals included. */
-  extraction?: { status: string; reason?: string };
+  /** Only stable public reasons leave the server; diagnostic text stays private. */
+  extraction?: { status: string; reasonCode?: MaterialExtractionReasonCode };
   createdAt: string;
 }
 
@@ -39,6 +43,8 @@ export function libraryMaterialView(
   context: { folderNames?: ReadonlyMap<string, string>; attached?: ReadonlySet<string> } = {},
 ): LibraryMaterialView {
   const status = entry.extraction?.status ?? 'idle';
+  const reasonCode =
+    status === 'failed' ? extractionReasonCodeOf(entry.extraction?.reasonCode) : undefined;
   const folderName = entry.folderId ? context.folderNames?.get(entry.folderId) : undefined;
   return {
     materialId: entry.id,
@@ -56,9 +62,7 @@ export function libraryMaterialView(
       ? {
           extraction: {
             status,
-            ...(status === 'failed' && entry.extractionError
-              ? { reason: entry.extractionError }
-              : {}),
+            ...(reasonCode ? { reasonCode } : {}),
           },
         }
       : {}),
@@ -72,9 +76,15 @@ export function libraryMaterialView(
  * library shows it.
  */
 export function sessionScopeMaterialView(material: ResolvedMaterial): Record<string, unknown> {
-  return material.origin === 'session'
-    ? publicMaterialView(material.record)
-    : { ...libraryMaterialView(material.entry) };
+  if (material.origin !== 'session') return { ...libraryMaterialView(material.entry) };
+  const view = publicMaterialView(material.record);
+  // Keep legacy HTTP metadata without failed diagnostics. Model tools are unchanged.
+  if (material.record.extraction.status === 'failed') {
+    const extraction = { ...material.record.extraction };
+    delete extraction.error;
+    return { ...view, extraction };
+  }
+  return view;
 }
 
 export interface LibraryLimits {
