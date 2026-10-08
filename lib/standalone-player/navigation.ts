@@ -73,9 +73,9 @@ const ACTIVATABLE_TAGS = new Set([
 /**
  * Whether a key press toggles playback: Space, with no modifier, outside
  * anything Space already activates or types into (a focused button presses
- * itself, and a focused video toggles itself, so handling it here too would
- * toggle twice). The host additionally leaves Space to scroll scenes that
- * scroll (see `App.tsx`).
+ * itself, so handling it here too would toggle twice). A focused video or
+ * audio element is toggled through {@link isMediaToggleKey} instead. The host
+ * additionally leaves Space to scroll scenes that scroll (see `App.tsx`).
  */
 export function isPlaybackToggleKey(event: {
   key: string;
@@ -89,4 +89,24 @@ export function isPlaybackToggleKey(event: {
   if (event.key !== ' ' && event.key !== 'Spacebar') return false;
   const target = event.target;
   return !(target && (ACTIVATABLE_TAGS.has(target.tagName ?? '') || target.isContentEditable));
+}
+
+/**
+ * Whether a key press should toggle the focused media element itself:
+ * Space, with no modifier, on a `<video>` or `<audio>`. Browsers disagree
+ * here (Chromium's native controls toggle on Space, WebKit's do not), so the
+ * player handles it the same way everywhere and suppresses the native one.
+ */
+export function isMediaToggleKey(event: {
+  key: string;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  target?: { tagName?: string } | null;
+}): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  if (event.key !== ' ' && event.key !== 'Spacebar') return false;
+  const tag = event.target?.tagName;
+  return tag === 'VIDEO' || tag === 'AUDIO';
 }

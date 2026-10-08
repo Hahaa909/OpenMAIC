@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyNavigation,
   clampSceneIndex,
+  isMediaToggleKey,
   isPlaybackToggleKey,
   navigationActionForKey,
   sceneHash,
@@ -109,5 +110,19 @@ describe('standalone player playback key', () => {
     expect(isPlaybackToggleKey({ key: ' ', shiftKey: true })).toBe(false);
     expect(isPlaybackToggleKey({ key: 'Enter' })).toBe(false);
     expect(navigationActionForKey({ key: ' ' })).toBeNull();
+  });
+});
+
+describe('standalone player media key', () => {
+  it('lets the player toggle a focused video or audio element on Space', () => {
+    expect(isMediaToggleKey({ key: ' ', target: { tagName: 'VIDEO' } })).toBe(true);
+    expect(isMediaToggleKey({ key: ' ', target: { tagName: 'AUDIO' } })).toBe(true);
+    expect(isMediaToggleKey({ key: ' ', target: { tagName: 'BUTTON' } })).toBe(false);
+    expect(isMediaToggleKey({ key: ' ', shiftKey: true, target: { tagName: 'VIDEO' } })).toBe(
+      false,
+    );
+    expect(isMediaToggleKey({ key: 'k', target: { tagName: 'VIDEO' } })).toBe(false);
+    // The playback toggle never handles the same press.
+    expect(isPlaybackToggleKey({ key: ' ', target: { tagName: 'VIDEO' } })).toBe(false);
   });
 });

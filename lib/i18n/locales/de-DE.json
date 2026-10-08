@@ -77,7 +77,7 @@
     "htmlWithNarration": "Mit Sprecherton und Videos",
     "htmlWithNarrationDesc": "Spielt wie im Klassenzimmer ab: Sprecherton, Untertitel und Videoclips",
     "htmlSilent": "Ohne Sprecherton",
-    "htmlSilentDesc": "Kleinere Datei: Untertitel im Lesetempo; Videos zeigen ein Standbild",
+    "htmlSilentDesc": "Kleinere Datei: Untertitel im Lesetempo; Videos sind nicht enthalten",
     "htmlLarge": "Die exportierte Datei ist {{size}} MB groß und öffnet sich möglicherweise langsam. Exportieren Sie ohne Sprecherton für eine kleinere Datei.",
     "htmlTooLarge": "Dieser Unterricht ergäbe eine Datei von {{size}} MB – zu groß für eine einzelne HTML-Datei. Exportieren Sie stattdessen ohne Sprecherton.",
     "htmlPlayer": {

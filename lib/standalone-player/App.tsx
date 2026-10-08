@@ -17,6 +17,7 @@ import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import type { PlayerData } from './read-data';
 import {
   applyNavigation,
+  isMediaToggleKey,
   isPlaybackToggleKey,
   navigationActionForKey,
   sceneHash,
@@ -94,6 +95,16 @@ function SceneView({
     default:
       return <UnavailableScene message={strings.unsupportedScene} />;
   }
+}
+
+function keyFields(event: KeyboardEvent) {
+  return {
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+  };
 }
 
 function useFullscreen() {
@@ -183,8 +194,33 @@ export function App({ data }: { data: PlayerData }) {
       event.preventDefault();
       navigate(action);
     };
+    // Space on a focused video or audio toggles that element, the same in
+    // every browser (WebKit's native controls ignore Space, Chromium's toggle
+    // on it); its play/pause events keep playback in step exactly as its
+    // native controls do (see `VideoRegistry`). Handled while capturing, and
+    // stopped there, so the native controls never see the press.
+    const onMediaKey = (event: KeyboardEvent) => {
+      if (!isMediaToggleKey({ ...keyFields(event), target: event.target as HTMLElement | null })) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.type !== 'keydown' || event.repeat) return;
+      const media = event.target as HTMLMediaElement;
+      if (media.paused) void media.play().catch(() => {});
+      else media.pause();
+    };
+    const capture = { capture: true } as const;
+    window.addEventListener('keydown', onMediaKey, capture);
+    window.addEventListener('keypress', onMediaKey, capture);
+    window.addEventListener('keyup', onMediaKey, capture);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onMediaKey, capture);
+      window.removeEventListener('keypress', onMediaKey, capture);
+      window.removeEventListener('keyup', onMediaKey, capture);
+      window.removeEventListener('keydown', onKey);
+    };
   }, [navigate, playback, scenes, index]);
 
   useEffect(() => {

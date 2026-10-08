@@ -77,7 +77,7 @@
     "htmlWithNarration": "Có lời dẫn và video",
     "htmlWithNarrationDesc": "Phát như trong lớp học: lời dẫn, phụ đề và đoạn video",
     "htmlSilent": "Không có lời dẫn",
-    "htmlSilentDesc": "Tệp nhỏ hơn: phụ đề theo tốc độ đọc; video hiển thị ảnh tĩnh",
+    "htmlSilentDesc": "Tệp nhỏ hơn: phụ đề theo tốc độ đọc; không kèm video",
     "htmlLarge": "Tệp đã xuất có dung lượng {{size}} MB và có thể mở chậm. Hãy xuất không có lời dẫn để có tệp nhỏ hơn.",
     "htmlTooLarge": "Lớp học này sẽ tạo tệp khoảng {{size}} MB, quá lớn cho một tệp HTML. Hãy xuất không có lời dẫn.",
     "htmlPlayer": {
