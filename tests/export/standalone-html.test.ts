@@ -11,6 +11,14 @@ const mocks = vi.hoisted(() => ({
   collectMediaFiles: vi.fn(),
   collectLegacyAudioForExport: vi.fn(),
   collectVideoPosters: vi.fn(),
+  proxiedFetch: vi.fn(async (_url: string): Promise<Response> => {
+    throw new Error('offline');
+  }),
+}));
+
+vi.mock('@/lib/export/proxied-fetch', () => ({
+  createProxiedFetch: () => (input: RequestInfo | URL) =>
+    mocks.proxiedFetch(typeof input === 'string' ? input : String(input)),
 }));
 
 vi.mock('@/lib/document-store', () => ({ accessDocument: mocks.accessDocument }));
@@ -55,7 +63,12 @@ import {
 import {
   prepareStandaloneActions,
   prepareStandaloneManifest,
+  stripMediaPayloads,
 } from '@/lib/export/standalone-html/prepare-manifest';
+import {
+  STANDALONE_HTML_MAX_BYTES,
+  StandaloneHtmlTooLargeError,
+} from '@/lib/export/standalone-html/limits';
 import type { ClassroomManifest, ManifestAction } from '@/lib/export/classroom-zip-types';
 import type { Scene } from '@/lib/types/stage';
 import type { PPTElement } from '@openmaic/dsl';
@@ -130,12 +143,18 @@ function setupSnapshot(scenes: Scene[]) {
   return stage;
 }
 
+/** The export, with the document read back as text. */
+async function buildExport(...args: Parameters<typeof buildStandaloneHtmlExport>) {
+  const result = await buildStandaloneHtmlExport(...args);
+  return { ...result, html: await result.blob.text() };
+}
+
 async function exportFixture(
   options: Partial<StandaloneHtmlExportOptions> = {},
   scenes = standaloneFixtureScenes(STAGE_ID),
 ) {
   const stage = setupSnapshot(scenes);
-  return buildStandaloneHtmlExport(stage, scenes, {
+  return buildExport(stage, scenes, {
     strings,
     lang: 'en-US',
     fetchAsset,
@@ -545,7 +564,7 @@ describe('standalone HTML export content safety', () => {
       ],
       videoManifest: { gen_vid_1: { prompt: 'Secret video prompt' } },
     });
-    const { html } = await buildStandaloneHtmlExport(stage, scenes, {
+    const { html } = await buildExport(stage, scenes, {
       strings,
       lang: 'en-US',
       fetchAsset,
@@ -618,7 +637,7 @@ describe('standalone HTML export content safety', () => {
     mocks.collectVideoPosters.mockResolvedValue([
       { sourceRef: 'gen_vid_1', poster: new Blob([PNG_BYTES], { type: 'image/png' }) },
     ]);
-    const { html, unresolvedMedia } = await buildStandaloneHtmlExport(stage, scenes, {
+    const { html, unresolvedMedia } = await buildExport(stage, scenes, {
       strings,
       lang: 'en-US',
       fetchAsset,
@@ -758,7 +777,7 @@ describe('standalone HTML export content safety', () => {
       }),
     );
 
-    const result = await buildStandaloneHtmlExport(stage, scenes, {
+    const result = await buildExport(stage, scenes, {
       strings,
       lang: 'en-US',
       fetchAsset,
@@ -771,6 +790,7 @@ describe('standalone HTML export content safety', () => {
     expect(mocks.collectLegacyAudioForExport).toHaveBeenCalled();
     expect(result.missingAudioCount).toBe(1);
     expect(result.byteSize).toBe(Buffer.byteLength(html, 'utf8'));
+    expect(result.blob.type).toBe('text/html;charset=utf-8');
 
     const manifest = embeddedJson<ClassroomManifest>(html, STANDALONE_MANIFEST_ELEMENT_ID);
     const slideScene = manifest.scenes.find((scene) => scene.type === 'slide')!;
@@ -814,6 +834,246 @@ describe('standalone HTML export content safety', () => {
     expect(html).not.toContain('Secret');
     expect(html).not.toContain('mediaIndex":{"');
     expect(html).toContain(`content="${STANDALONE_HTML_CSP}"`);
+  });
+});
+
+describe('standalone HTML export media policy', () => {
+  const VIDEO_BYTES = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 7, 7]);
+  const interactiveWithMedia = `<!doctype html><html><body>
+<img src="https://assets.example/diagram.png">
+<video src="https://assets.example/clip.mp4" poster="https://assets.example/poster.png"></video>
+<video><source src="https://assets.example/other.webm" type="video/webm"></video>
+<audio src="data:audio/mpeg;base64,SUQzBAAAAAAA"></audio>
+<picture><source srcset="https://assets.example/a.webp"><img src="https://assets.example/b.png"></picture>
+</body></html>`;
+
+  function withInteractiveMedia(): Scene[] {
+    return standaloneFixtureScenes(STAGE_ID).map((scene) =>
+      scene.type === 'interactive'
+        ? ({ ...scene, content: { ...scene.content, html: interactiveWithMedia } } as Scene)
+        : scene,
+    );
+  }
+
+  function serveAssets() {
+    mocks.proxiedFetch.mockImplementation(async (url: string) => {
+      const type = url.endsWith('.mp4')
+        ? 'video/mp4'
+        : url.endsWith('.webm')
+          ? 'video/webm'
+          : url.endsWith('.webp')
+            ? 'image/webp'
+            : 'image/png';
+      const body = type.startsWith('video/') ? VIDEO_BYTES : PNG_BYTES;
+      return new Response(body, { status: 200, headers: { 'content-type': type } });
+    });
+  }
+
+  function interactiveHtml(html: string): string {
+    const manifest = embeddedJson<ClassroomManifest>(html, STANDALONE_MANIFEST_ELEMENT_ID);
+    const scene = manifest.scenes.find((entry) => entry.type === 'interactive')!;
+    if (scene.content.type !== 'interactive') throw new Error('expected interactive');
+    return scene.content.html ?? '';
+  }
+
+  it('without narration ships no audio or video payload, interactive pages included', async () => {
+    serveAssets();
+    const { html } = await exportFixture({ includeNarration: false }, withInteractiveMedia());
+    const fetched = mocks.proxiedFetch.mock.calls.map(([url]) => url);
+    expect(fetched).not.toContain('https://assets.example/clip.mp4');
+    expect(fetched).not.toContain('https://assets.example/other.webm');
+    const page = interactiveHtml(html);
+    expect(page).not.toMatch(/data:(audio|video)\//);
+    expect(page).not.toContain('assets.example/clip.mp4');
+    expect(page).not.toContain('assets.example/other.webm');
+    // The page keeps its other assets, inlined: images and the video poster.
+    expect(page).toContain('<video');
+    expect(page).not.toContain('https://assets.example/diagram.png');
+    expect(page).not.toContain('https://assets.example/poster.png');
+    expect(page).toMatch(/srcset="data:image\/webp/);
+    expect(html).not.toMatch(/data:(audio|video)\//);
+  });
+
+  it('with narration interactive pages keep their clips, inlined', async () => {
+    serveAssets();
+    const { html } = await exportFixture({ includeNarration: true }, withInteractiveMedia());
+    const page = interactiveHtml(html);
+    expect(page).toContain('data:video/mp4;base64,');
+    expect(page).toContain('data:video/webm;base64,');
+    expect(page).toContain('data:audio/mpeg;base64,SUQzBAAAAAAA');
+  });
+
+  it('stripMediaPayloads keeps picture sources and media elements without payloads', () => {
+    const html =
+      '<video src="blob:x"></video><audio src="clip.mp3"></audio>' +
+      '<picture><source src="https://a.example/p.png"></picture>';
+    expect(stripMediaPayloads(html)).toBe(
+      '<video ></video><audio src="clip.mp3"></audio>' +
+        '<picture><source src="https://a.example/p.png"></picture>',
+    );
+  });
+
+  function withDirectVideo(src: string): Scene[] {
+    return standaloneFixtureScenes(STAGE_ID).map((scene) =>
+      withSlideElements(
+        scene,
+        (elements) =>
+          [
+            ...elements,
+            {
+              type: 'video',
+              id: 'direct',
+              left: 0,
+              top: 0,
+              width: 160,
+              height: 90,
+              rotate: 0,
+              src,
+              autoplay: false,
+            },
+          ] as PPTElement[],
+      ),
+    );
+  }
+
+  it('fetches and embeds a direct slide video URL no stored asset backs', async () => {
+    const url = 'https://videos.example/lesson/clip.mp4';
+    const fetchVideo = vi.fn(async () => new Blob([VIDEO_BYTES], { type: 'video/mp4' }));
+    const { html, unresolvedMedia } = await exportFixture(
+      { includeNarration: true, fetchVideo },
+      withDirectVideo(url),
+    );
+    expect(fetchVideo).toHaveBeenCalledWith(url);
+    expect(unresolvedMedia).toEqual([]);
+    const manifest = embeddedJson<ClassroomManifest>(html, STANDALONE_MANIFEST_ELEMENT_ID);
+    expect(slideOf(manifest).elements.find((e) => e.id === 'direct')).toMatchObject({
+      src: '',
+      mediaRef: 'media/linked-1.mp4',
+    });
+    const table = embeddedJson<StandaloneMediaTable>(html, STANDALONE_MEDIA_TABLE_ELEMENT_ID);
+    expect(table['media/linked-1.mp4']).toMatchObject({ mimeType: 'video/mp4' });
+    expect(html).not.toContain('videos.example');
+  });
+
+  it('reports a slide video whose bytes could not be fetched', async () => {
+    const url = 'https://videos.example/lesson/gone.mp4';
+    const { unresolvedMedia } = await exportFixture(
+      { includeNarration: true, fetchVideo: async () => null },
+      withDirectVideo(url),
+    );
+    expect(unresolvedMedia).toContain(url);
+  });
+
+  it('does not fetch or report slide videos without narration (poster only)', async () => {
+    const fetchVideo = vi.fn(async () => null);
+    const { unresolvedMedia } = await exportFixture(
+      { includeNarration: false, fetchVideo },
+      withDirectVideo('https://videos.example/clip.mp4'),
+    );
+    expect(fetchVideo).not.toHaveBeenCalled();
+    expect(unresolvedMedia).toEqual([]);
+  });
+
+  it('collects and counts only narration, not slide audio elements', async () => {
+    const scenes = standaloneFixtureScenes(STAGE_ID).map((scene) =>
+      scene.type === 'slide'
+        ? ({
+            ...withSlideElements(
+              scene,
+              (elements) =>
+                [
+                  ...elements,
+                  {
+                    type: 'audio',
+                    id: 'bgm',
+                    left: 0,
+                    top: 0,
+                    width: 10,
+                    height: 10,
+                    rotate: 0,
+                    src: 'aud-element',
+                    fixedRatio: true,
+                    color: '#000',
+                    loop: false,
+                    autoplay: false,
+                  },
+                ] as PPTElement[],
+            ),
+            actions: [{ id: 's', type: 'speech', text: 'Hi', audioId: 'aud-speech' }],
+          } as Scene)
+        : scene,
+    );
+    const stage = setupSnapshot(scenes);
+    mocks.buildAssetManifest.mockResolvedValue({
+      entries: [
+        { kind: 'audio', ref: 'aud-element' },
+        { kind: 'audio', ref: 'aud-speech' },
+      ],
+    });
+    const result = await buildExport(stage, scenes, {
+      strings,
+      lang: 'en-US',
+      fetchAsset,
+      fetchImage,
+      includeNarration: true,
+    });
+    expect(mocks.collectAudioFiles.mock.calls[0][0]).toEqual([
+      { kind: 'audio', ref: 'aud-speech' },
+    ]);
+    // Only the narration is missing (the mock collects nothing).
+    expect(result.missingAudioCount).toBe(1);
+  });
+
+  it('refuses, before encoding any media, a file above the size ceiling', async () => {
+    const scenes = standaloneFixtureScenes(STAGE_ID).map((scene) =>
+      withSlideElements(
+        scene,
+        (elements) =>
+          [
+            ...elements,
+            {
+              type: 'video',
+              id: 'huge',
+              left: 0,
+              top: 0,
+              width: 160,
+              height: 90,
+              rotate: 0,
+              src: 'gen_vid_huge',
+              mediaRef: 'gen_vid_huge',
+              autoplay: false,
+            },
+          ] as PPTElement[],
+      ),
+    );
+    const stage = setupSnapshot(scenes);
+    const huge = new Blob([VIDEO_BYTES], { type: 'video/mp4' });
+    Object.defineProperty(huge, 'size', { value: STANDALONE_HTML_MAX_BYTES });
+    const arrayBuffer = vi.spyOn(huge, 'arrayBuffer');
+    mocks.buildAssetManifest.mockResolvedValue({
+      entries: [{ kind: 'video', ref: 'gen_vid_huge' }],
+    });
+    mocks.collectMediaFiles.mockResolvedValue([
+      {
+        zipPath: 'media/asset-1.mp4',
+        posterZipPath: 'media/asset-1.poster.jpg',
+        sourceRef: 'gen_vid_huge',
+        elementId: 'gen_vid_huge',
+        record: { type: 'video', blob: huge, mimeType: 'video/mp4', size: huge.size, prompt: '' },
+      },
+    ]);
+    const attempt = buildStandaloneHtmlExport(stage, scenes, {
+      strings,
+      lang: 'en-US',
+      fetchAsset,
+      fetchImage,
+      includeNarration: true,
+    });
+    await expect(attempt).rejects.toBeInstanceOf(StandaloneHtmlTooLargeError);
+    await expect(attempt).rejects.toMatchObject({
+      estimatedBytes: expect.any(Number),
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
   });
 });
 

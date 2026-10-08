@@ -79,6 +79,7 @@
     "htmlSilent": "내레이션 없음",
     "htmlSilentDesc": "더 작은 파일: 읽기 시간에 맞춰 자막 표시, 동영상은 정지 화면으로 표시",
     "htmlLarge": "내보낸 파일 크기가 {{size}} MB여서 여는 데 시간이 걸릴 수 있습니다. 더 작은 파일이 필요하면 내레이션 없이 내보내세요.",
+    "htmlTooLarge": "이 강의는 약 {{size}} MB로 단일 HTML 파일에 담기에는 너무 큽니다. 내레이션 없이 내보내세요.",
     "htmlPlayer": {
       "previous": "이전",
       "next": "다음",

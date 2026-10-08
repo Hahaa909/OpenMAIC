@@ -79,6 +79,7 @@
     "htmlSilent": "Sem narração",
     "htmlSilentDesc": "Arquivo menor: legendas no ritmo de leitura; os vídeos mostram uma imagem estática",
     "htmlLarge": "O arquivo exportado tem {{size}} MB e pode demorar para abrir. Exporte sem narração para um arquivo menor.",
+    "htmlTooLarge": "Esta aula geraria um arquivo de {{size}} MB, grande demais para um único arquivo HTML. Exporte sem narração.",
     "htmlPlayer": {
       "previous": "Anterior",
       "next": "Próximo",

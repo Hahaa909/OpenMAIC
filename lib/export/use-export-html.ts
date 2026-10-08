@@ -9,10 +9,13 @@ import { createLogger } from '@/lib/logger';
 import type { Scene } from '@/lib/types/stage';
 import type { LegacySpeechAction } from '@/lib/types/action';
 import {
-  STANDALONE_HTML_SIZE_WARNING_BYTES,
   STANDALONE_PLAYER_STRING_KEYS,
   type StandalonePlayerStrings,
 } from './standalone-html/contract';
+import {
+  STANDALONE_HTML_SIZE_WARNING_BYTES,
+  StandaloneHtmlTooLargeError,
+} from './standalone-html/limits';
 
 const log = createLogger('ExportHtml');
 
@@ -60,7 +63,7 @@ export function useExportHtml() {
         // link back to it on this deployment.
         const classroomUrl = classroomUrlFor(window.location.origin, stage.id);
 
-        const { html, fileName, inlineFailures, unresolvedMedia, missingAudioCount, byteSize } =
+        const { blob, fileName, inlineFailures, unresolvedMedia, missingAudioCount, byteSize } =
           await buildStandaloneHtmlExport(stage, scenes, {
             strings,
             lang: locale,
@@ -68,7 +71,7 @@ export function useExportHtml() {
             includeNarration,
           });
 
-        saveAs(new Blob([html], { type: 'text/html;charset=utf-8' }), fileName);
+        saveAs(blob, fileName);
 
         const partialCount = inlineFailures.length + unresolvedMedia.length + missingAudioCount;
         if (byteSize > STANDALONE_HTML_SIZE_WARNING_BYTES) {
@@ -89,6 +92,15 @@ export function useExportHtml() {
           toast.success(t('export.exportSuccess'), { id: toastId });
         }
       } catch (error) {
+        if (error instanceof StandaloneHtmlTooLargeError) {
+          // Too large to build or open reliably as one file; a page plus a
+          // media folder is the alternative for this case.
+          log.warn('Standalone HTML export refused as too large:', error.estimatedBytes);
+          toast.error(t('export.htmlTooLarge', { size: formatMegabytes(error.estimatedBytes) }), {
+            id: toastId,
+          });
+          return;
+        }
         log.error('Standalone HTML export failed:', error);
         toast.error(t('export.exportFailed'), { id: toastId });
       } finally {

@@ -79,6 +79,7 @@
     "htmlSilent": "Without narration",
     "htmlSilentDesc": "Smaller file: captions with reading-time pacing; videos show a still frame",
     "htmlLarge": "The exported file is {{size}} MB and may open slowly. Export without narration for a smaller file.",
+    "htmlTooLarge": "This classroom would make a {{size}} MB file, too large for a single HTML file. Export without narration instead.",
     "htmlPlayer": {
       "previous": "Previous",
       "next": "Next",

@@ -79,6 +79,7 @@
     "htmlSilent": "Không có lời dẫn",
     "htmlSilentDesc": "Tệp nhỏ hơn: phụ đề theo tốc độ đọc; video hiển thị ảnh tĩnh",
     "htmlLarge": "Tệp đã xuất có dung lượng {{size}} MB và có thể mở chậm. Hãy xuất không có lời dẫn để có tệp nhỏ hơn.",
+    "htmlTooLarge": "Lớp học này sẽ tạo tệp khoảng {{size}} MB, quá lớn cho một tệp HTML. Hãy xuất không có lời dẫn.",
     "htmlPlayer": {
       "previous": "Trước",
       "next": "Tiếp",

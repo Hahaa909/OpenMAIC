@@ -79,6 +79,7 @@
     "htmlSilent": "不含旁白",
     "htmlSilentDesc": "檔案更小：依閱讀時間顯示字幕，影片僅顯示靜態畫面",
     "htmlLarge": "匯出的檔案大小為 {{size}} MB，開啟可能較慢。如需較小的檔案，請選擇不含旁白匯出。",
+    "htmlTooLarge": "此課堂匯出後約為 {{size}} MB，超出單一 HTML 檔案的上限。請改用不含旁白匯出。",
     "htmlPlayer": {
       "previous": "上一頁",
       "next": "下一頁",

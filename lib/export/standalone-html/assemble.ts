@@ -113,7 +113,8 @@ export interface StandaloneHtmlInput {
 export interface StandaloneEmbeddedMedia {
   key: string;
   mimeType: string;
-  base64: string;
+  /** The bytes as base64, whole or as pieces that concatenate into it. */
+  base64: string | readonly string[];
 }
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -125,28 +126,40 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 function mediaBlocks(media: readonly StandaloneEmbeddedMedia[]): string[] {
   if (media.length === 0) return [];
   const table: StandaloneMediaTable = {};
-  const blocks = media.map((entry, index) => {
-    if (!BASE64_PATTERN.test(entry.base64)) {
+  const blocks: string[] = [];
+  media.forEach((entry, index) => {
+    const pieces = typeof entry.base64 === 'string' ? [entry.base64] : entry.base64;
+    if (!pieces.every((piece) => BASE64_PATTERN.test(piece))) {
       throw new Error(`Standalone HTML: media ${entry.key} is not base64`);
     }
     const id = `${STANDALONE_MEDIA_BLOCK_ID_PREFIX}${index + 1}`;
     table[entry.key] = { mimeType: entry.mimeType, embedded: id };
-    return `<script type="application/octet-stream" id="${id}">${entry.base64}</script>`;
+    blocks.push(`<script type="application/octet-stream" id="${id}">`, ...pieces, '</script>\n');
   });
   return [
-    `<script type="application/json" id="${STANDALONE_MEDIA_TABLE_ELEMENT_ID}">${serializeJsonForHtmlScript(table)}</script>`,
+    `<script type="application/json" id="${STANDALONE_MEDIA_TABLE_ELEMENT_ID}">${serializeJsonForHtmlScript(table)}</script>\n`,
     ...blocks,
   ];
 }
 
-/** Assemble the complete standalone document. */
+/** Assemble the complete standalone document as one string (small documents, tests). */
 export function assembleStandaloneHtml(input: StandaloneHtmlInput): string {
+  return assembleStandaloneHtmlParts(input).join('');
+}
+
+/**
+ * Assemble the complete standalone document as pieces to concatenate (e.g.
+ * into a Blob), so embedded media never has to become one giant string:
+ * V8 caps a string at about 2^29 characters.
+ */
+export function assembleStandaloneHtmlParts(input: StandaloneHtmlInput): string[] {
   const title = input.manifest.stage.name || 'Classroom';
   const styles = [input.playerStyle, ...(input.extraStyles ?? [])]
     .map(
       (css, index) => `<style>${assertRawText(css, 'style', `style sheet ${index + 1}`)}</style>`,
     )
     .join('\n');
+  const line = (text: string) => `${text}\n`;
   return [
     '<!doctype html>',
     `<html lang="${escapeHtmlText(input.lang)}">`,
@@ -163,13 +176,17 @@ export function assembleStandaloneHtml(input: StandaloneHtmlInput): string {
     `<div id="${STANDALONE_ROOT_ELEMENT_ID}"></div>`,
     `<script type="application/json" id="${STANDALONE_MANIFEST_ELEMENT_ID}">${serializeJsonForHtmlScript(input.manifest)}</script>`,
     `<script type="application/json" id="${STANDALONE_CONFIG_ELEMENT_ID}">${serializeJsonForHtmlScript(input.config)}</script>`,
-    ...mediaBlocks(input.embeddedMedia ?? []),
-    ...(input.extraScripts ?? []).map(
-      (js, index) => `<script>${assertRawText(js, 'script', `script ${index + 1}`)}</script>`,
-    ),
-    `<script>${assertRawText(input.playerScript, 'script', 'player script')}</script>`,
-    '</body>',
-    '</html>',
-    '',
-  ].join('\n');
+  ]
+    .map(line)
+    .concat(
+      mediaBlocks(input.embeddedMedia ?? []),
+      [
+        ...(input.extraScripts ?? []).map(
+          (js, index) => `<script>${assertRawText(js, 'script', `script ${index + 1}`)}</script>`,
+        ),
+        `<script>${assertRawText(input.playerScript, 'script', 'player script')}</script>`,
+        '</body>',
+        '</html>',
+      ].map(line),
+    );
 }

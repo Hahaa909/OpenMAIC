@@ -79,6 +79,7 @@
     "htmlSilent": "Sin narración",
     "htmlSilentDesc": "Archivo más pequeño: subtítulos al ritmo de lectura; los videos muestran una imagen fija",
     "htmlLarge": "El archivo exportado pesa {{size}} MB y puede tardar en abrirse. Exporta sin narración para obtener un archivo más pequeño.",
+    "htmlTooLarge": "Esta clase generaría un archivo de {{size}} MB, demasiado grande para un solo archivo HTML. Exporta sin narración.",
     "htmlPlayer": {
       "previous": "Anterior",
       "next": "Siguiente",

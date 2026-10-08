@@ -79,6 +79,7 @@
     "htmlSilent": "Sans narration",
     "htmlSilentDesc": "Fichier plus léger : sous-titres au rythme de lecture ; les vidéos affichent une image fixe",
     "htmlLarge": "Le fichier exporté fait {{size}} Mo et peut s'ouvrir lentement. Exportez sans narration pour un fichier plus léger.",
+    "htmlTooLarge": "Ce cours produirait un fichier de {{size}} Mo, trop volumineux pour un seul fichier HTML. Exportez plutôt sans narration.",
     "htmlPlayer": {
       "previous": "Précédent",
       "next": "Suivant",

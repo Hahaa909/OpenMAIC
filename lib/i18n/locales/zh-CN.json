@@ -79,6 +79,7 @@
     "htmlSilent": "不含旁白",
     "htmlSilentDesc": "文件更小：按阅读时长显示字幕，视频仅显示静帧",
     "htmlLarge": "导出的文件大小为 {{size}} MB，打开可能较慢。如需更小的文件，请选择不含旁白导出。",
+    "htmlTooLarge": "该课堂导出后约为 {{size}} MB，超出单个 HTML 文件的上限。请改用不含旁白导出。",
     "htmlPlayer": {
       "previous": "上一页",
       "next": "下一页",

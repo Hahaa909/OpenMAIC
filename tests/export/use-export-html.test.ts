@@ -38,7 +38,10 @@ vi.mock('@/lib/export/standalone-html/build-standalone-html', async (importOrigi
 });
 
 import { classroomHasNarration, useExportHtml } from '@/lib/export/use-export-html';
-import { STANDALONE_HTML_SIZE_WARNING_BYTES } from '@/lib/export/standalone-html/contract';
+import {
+  STANDALONE_HTML_SIZE_WARNING_BYTES,
+  StandaloneHtmlTooLargeError,
+} from '@/lib/export/standalone-html/limits';
 import type { Scene } from '@/lib/types/stage';
 
 (
@@ -65,7 +68,7 @@ beforeEach(() => {
   // Would stall forever if the export ever asked for stage metadata.
   mocks.fetchStageMeta.mockImplementation(() => new Promise(() => {}));
   mocks.buildStandaloneHtmlExport.mockResolvedValue({
-    html: '<!doctype html>',
+    blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
     fileName: 'course.html',
     inlineFailures: [],
     unresolvedMedia: [],
@@ -123,7 +126,7 @@ describe('useExportHtml', () => {
 
   it('warns when the file is larger than the size threshold', async () => {
     mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
-      html: '<!doctype html>',
+      blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
       fileName: 'course.html',
       inlineFailures: [],
       unresolvedMedia: [],
@@ -141,9 +144,24 @@ describe('useExportHtml', () => {
     );
   });
 
+  it('explains, without saving, when the file would be too large', async () => {
+    mocks.buildStandaloneHtmlExport.mockRejectedValueOnce(
+      new StandaloneHtmlTooLargeError(450 * 1024 * 1024),
+    );
+    await act(async () => {
+      await latest!.exportStandaloneHtml({ includeNarration: true });
+    });
+    expect(mocks.saveAs).not.toHaveBeenCalled();
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      'export.htmlTooLarge {"size":"450"}',
+      expect.objectContaining({ id: 'toast' }),
+    );
+    expect(latest!.exporting).toBe(false);
+  });
+
   it('counts narration that could not be embedded as a partial export', async () => {
     mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
-      html: '<!doctype html>',
+      blob: new Blob(['<!doctype html>'], { type: 'text/html' }),
       fileName: 'course.html',
       inlineFailures: [],
       unresolvedMedia: [],

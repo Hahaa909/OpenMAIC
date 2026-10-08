@@ -79,6 +79,7 @@
     "htmlSilent": "Ohne Sprecherton",
     "htmlSilentDesc": "Kleinere Datei: Untertitel im Lesetempo; Videos zeigen ein Standbild",
     "htmlLarge": "Die exportierte Datei ist {{size}} MB groß und öffnet sich möglicherweise langsam. Exportieren Sie ohne Sprecherton für eine kleinere Datei.",
+    "htmlTooLarge": "Dieser Unterricht ergäbe eine Datei von {{size}} MB – zu groß für eine einzelne HTML-Datei. Exportieren Sie stattdessen ohne Sprecherton.",
     "htmlPlayer": {
       "previous": "Zurück",
       "next": "Weiter",

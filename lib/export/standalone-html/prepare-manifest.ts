@@ -47,6 +47,11 @@ import type {
   WidgetSetStateAction,
 } from '@openmaic/dsl';
 import { patchHtmlForIframe } from '@/lib/utils/iframe';
+import {
+  analyzeHtmlAssetInventory,
+  applySourcePatches,
+  type SourcePatch,
+} from '../html-asset-inventory';
 import { sanitizeSlideRichText } from './rich-text';
 import { pblBriefing } from '../pbl-briefing';
 import type { PBLContent, SlideContent } from '@/lib/types/stage';
@@ -86,6 +91,11 @@ export interface StandalonePlaybackMedia {
   readonly audio: ReadonlySet<string>;
   /** Video ref (`src` or `mediaRef`) → archive path of its bytes. */
   readonly videos: ReadonlyMap<string, string>;
+  /**
+   * Bytes fetched at export time for paths the snapshot does not carry
+   * (direct video URLs), by path.
+   */
+  readonly files?: ReadonlyMap<string, Blob>;
 }
 
 export interface PreparedStandaloneManifest {
@@ -202,6 +212,9 @@ function prepareElement(
       const playable =
         (src ? videos?.get(src) : undefined) ?? (mediaRef ? videos?.get(mediaRef) : undefined);
       if (playable) resolver.usePlaybackMedia(playable);
+      // Playback media was asked for but this clip has no bytes: report it
+      // (the video falls back to its poster).
+      else if (videos && (src || mediaRef)) resolver.markUnresolved((src || mediaRef)!);
       return {
         ...rest,
         src: '',
@@ -355,6 +368,27 @@ export function prepareStandaloneActions(
   return prepared as unknown as ManifestAction[];
 }
 
+const MEDIA_PAYLOAD_URL = /^\s*(?:https?:|blob:|data:(?:audio|video)\/)/i;
+
+/**
+ * Remove the audio and video sources of an interactive page (`<video src>`,
+ * `<audio src>` and their `<source src>` children) that carry or fetch media
+ * bytes. The elements stay, so the page still lays out.
+ */
+export function stripMediaPayloads(html: string): string {
+  const patches: SourcePatch[] = [];
+  for (const asset of analyzeHtmlAssetInventory(html).attributeAssets) {
+    const isMedia =
+      asset.kind === 'video' ||
+      asset.kind === 'audio' ||
+      (asset.kind === 'source' &&
+        (asset.parentTagName === 'video' || asset.parentTagName === 'audio'));
+    if (!isMedia || !asset.attributeRange || !MEDIA_PAYLOAD_URL.test(asset.url)) continue;
+    patches.push({ range: asset.attributeRange, replacement: '' });
+  }
+  return patches.length > 0 ? applySourcePatches(html, patches) : html;
+}
+
 function prepareScene(
   scene: ManifestScene,
   media: StandaloneMediaResolution,
@@ -384,10 +418,13 @@ function prepareScene(
     // Inline HTML is the only form that works offline; a URL-only scene keeps
     // no address at all and the player shows it as unavailable.
     const { url: _url, ...interactive } = content;
+    // Without playback media the file carries no audio or video payloads
+    // anywhere: interactive pages keep their other assets, not their clips.
+    const html = content.html && !media.playback ? stripMediaPayloads(content.html) : content.html;
     return {
       ...rest,
-      content: content.html
-        ? { ...interactive, html: patchHtmlForIframe(content.html) }
+      content: html
+        ? { ...interactive, html: patchHtmlForIframe(html) }
         : { ...interactive, html: undefined },
     };
   }
