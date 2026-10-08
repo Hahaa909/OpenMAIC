@@ -73,12 +73,23 @@ export interface StandaloneMediaReference {
   role: StandaloneMediaRole;
 }
 
-/** Resolved bytes, as `data:` URIs, keyed by the reference the document holds. */
+/**
+ * Resolved sources keyed by the reference the document holds: `data:` URIs
+ * for the single file, relative file paths for the ZIP variant. A `data:`
+ * reference already in the document stays as it is unless `dataUris` maps it
+ * (the ZIP variant ships inline images as files too).
+ */
 export interface StandaloneMediaResolution {
   /** ref → data URI for every image/background/pattern/poster ref that resolved. */
   readonly dataUris: ReadonlyMap<string, string>;
   /** Video ref (`src` or `mediaRef`) → data URI of the poster captured for that video. */
   readonly videoPosters?: ReadonlyMap<string, string>;
+  /**
+   * Chart point image ref → data URI, when chart images must stay inline
+   * while `dataUris` names files (the ZIP variant): the chart renderer
+   * embeds them in a `data:` SVG symbol, which cannot load a file.
+   */
+  readonly chartImages?: ReadonlyMap<string, string>;
   /**
    * Playback media whose bytes ship with the export, by archive path. Absent
    * (or empty) for an export without narration: speech then plays on the
@@ -127,10 +138,33 @@ function slidesOf(scene: ManifestScene): Slide[] {
 export function collectStandaloneMediaReferences(
   manifest: Pick<ClassroomManifest, 'scenes'>,
 ): StandaloneMediaReference[] {
+  return collectMediaSlots(manifest, (ref) => !isDataUri(ref));
+}
+
+/**
+ * The `data:` image sources already inline in the document, in the slots the
+ * ZIP variant ships as files: images, backgrounds, shape patterns and video
+ * posters. Chart point images are left out (they must stay inline).
+ */
+export function collectInlineImageSources(manifest: Pick<ClassroomManifest, 'scenes'>): string[] {
+  return [
+    ...new Set(
+      collectMediaSlots(
+        manifest,
+        (ref, role) => isDataUri(ref) && role !== 'chart-image' && role !== 'video',
+      ).map(({ ref }) => ref),
+    ),
+  ];
+}
+
+function collectMediaSlots(
+  manifest: Pick<ClassroomManifest, 'scenes'>,
+  keep: (ref: string, role: StandaloneMediaRole) => boolean,
+): StandaloneMediaReference[] {
   const refs: StandaloneMediaReference[] = [];
   const seen = new Set<string>();
   const add = (ref: string | undefined, role: StandaloneMediaRole) => {
-    if (!ref || isDataUri(ref)) return;
+    if (!ref || !keep(ref, role)) return;
     const key = `${role}\u0000${ref}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -163,6 +197,8 @@ export function collectStandaloneMediaReferences(
 interface MediaResolver {
   /** The data URI for a ref, recording the ref as unresolved when there is none. */
   resolve(ref: string | undefined): string | undefined;
+  /** As `resolve`, for a chart point image (always inline). */
+  resolveChartImage(ref: string | undefined): string | undefined;
   /** The data URI for a ref, without recording a miss. */
   lookup(ref: string | undefined): string | undefined;
   markUnresolved(ref: string): void;
@@ -191,7 +227,7 @@ function prepareElement(
         if (!entry?.pointImages) return entry;
         const pointImages: Record<string, string> = {};
         for (const [point, image] of Object.entries(entry.pointImages)) {
-          const src = resolve(image);
+          const src = resolver.resolveChartImage(image);
           if (src) pointImages[point] = src;
         }
         return { ...entry, pointImages };
@@ -461,16 +497,21 @@ export function prepareStandaloneManifest(
   const playbackMedia = new Set<string>();
   const lookup = (ref: string | undefined): string | undefined => {
     if (!ref) return undefined;
+    return media.dataUris.get(ref) ?? (isDataUri(ref) ? ref : undefined);
+  };
+  const lookupChartImage = (ref: string | undefined): string | undefined => {
+    if (!ref) return undefined;
     if (isDataUri(ref)) return ref;
-    return media.dataUris.get(ref);
+    return media.chartImages?.get(ref) ?? media.dataUris.get(ref);
+  };
+  const resolved = (source: string | undefined, ref: string | undefined) => {
+    if (!source && ref) unresolved.add(ref);
+    return source;
   };
   const resolver: MediaResolver = {
     lookup,
-    resolve: (ref) => {
-      const dataUri = lookup(ref);
-      if (!dataUri && ref) unresolved.add(ref);
-      return dataUri;
-    },
+    resolve: (ref) => resolved(lookup(ref), ref),
+    resolveChartImage: (ref) => resolved(lookupChartImage(ref), ref),
     markUnresolved: (ref) => unresolved.add(ref),
     usePlaybackMedia: (path) => playbackMedia.add(path),
   };

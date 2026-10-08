@@ -44,6 +44,10 @@ import {
   buildStandaloneHtmlExport,
   buildStandaloneZip,
   classroomUrlFor,
+  collectStandaloneMediaBytes,
+  decodeImageDataUri,
+  encodeStandaloneImages,
+  linkStandaloneImages,
   estimateStandaloneHtmlBytes,
   linkedMediaSrc,
   STANDALONE_ZIP_README_EN,
@@ -1742,6 +1746,196 @@ describe('standalone HTML ZIP variant', () => {
       kind: 'archive',
     });
     expect(slice).not.toHaveBeenCalled();
+  });
+
+  describe('image sources', () => {
+    const PNG_URI = `data:image/png;base64,${FIXTURE_PNG_BASE64}`;
+    const SVG_URI = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>')}`;
+    const OTHER_URI = 'data:application/x-unknown;base64,AAAA';
+    const STORED = Uint8Array.from([1, 2, 3, 4, 5, 6]);
+
+    function manifestWith(elements: unknown[], background?: unknown): ClassroomManifest {
+      return {
+        formatVersion: 1,
+        exportedAt: '2026-01-01T00:00:00.000Z',
+        appVersion: '',
+        stage: { name: 'x', createdAt: 0, updatedAt: 0 },
+        agents: [],
+        mediaIndex: {
+          'media/asset-1.png': {
+            type: 'generated',
+            sourceRef: 'img_stored',
+            mimeType: 'image/png',
+          },
+          'media/asset-2.png': { type: 'generated', sourceRef: 'img_chart', mimeType: 'image/png' },
+        },
+        scenes: [
+          {
+            type: 'slide',
+            title: 's',
+            order: 0,
+            content: {
+              type: 'slide',
+              canvas: {
+                id: 's',
+                viewportSize: 1000,
+                viewportRatio: 0.5625,
+                theme: {
+                  backgroundColor: '#fff',
+                  themeColors: ['#000'],
+                  fontColor: '#000',
+                  fontName: 'Arial',
+                },
+                elements,
+                ...(background ? { background } : {}),
+              },
+            },
+          },
+        ],
+      } as unknown as ClassroomManifest;
+    }
+    const box = { left: 0, top: 0, width: 10, height: 10, rotate: 0 };
+    const elements = [
+      { ...box, type: 'image', id: 'a', src: PNG_URI, fixedRatio: true },
+      { ...box, type: 'image', id: 'b', src: PNG_URI, fixedRatio: true },
+      { ...box, type: 'image', id: 'c', src: OTHER_URI, fixedRatio: true },
+      { ...box, type: 'image', id: 'd', src: 'img_stored', fixedRatio: true },
+      {
+        ...box,
+        type: 'shape',
+        id: 'e',
+        viewBox: [1, 1],
+        path: 'M0 0',
+        fixedRatio: false,
+        fill: '#000',
+        pattern: SVG_URI,
+      },
+      { ...box, type: 'video', id: 'f', src: '', poster: PNG_URI, autoplay: false },
+      {
+        ...box,
+        type: 'chart',
+        id: 'g',
+        chartType: 'bar',
+        data: { labels: ['a'], legends: ['l'], series: [[1]] },
+        themeColors: ['#000'],
+        importedStyle: {
+          series: [{ pointImages: { '0': 'img_chart', '1': PNG_URI, '2': 'img_stored' } }],
+        },
+      },
+    ];
+    const background = { type: 'image', image: { src: SVG_URI, size: 'cover' } };
+
+    async function prepareBoth() {
+      const manifest = manifestWith(elements, background);
+      const snapshot = {
+        manifest,
+        files: new Map([
+          ['media/asset-1.png', new Blob([STORED], { type: 'image/png' })],
+          ['media/asset-2.png', new Blob([PNG_BYTES], { type: 'image/png' })],
+        ]),
+        videoPosters: new Map<string, Blob>(),
+      };
+      const bytes = await collectStandaloneMediaBytes(snapshot, { fetchImage: async () => null });
+      const linked = await linkStandaloneImages(bytes, manifest);
+      return {
+        linked,
+        zip: prepareStandaloneManifest(manifest, linked.resolution),
+        single: prepareStandaloneManifest(manifest, await encodeStandaloneImages(bytes)),
+      };
+    }
+    const elementOf = (manifest: ClassroomManifest, id: string) =>
+      slideOf(manifest).elements.find((element) => element.id === id) as unknown as Record<
+        string,
+        unknown
+      >;
+
+    it('keeps chart point images inline in the ZIP: the chart wraps them in a data: SVG', async () => {
+      const { linked, zip, single } = await prepareBoth();
+      const points = (manifest: ClassroomManifest) =>
+        (elementOf(manifest, 'g').importedStyle as { series: Array<{ pointImages: object }> })
+          .series[0].pointImages;
+      expect(points(zip.manifest)).toEqual({
+        '0': PNG_URI,
+        '1': PNG_URI,
+        '2': `data:image/png;base64,${Buffer.from(STORED).toString('base64')}`,
+      });
+      expect(points(zip.manifest)).toEqual(points(single.manifest));
+      // A ref named only by a chart (img_chart) ships no file; one also shown
+      // as an image (img_stored) does: the stored image, the SVG and the PNG URI.
+      expect(linked.files).toHaveLength(3);
+      expect(elementOf(zip.manifest, 'd').src).toMatch(/^images\/image-\d+\.png$/);
+    });
+
+    it('ships inline data: images, backgrounds, patterns and posters as files in the ZIP, once per URI', async () => {
+      const { linked, zip, single } = await prepareBoth();
+      const pathOf = (id: string, key = 'src') => elementOf(zip.manifest, id)[key] as string;
+      expect(pathOf('a')).toMatch(/^images\/image-\d+\.png$/);
+      expect(pathOf('b')).toBe(pathOf('a'));
+      expect(pathOf('f', 'poster')).toBe(pathOf('a'));
+      expect(pathOf('e', 'pattern')).toMatch(/^images\/image-\d+\.svg$/);
+      const zipBackground = slideOf(zip.manifest).background as { image: { src: string } };
+      expect(zipBackground.image.src).toBe(pathOf('e', 'pattern'));
+      // A MIME type no file extension conveys stays inline.
+      expect(pathOf('c')).toBe(OTHER_URI);
+      expect(linked.files.map((file) => file.path).sort()).toEqual([
+        'images/image-1.png',
+        'images/image-2.svg',
+        'images/image-3.png',
+      ]);
+      const fileAt = (path: string) => linked.files.find((file) => file.path === path)!.blob;
+      expect(new Uint8Array(await fileAt(pathOf('a')).arrayBuffer())).toEqual(PNG_BYTES);
+      expect(await fileAt(pathOf('e', 'pattern')).text()).toContain('<rect width="4"');
+      expect(fileAt(pathOf('e', 'pattern')).type).toBe('image/svg+xml');
+      expect(JSON.stringify(zip.manifest)).not.toContain(SVG_URI);
+
+      // The single file keeps every inline source exactly as it was.
+      expect(elementOf(single.manifest, 'a').src).toBe(PNG_URI);
+      expect(elementOf(single.manifest, 'e').pattern).toBe(SVG_URI);
+      expect((slideOf(single.manifest).background as { image: { src: string } }).image.src).toBe(
+        SVG_URI,
+      );
+      expect(elementOf(single.manifest, 'f').poster).toBe(PNG_URI);
+      expect(zip.unresolved).toEqual(single.unresolved);
+
+      // The single file's size is still estimated exactly from the ZIP's manifest.
+      expect(estimateStandaloneHtmlBytes(zip.manifest, [], linked.files)).toBe(
+        estimateStandaloneHtmlBytes(single.manifest, []),
+      );
+    });
+
+    it('decodes only well-formed image data: URIs', () => {
+      expect(decodeImageDataUri(PNG_URI)?.type).toBe('image/png');
+      expect(decodeImageDataUri('data:image/png;base64,@@@')).toBeUndefined();
+      expect(decodeImageDataUri(OTHER_URI)).toBeUndefined();
+      expect(decodeImageDataUri('data:image/svg+xml,%E0%A4%A')).toBeUndefined();
+      expect(decodeImageDataUri('not a data uri')).toBeUndefined();
+    });
+
+    it('a classroom whose image is already a data: URI ships it as a file in the ZIP', async () => {
+      const scenes = standaloneFixtureScenes(STAGE_ID).map((scene) =>
+        withSlideElements(
+          scene,
+          (existing) =>
+            [
+              ...existing,
+              { ...box, type: 'image', id: 'inline', src: PNG_URI, fixedRatio: true },
+            ] as PPTElement[],
+        ),
+      );
+      const stage = setupSnapshot(scenes);
+      const options = { strings, lang: 'en-US', fetchAsset, fetchImage } as const;
+      const result = await buildStandaloneHtmlExport(stage, scenes, { ...options, format: 'zip' });
+      const { files, text, bytes } = await readZip(result.blob);
+      const html = await text('classroom.html');
+      expect(html).not.toContain(FIXTURE_PNG_BASE64);
+      const inline = slideOf(
+        embeddedJson<ClassroomManifest>(html, STANDALONE_MANIFEST_ELEMENT_ID),
+      ).elements.find((element) => element.id === 'inline') as { src: string };
+      expect(files).toContain(inline.src);
+      expect(await bytes(inline.src)).toEqual(PNG_BYTES);
+      const single = await buildStandaloneHtmlExport(setupSnapshot(scenes), scenes, options);
+      expect(await single.blob.text()).toContain(`"src":"${PNG_URI}"`);
+    });
   });
 
   it('encodes each path segment of a linked source', () => {

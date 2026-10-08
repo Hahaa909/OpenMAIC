@@ -36,6 +36,7 @@ import {
   type StandalonePlayerStrings,
 } from './contract';
 import {
+  collectInlineImageSources,
   collectStandaloneMediaReferences,
   prepareStandaloneManifest,
   type StandaloneMediaResolution,
@@ -177,6 +178,8 @@ export interface StandaloneMediaBytes {
   readonly images: ReadonlyMap<string, Blob>;
   /** Video ref (`src` or `mediaRef`) → the poster frame captured for it. */
   readonly videoPosters: ReadonlyMap<string, Blob>;
+  /** Refs of `images` named as chart point images (which must stay inline). */
+  readonly chartImageRefs?: ReadonlySet<string>;
   readonly playback?: StandaloneMediaResolution['playback'];
 }
 
@@ -231,6 +234,7 @@ export async function collectStandaloneMediaBytes(
   };
 
   const images = new Map<string, Blob>();
+  const chartImageRefs = new Set<string>();
   const videoPosters = new Map<string, Blob>();
   const videos = new Map<string, string>();
   const fetchedVideos = new Map<string, Blob>();
@@ -256,18 +260,24 @@ export async function collectStandaloneMediaBytes(
       }
       return;
     }
+    if (role === 'chart-image') chartImageRefs.add(ref);
     const blob = await resolveRef(ref);
     if (blob) images.set(ref, blob);
   });
 
-  if (!options.playbackMedia) return { images, videoPosters };
+  if (!options.playbackMedia) return { images, videoPosters, chartImageRefs };
   const audio = new Set<string>();
   for (const [path, entry] of Object.entries(snapshot.manifest.mediaIndex)) {
     if (entry.type === 'audio' && !entry.missing && isPlayableArchivePath(snapshot, path)) {
       audio.add(path);
     }
   }
-  return { images, videoPosters, playback: { audio, videos, files: fetchedVideos } };
+  return {
+    images,
+    videoPosters,
+    chartImageRefs,
+    playback: { audio, videos, files: fetchedVideos },
+  };
 }
 
 /** Images inlined as `data:` URIs: the single file's resolution. */
@@ -298,6 +308,12 @@ export async function encodeStandaloneImages(
 export interface StandaloneLinkedFile {
   path: string;
   blob: Blob;
+  /**
+   * Bytes the single file spends on this image where the ZIP names its path:
+   * the `data:` URI as escaped in the manifest. Derived from the Blob when
+   * absent (the form {@link blobToDataUri} writes).
+   */
+  inlineBytes?: number;
 }
 
 const IMAGE_MIME_EXTENSION: Record<string, string> = {
@@ -309,33 +325,92 @@ const IMAGE_MIME_EXTENSION: Record<string, string> = {
   'image/webp': 'webp',
 };
 
+/** Bytes a string takes as a JSON string value in the document, without its quotes. */
+function inlineJsonBytes(value: string): number {
+  return new Blob([serializeJsonForHtmlScript(value)]).size - 2;
+}
+
+/**
+ * The bytes of an inline image source the ZIP variant can ship as a file, or
+ * `undefined` to keep it inline (a MIME type a file extension cannot convey,
+ * or a malformed URI).
+ */
+export function decodeImageDataUri(uri: string): Blob | undefined {
+  const match = /^\s*data:([^,]*),([\s\S]*)$/i.exec(uri);
+  if (!match) return undefined;
+  const params = match[1].split(';').map((part) => part.trim());
+  const mimeType = (params[0] || '').toLowerCase();
+  if (!IMAGE_MIME_EXTENSION[mimeType]) return undefined;
+  try {
+    if (params.slice(1).some((part) => part.toLowerCase() === 'base64')) {
+      const binary = atob(match[2].replace(/\s+/g, ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      return new Blob([bytes], { type: mimeType });
+    }
+    return new Blob([decodeURIComponent(match[2])], { type: mimeType });
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Images shipped as files next to the page (the ZIP variant): each distinct
  * image becomes `images/image-N.<ext>`, and the resolution names it by that
- * relative path, which the player hands to the browser as is.
+ * relative path, which the player hands to the browser as is. Image sources
+ * already inline in `manifest` as `data:` URIs are decoded into files too
+ * (one per distinct URI).
+ *
+ * Chart point images stay inline as `data:` URIs: the chart renderer wraps
+ * them in a `data:` SVG symbol, which cannot load a file.
  */
-export function linkStandaloneImages(bytes: StandaloneMediaBytes): {
-  resolution: StandaloneMediaResolution;
-  files: StandaloneLinkedFile[];
-} {
+export async function linkStandaloneImages(
+  bytes: StandaloneMediaBytes,
+  manifest?: Pick<ClassroomManifest, 'scenes'>,
+): Promise<{ resolution: StandaloneMediaResolution; files: StandaloneLinkedFile[] }> {
   const files: StandaloneLinkedFile[] = [];
   const pathOf = new Map<Blob, string>();
-  const link = (blob: Blob) => {
+  const link = (blob: Blob, inlineBytes?: number) => {
     let path = pathOf.get(blob);
     if (!path) {
       const extension = IMAGE_MIME_EXTENSION[blob.type.split(';')[0].trim().toLowerCase()] ?? 'bin';
       path = `${STANDALONE_ZIP_IMAGE_DIR}/image-${files.length + 1}.${extension}`;
       pathOf.set(blob, path);
-      files.push({ path, blob });
+      files.push({ path, blob, ...(inlineBytes !== undefined ? { inlineBytes } : {}) });
     }
     return path;
   };
-  const toPaths = (map: ReadonlyMap<string, Blob>) =>
-    new Map([...map].map(([ref, blob]) => [ref, link(blob)] as const));
+  // Refs that fill a slot other than a chart point image (all, without a manifest).
+  const shippedRefs = manifest
+    ? new Set(
+        collectStandaloneMediaReferences(manifest)
+          .filter((reference) => reference.role !== 'chart-image')
+          .map((reference) => reference.ref),
+      )
+    : undefined;
+  const dataUris = new Map<string, string>();
+  for (const [ref, blob] of bytes.images) {
+    // A ref named only as a chart point image needs no file.
+    if (bytes.chartImageRefs?.has(ref) && shippedRefs && !shippedRefs.has(ref)) continue;
+    dataUris.set(ref, link(blob));
+  }
+  for (const uri of manifest ? collectInlineImageSources(manifest) : []) {
+    const blob = decodeImageDataUri(uri);
+    if (blob) dataUris.set(uri, link(blob, inlineJsonBytes(uri)));
+  }
+  const chartImages = new Map<string, string>();
+  for (const ref of bytes.chartImageRefs ?? []) {
+    const blob = bytes.images.get(ref);
+    if (blob) chartImages.set(ref, await blobToDataUri(blob));
+  }
+  const videoPosters = new Map(
+    [...bytes.videoPosters].map(([ref, blob]) => [ref, link(blob)] as const),
+  );
   return {
     resolution: {
-      dataUris: toPaths(bytes.images),
-      videoPosters: toPaths(bytes.videoPosters),
+      dataUris,
+      videoPosters,
+      ...(chartImages.size > 0 ? { chartImages } : {}),
       ...(bytes.playback ? { playback: bytes.playback } : {}),
     },
     files,
@@ -527,14 +602,15 @@ export function estimateStandaloneHtmlBytes(
   const serialized = serializeJsonForHtmlScript(manifest);
   let manifestBytes = new Blob([serialized]).size;
   if (linkedImages.length > 0) {
-    const byPath = new Map(linkedImages.map((file) => [file.path, file.blob]));
+    const byPath = new Map(linkedImages.map((file) => [file.path, file]));
     const pattern = new RegExp(`"(${STANDALONE_ZIP_IMAGE_DIR}/image-\\d+\\.[a-z0-9]+)"`, 'g');
     for (const [, path] of serialized.matchAll(pattern)) {
-      const blob = byPath.get(path);
-      if (!blob) continue;
+      const file = byPath.get(path);
+      if (!file) continue;
       const dataUriBytes =
-        `data:${blob.type || 'application/octet-stream'};base64,`.length +
-        Math.ceil(blob.size / 3) * 4;
+        file.inlineBytes ??
+        `data:${file.blob.type || 'application/octet-stream'};base64,`.length +
+          Math.ceil(file.blob.size / 3) * 4;
       manifestBytes += dataUriBytes - path.length;
     }
   }
@@ -567,7 +643,7 @@ export async function buildStandaloneHtmlExport(
   });
   // Prepared first with images named by path (the ZIP variant's form): the
   // single file's size can be estimated from it without encoding anything.
-  const linked = linkStandaloneImages(bytes);
+  const linked = await linkStandaloneImages(bytes, snapshot.manifest);
   const linkedPrepared = prepareStandaloneManifest(snapshot.manifest, linked.resolution);
   const payloads = collectStandalonePlaybackPayloads(snapshot, linkedPrepared.playbackMedia, bytes);
   const maxBytes = options.maxBytes ?? STANDALONE_HTML_MAX_BYTES;
