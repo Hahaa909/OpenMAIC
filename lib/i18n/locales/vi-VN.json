@@ -120,7 +120,7 @@
       "discussionTitle": "Thảo luận",
       "discussionContinueOnline": "Thảo luận trong lớp học trực tuyến",
       "discussionDismiss": "Đóng",
-      "mediaFolderMissing": "Thiếu tệp lời dẫn và video nên lớp học phát mà không có chúng. Hãy giải nén toàn bộ tệp ZIP rồi mở classroom.html từ thư mục đã giải nén."
+      "linkedFilesUnavailable": "Không thể tải một số hình ảnh, lời dẫn hoặc video. Nếu bạn mở classroom.html ngay trong tệp ZIP, hãy giải nén toàn bộ ZIP trước."
     },
     "scriptMd": "Tải kịch bản (.md)",
     "scriptMdDesc": "Văn bản tường thuật dưới dạng Markdown",

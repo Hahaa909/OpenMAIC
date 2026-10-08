@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import { PlaybackController, type PlaybackState } from './controller';
-import { createMediaLibrary, type MediaLibrary } from './media-library';
+import { createMediaLibrary, firstLinkedImage, type MediaLibrary } from './media-library';
 import { NarrationPlayer, VideoRegistry, WidgetChannel } from './media-ports';
 
 export interface Playback {
   state: PlaybackState;
-  /** Media shipped next to the page (the ZIP variant) could not be loaded. */
+  /** A file shipped next to the page (the ZIP variant) could not be loaded. */
   linkedMediaMissing: boolean;
   media: MediaLibrary;
   videos: VideoRegistry;
@@ -33,7 +33,7 @@ export function usePlayback(
   }, [navigate]);
 
   const { controller, media, narration, videos, widgets } = useMemo(() => {
-    const media = createMediaLibrary(document);
+    const media = createMediaLibrary(document, { linkedImage: firstLinkedImage(scenes) });
     const narration = new NarrationPlayer(media);
     const videos = new VideoRegistry();
     const widgets = new WidgetChannel();

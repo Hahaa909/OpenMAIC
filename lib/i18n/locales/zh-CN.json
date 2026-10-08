@@ -120,7 +120,7 @@
       "discussionTitle": "讨论",
       "discussionContinueOnline": "在在线课堂中参与讨论",
       "discussionDismiss": "关闭",
-      "mediaFolderMissing": "缺少旁白和视频文件，课堂将在没有它们的情况下播放。请完整解压 ZIP 文件，然后从解压后的文件夹中打开 classroom.html。"
+      "linkedFilesUnavailable": "部分图片、旁白或视频无法加载。如果你是在 ZIP 内直接打开 classroom.html 的，请先完整解压 ZIP。"
     },
     "scriptMd": "下载演讲稿 (.md)",
     "scriptMdDesc": "以 Markdown 导出语音播报文字",

@@ -120,7 +120,7 @@
       "discussionTitle": "討論",
       "discussionContinueOnline": "在線上課堂中參與討論",
       "discussionDismiss": "關閉",
-      "mediaFolderMissing": "缺少旁白和影片檔案，課堂將在沒有它們的情況下播放。請完整解壓縮 ZIP 檔案，然後從解壓縮後的資料夾中開啟 classroom.html。"
+      "linkedFilesUnavailable": "部分圖片、旁白或影片無法載入。如果你是在 ZIP 內直接開啟 classroom.html，請先完整解壓縮 ZIP。"
     },
     "scriptMd": "下載演講稿 (.md)",
     "scriptMdDesc": "以 Markdown 匯出語音播報文字",

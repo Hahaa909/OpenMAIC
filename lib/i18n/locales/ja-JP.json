@@ -120,7 +120,7 @@
       "discussionTitle": "ディスカッション",
       "discussionContinueOnline": "オンライン教室でディスカッションする",
       "discussionDismiss": "閉じる",
-      "mediaFolderMissing": "ナレーションと動画のファイルが見つからないため、それらなしで再生します。ZIP ファイルをすべて展開し、展開したフォルダーから classroom.html を開いてください。"
+      "linkedFilesUnavailable": "一部の画像、ナレーション、動画を読み込めませんでした。ZIP 内から classroom.html を開いた場合は、先に ZIP をすべて展開してください。"
     },
     "scriptMd": "スクリプトをダウンロード (.md)",
     "scriptMdDesc": "ナレーション文をMarkdownとして",

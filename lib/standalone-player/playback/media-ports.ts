@@ -50,10 +50,16 @@ const VIDEO_UNKNOWN_DURATION_CAP_MS = 60_000;
 export class NarrationPlayer {
   private readonly audio: HTMLAudioElement;
   private primed = false;
+  /** The clip the element is loading or playing (not the priming sound). */
+  private current: string | undefined;
 
   constructor(private readonly media: MediaLibrary) {
     this.audio = new Audio();
     this.audio.preload = 'auto';
+    // A source that fails to load reports an `error` event even after the
+    // clip's own wait has ended (WebKit and Firefox reject `play()` first),
+    // so the failure reaches the library whenever it fires.
+    this.audio.addEventListener('error', () => this.media.reportError(this.current));
   }
 
   /** Call from inside the Play click handler (a user gesture). */
@@ -61,6 +67,7 @@ export class NarrationPlayer {
     if (this.primed) return;
     this.primed = true;
     try {
+      this.current = undefined;
       this.audio.src = silentWavDataUri();
       void this.audio.play().catch(() => {});
     } catch {
@@ -87,10 +94,7 @@ export class NarrationPlayer {
       const onEnded = () => finish(true);
       // A clip that fails before it starts is paced by the reading timer; one
       // that fails midway simply ends.
-      const onError = () => {
-        this.media.reportError(ref);
-        finish(started);
-      };
+      const onError = () => finish(started);
       const onAbort = () => {
         audio.pause();
         finish(true);
@@ -105,6 +109,11 @@ export class NarrationPlayer {
             // calls start() again. Anything else means it cannot play.
             if (control.gate.paused || control.signal.aborted) return;
             if (error instanceof DOMException && error.name === 'AbortError') return;
+            // No playable source: WebKit and Firefox reject here before (or
+            // without) an `error` event for a file that is not there.
+            if (error instanceof DOMException && error.name === 'NotSupportedError') {
+              this.media.reportError(ref);
+            }
             finish(false);
           },
         );
@@ -116,6 +125,7 @@ export class NarrationPlayer {
       audio.addEventListener('ended', onEnded);
       audio.addEventListener('error', onError);
       control.signal.addEventListener('abort', onAbort, { once: true });
+      this.current = ref;
       audio.src = src;
       audio.currentTime = 0;
       if (!control.gate.paused) start();

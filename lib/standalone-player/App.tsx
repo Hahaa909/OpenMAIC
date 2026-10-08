@@ -277,7 +277,7 @@ export function App({ data }: { data: PlayerData }) {
           data-testid="media-missing"
         >
           <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <p>{strings.mediaFolderMissing}</p>
+          <p>{strings.linkedFilesUnavailable}</p>
         </div>
       )}
 

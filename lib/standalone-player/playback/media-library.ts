@@ -12,9 +12,13 @@
  *
  * Linked files go missing when the page is opened without them (straight from
  * inside a ZIP, or copied out alone). The library notices it, from a probe of
- * one file as the player opens and from any linked clip that fails to load,
- * so the player can say so; playback itself carries on without the media.
+ * one file as the player opens (a linked clip, or else a linked slide image)
+ * and from any linked clip that fails to load, so the player can say so;
+ * playback itself carries on without the media. A file whose codec the
+ * browser cannot play fails the same way: on `file:` the two cannot be told
+ * apart, so the notice covers both.
  */
+import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 import {
   STANDALONE_MEDIA_TABLE_ELEMENT_ID,
   type StandaloneMediaTable,
@@ -28,11 +32,11 @@ export interface MediaLibrary {
   dispose(): void;
   /** A media element failed to load `key`. Only linked files count as missing. */
   reportError(key: string | undefined): void;
-  /** Whether a linked media file (shipped next to the page) failed to load. */
+  /** Whether a linked file (shipped next to the page) failed to load. */
   linkedMediaMissing(): boolean;
   /** Notified once when linked media is first found missing. */
   subscribe(listener: () => void): () => void;
-  /** Load the metadata of one linked file, so a missing folder shows before playback. */
+  /** Load one linked file, so a missing folder shows before playback. */
   probeLinkedMedia(): void;
 }
 
@@ -54,12 +58,20 @@ function decodeBase64(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-export function createMediaLibrary(doc: Document): MediaLibrary {
+export interface MediaLibraryOptions {
+  /**
+   * Relative path of a slide image shipped next to the page, probed when the
+   * media table links no file (an export without narration).
+   */
+  linkedImage?: string;
+}
+
+export function createMediaLibrary(doc: Document, options: MediaLibraryOptions = {}): MediaLibrary {
   let table: StandaloneMediaTable | null = null;
   const urls = new Map<string, string>();
   const listeners = new Set<() => void>();
   let missing = false;
-  let probe: HTMLMediaElement | null = null;
+  let probe: HTMLMediaElement | HTMLImageElement | null = null;
   const entryFor = (key: string) => {
     table ??= readTable(doc);
     return Object.hasOwn(table, key) ? table[key] : undefined;
@@ -71,7 +83,8 @@ export function createMediaLibrary(doc: Document): MediaLibrary {
   };
   const endProbe = () => {
     if (!probe) return;
-    probe.onloadedmetadata = probe.onerror = null;
+    probe.onload = probe.onerror = null;
+    if (probe instanceof HTMLMediaElement) probe.onloadedmetadata = null;
     probe.removeAttribute('src');
     probe = null;
   };
@@ -88,18 +101,26 @@ export function createMediaLibrary(doc: Document): MediaLibrary {
     probeLinkedMedia() {
       if (probe || missing) return;
       table ??= readTable(doc);
-      const entry = Object.values(table).find((candidate) => candidate?.src);
-      if (!entry?.src) return;
-      const element = doc.createElement(entry.mimeType?.startsWith('video/') ? 'video' : 'audio');
-      probe = element;
-      element.preload = 'metadata';
-      element.muted = true;
-      element.onloadedmetadata = endProbe;
-      element.onerror = () => {
+      const onError = () => {
         endProbe();
         markMissing();
       };
-      element.src = entry.src;
+      const entry = Object.values(table).find((candidate) => candidate?.src);
+      if (entry?.src) {
+        const element = doc.createElement(entry.mimeType?.startsWith('video/') ? 'video' : 'audio');
+        probe = element;
+        element.preload = 'metadata';
+        element.muted = true;
+        element.onloadedmetadata = endProbe;
+        element.onerror = onError;
+        element.src = entry.src;
+      } else if (options.linkedImage) {
+        const image = doc.createElement('img');
+        probe = image;
+        image.onload = endProbe;
+        image.onerror = onError;
+        image.src = options.linkedImage;
+      }
     },
     has(key) {
       if (!key) return false;
@@ -133,4 +154,25 @@ export function createMediaLibrary(doc: Document): MediaLibrary {
       listeners.clear();
     },
   };
+}
+
+/** Whether a slide image source is a file shipped next to the page (a relative path). */
+function isLinkedPath(src: string | undefined): src is string {
+  return !!src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('/') && !src.startsWith('#');
+}
+
+/** The first slide image, background or poster the manifest names by relative path, if any. */
+export function firstLinkedImage(scenes: readonly ManifestScene[]): string | undefined {
+  for (const scene of scenes) {
+    if (scene.content.type !== 'slide') continue;
+    const slide = scene.content.canvas;
+    if (slide.background?.type === 'image' && isLinkedPath(slide.background.image?.src)) {
+      return slide.background.image.src;
+    }
+    for (const element of slide.elements ?? []) {
+      if (element.type === 'image' && isLinkedPath(element.src)) return element.src;
+      if (element.type === 'video' && isLinkedPath(element.poster)) return element.poster;
+    }
+  }
+  return undefined;
 }

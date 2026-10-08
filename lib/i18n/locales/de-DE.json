@@ -120,7 +120,7 @@
       "discussionTitle": "Diskussion",
       "discussionContinueOnline": "Im Online-Klassenzimmer diskutieren",
       "discussionDismiss": "Schließen",
-      "mediaFolderMissing": "Sprecherton- und Videodateien fehlen, daher läuft der Unterricht ohne sie. Entpacken Sie die gesamte ZIP-Datei und öffnen Sie classroom.html aus dem entpackten Ordner."
+      "linkedFilesUnavailable": "Einige Bilder, Sprecherton- oder Videodateien konnten nicht geladen werden. Wenn Sie classroom.html direkt aus dem ZIP geöffnet haben, entpacken Sie zuerst das gesamte ZIP."
     },
     "scriptMd": "Skript herunterladen (.md)",
     "scriptMdDesc": "Erzähltext als Markdown",

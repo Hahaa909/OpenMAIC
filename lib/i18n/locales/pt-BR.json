@@ -120,7 +120,7 @@
       "discussionTitle": "Discussão",
       "discussionContinueOnline": "Discutir na sala de aula online",
       "discussionDismiss": "Fechar",
-      "mediaFolderMissing": "Os arquivos de narração e vídeo estão faltando, então a aula é reproduzida sem eles. Extraia o arquivo ZIP inteiro e abra classroom.html a partir da pasta extraída."
+      "linkedFilesUnavailable": "Não foi possível carregar algumas imagens, narrações ou vídeos. Se você abriu classroom.html de dentro do ZIP, extraia o ZIP inteiro primeiro."
     },
     "scriptMd": "Baixar roteiro (.md)",
     "scriptMdDesc": "Texto da narração como Markdown",

@@ -120,7 +120,7 @@
       "discussionTitle": "Обсуждение",
       "discussionContinueOnline": "Обсудить в онлайн-классе",
       "discussionDismiss": "Закрыть",
-      "mediaFolderMissing": "Файлы озвучки и видео не найдены, поэтому урок воспроизводится без них. Распакуйте весь ZIP-файл и откройте classroom.html из распакованной папки."
+      "linkedFilesUnavailable": "Не удалось загрузить некоторые изображения, озвучку или видео. Если вы открыли classroom.html прямо из ZIP, сначала распакуйте весь ZIP."
     },
     "scriptMd": "Скачать сценарий (.md)",
     "scriptMdDesc": "Текст озвучки в Markdown",

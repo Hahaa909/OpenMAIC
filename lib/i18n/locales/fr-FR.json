@@ -120,7 +120,7 @@
       "discussionTitle": "Discussion",
       "discussionContinueOnline": "En discuter dans la classe en ligne",
       "discussionDismiss": "Fermer",
-      "mediaFolderMissing": "Les fichiers de narration et de vidéo sont introuvables : le cours se lit sans eux. Extrayez tout le fichier ZIP, puis ouvrez classroom.html depuis le dossier extrait."
+      "linkedFilesUnavailable": "Certaines images, narrations ou vidéos n'ont pas pu être chargées. Si vous avez ouvert classroom.html depuis le ZIP, extrayez d'abord tout le ZIP."
     },
     "scriptMd": "Télécharger le script (.md)",
     "scriptMdDesc": "Texte de narration en Markdown",

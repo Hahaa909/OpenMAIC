@@ -157,7 +157,7 @@ describe('standalone player linked media', () => {
     act(() => {
       probes()[0].dispatchEvent(new Event('error'));
     });
-    expect(notice()?.textContent).toBe('[mediaFolderMissing]');
+    expect(notice()?.textContent).toBe('[linkedFilesUnavailable]');
     expect(notice()?.getAttribute('role')).toBe('alert');
     // The classroom stays usable: the start overlay is still offered.
     expect(overlay()).not.toBeNull();

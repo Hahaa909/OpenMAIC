@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMediaLibrary } from '@/lib/standalone-player/playback/media-library';
+import {
+  createMediaLibrary,
+  firstLinkedImage,
+} from '@/lib/standalone-player/playback/media-library';
+import type { ManifestScene } from '@/lib/export/classroom-zip-types';
 
 const BYTES = Uint8Array.from([0x49, 0x44, 0x33, 4, 0, 0, 0, 0]);
 
@@ -149,5 +153,54 @@ describe('createMediaLibrary', () => {
     const none = vi.spyOn(embeddedOnly, 'createElement');
     createMediaLibrary(embeddedOnly).probeLinkedMedia();
     expect(none).not.toHaveBeenCalled();
+  });
+
+  it('probes a linked slide image when the media table links no file', () => {
+    const doc = documentWith({ k: { embedded: 'openmaic-media-1' } }, {});
+    const spy = vi.spyOn(doc, 'createElement');
+    const library = createMediaLibrary(doc, { linkedImage: 'images/image-1.png' });
+    library.probeLinkedMedia();
+    const probe = spy.mock.results[0].value as HTMLImageElement;
+    expect(probe.tagName).toBe('IMG');
+    expect(probe.getAttribute('src')).toBe('images/image-1.png');
+    probe.dispatchEvent(new Event('error'));
+    expect(library.linkedMediaMissing()).toBe(true);
+
+    // A linked clip is preferred over the image.
+    const both = documentWith({ a: { mimeType: 'audio/mpeg', src: 'audio/a.mp3' } }, {});
+    const bothSpy = vi.spyOn(both, 'createElement');
+    createMediaLibrary(both, { linkedImage: 'images/image-1.png' }).probeLinkedMedia();
+    expect((bothSpy.mock.results[0].value as HTMLElement).tagName).toBe('AUDIO');
+  });
+});
+
+describe('firstLinkedImage', () => {
+  const slide = (elements: unknown[], background?: unknown): ManifestScene =>
+    ({
+      type: 'slide',
+      title: 's',
+      order: 0,
+      content: { type: 'slide', canvas: { id: 's', elements, background } },
+    }) as unknown as ManifestScene;
+
+  it('finds the first image, background or poster named by relative path', () => {
+    expect(firstLinkedImage([])).toBeUndefined();
+    expect(
+      firstLinkedImage([
+        slide([{ type: 'image', src: 'data:image/png;base64,AAAA' }]),
+        slide([{ type: 'video', poster: 'images/image-2.jpg' }]),
+      ]),
+    ).toBe('images/image-2.jpg');
+    expect(
+      firstLinkedImage([
+        slide([{ type: 'image', src: 'images/image-1.png' }], {
+          type: 'image',
+          image: { src: 'images/image-3.png' },
+        }),
+      ]),
+    ).toBe('images/image-3.png');
+    for (const src of ['', 'blob:x', 'https://a.example/x.png', '/abs.png']) {
+      expect(firstLinkedImage([slide([{ type: 'image', src }])])).toBeUndefined();
+    }
   });
 });
