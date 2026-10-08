@@ -2,6 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mountPlayer } from '@/lib/standalone-player/mount';
 import { App } from '@/lib/standalone-player/App';
 import type { PlayerData } from '@/lib/standalone-player/read-data';
 import type { ManifestScene } from '@/lib/export/classroom-zip-types';
@@ -170,30 +171,57 @@ describe('standalone player linked media', () => {
       probes()[0].dispatchEvent(new Event('loadedmetadata'));
     });
     expect(notice()).toBeNull();
+  });
+});
 
 describe('standalone player static fallback', () => {
-  it('replaces the root content the file ships with when the player mounts', () => {
+  const fallbackHost = (withData: boolean) => {
     host = document.createElement('div');
-    host.innerHTML = '<p class="openmaic-fallback">needs JavaScript</p>';
+    host.innerHTML =
+      '<div id="openmaic-player"></div>' +
+      (withData
+        ? `<script type="application/json" id="openmaic-classroom">${JSON.stringify(data.manifest)}</script><script type="application/json" id="openmaic-player-config">${JSON.stringify(data.config)}</script>`
+        : '') +
+      '<p class="openmaic-fallback" data-failed-text="could not start">needs JavaScript</p>';
     document.body.append(host);
-    expect(host.querySelector('.openmaic-fallback')).not.toBeNull();
-    root = createRoot(host);
-    act(() => root.render(createElement(App, { data })));
+    return document;
+  };
+
+  it('is removed when the player mounts', () => {
+    fallbackHost(true);
+    act(() => mountPlayer(document));
     expect(host.querySelector('.openmaic-fallback')).toBeNull();
     expect(host.querySelector('[data-testid=scene]')).not.toBeNull();
+    root = createRoot(document.createElement('div'));
+  });
+
+  it('switches to a generic "could not start" message when the player cannot start', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fallbackHost(false);
+    act(() => mountPlayer(document));
+    const el = host.querySelector('.openmaic-fallback')!;
+    expect(el.textContent).toBe('could not start');
+    expect(el.hasAttribute('data-failed')).toBe(true);
+    spy.mockRestore();
+    root = createRoot(document.createElement('div'));
   });
 });
 
 describe('standalone player captions', () => {
-  it('sits in its own strip on narrow screens and overlays the scene from sm up', () => {
+  const start = () =>
+    act(() => (host.querySelector('[data-testid=start-playback]') as HTMLElement).click());
+
+  it('reserves no strip until playback starts', () => {
     render();
+    expect(host.querySelector('[data-testid=caption-bar]')).toBeNull();
+  });
+
+  it('is a sibling of the scene once playing, laid out by .caption-bar', () => {
+    render();
+    start();
     const bar = host.querySelector('[data-testid=caption-bar]') as HTMLElement;
     expect(bar).not.toBeNull();
-    const classes = bar.className.split(/\s+/);
-    // Never absolutely positioned below the sm breakpoint.
-    expect(classes).not.toContain('absolute');
-    expect(classes).toContain('sm:absolute');
-    // A sibling of the scene, not inside it.
+    expect(bar.className).toBe('caption-bar');
     expect(host.querySelector('[data-testid=scene]')!.contains(bar)).toBe(false);
   });
 });

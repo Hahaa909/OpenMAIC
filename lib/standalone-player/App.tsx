@@ -282,8 +282,8 @@ export function App({ data }: { data: PlayerData }) {
       )}
 
       <div className="relative flex min-h-0 flex-1">
-        {/* Wide screens overlay the caption on the scene; narrow ones give it
-            its own strip below so it never covers the scene's content. */}
+        {/* The caption overlays the scene on wide screens and takes a strip below
+            it on narrow or short ones (see `.caption-bar`). */}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <main
             ref={mainRef}
@@ -315,7 +315,7 @@ export function App({ data }: { data: PlayerData }) {
               />
             )}
           </main>
-          {captionsOn && <CaptionBar text={view.caption ?? ''} />}
+          {captionsOn && mode !== 'idle' && <CaptionBar text={view.caption ?? ''} />}
         </div>
 
         {listOpen && (
