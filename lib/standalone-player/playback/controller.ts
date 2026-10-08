@@ -5,7 +5,9 @@
  *
  * Modes:
  * - `idle`     nothing plays (first load, after the last scene, or after the
- *              learner navigated while paused);
+ *              learner navigated while paused). Play after the last scene
+ *              finished starts the classroom over from its first scene;
+ *              otherwise Play starts the shown scene;
  * - `playing`  the current scene's actions run;
  * - `paused`   the run is frozen mid-action and resumes where it stopped;
  * - `holding`  a quiz, interactive or PBL scene finished its narration and
@@ -52,6 +54,10 @@ export class PlaybackController {
     view: { caption: null, effects: {}, discussion: null },
   };
   private index = -1;
+  /** The last scene played to its end (and nothing was navigated since). */
+  private finished = false;
+  /** Start the next scene the host shows, whatever the mode. */
+  private startOnShow = false;
   private runToken = 0;
   private advance: AbortController | null = null;
   private readonly advanceGate = new PauseGate();
@@ -74,15 +80,25 @@ export class PlaybackController {
   sceneShown(index: number): void {
     if (index === this.index) return;
     this.index = index;
+    this.finished = false;
     this.stopScene();
     const { mode } = this.state;
-    if (mode === 'playing' || mode === 'holding') this.startScene();
+    const startOnShow = this.startOnShow;
+    this.startOnShow = false;
+    if (startOnShow || mode === 'playing' || mode === 'holding') this.startScene();
     else if (mode === 'paused') this.update({ mode: 'idle' });
   }
 
   play(): void {
     switch (this.state.mode) {
       case 'idle':
+        if (this.finished && this.index > 0) {
+          this.finished = false;
+          this.startOnShow = true;
+          this.options.navigate(0);
+          return;
+        }
+        this.finished = false;
         this.startScene();
         return;
       case 'paused':
@@ -139,6 +155,7 @@ export class PlaybackController {
     const scene = this.options.scenes[this.index];
     const isLast = this.index >= this.options.scenes.length - 1;
     if (isLast) {
+      this.finished = true;
       this.update({ mode: 'idle' });
       return;
     }

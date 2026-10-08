@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -118,8 +118,9 @@ export function App({ data }: { data: PlayerData }) {
   const [listOpen, setListOpen] = useState(false);
   const { fullscreen, toggle: toggleFullscreen } = useFullscreen();
 
-  // The start overlay invites playback on the first scene; navigating away
-  // means the learner chose to browse.
+  // The start overlay invites playback on whichever scene the file opens on
+  // (a `#scene-N` link included); any navigation before playing (buttons,
+  // keys, the scene list, a hash change) means the learner chose to browse.
   const [overlayDismissed, setOverlayDismissed] = useState(false);
   const goTo = useCallback((next: number) => {
     setIndex(next);
@@ -139,6 +140,7 @@ export function App({ data }: { data: PlayerData }) {
   const playback = usePlayback(scenes, index, goTo);
   const { mode, started, view } = playback.state;
   const [captionsOn, setCaptionsOn] = useState(true);
+  const mainRef = useRef<HTMLElement>(null);
   const playing = mode === 'playing';
   const playLabel = playing
     ? strings.pause
@@ -148,7 +150,15 @@ export function App({ data }: { data: PlayerData }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Quiz and PBL scenes scroll: with focus inside the scene, Space keeps
+      // its native page-down; elsewhere (header, footer, page) it toggles.
+      const target = event.target as Node | null;
+      const scrollsScene =
+        (scenes[index]?.type === 'quiz' || scenes[index]?.type === 'pbl') &&
+        !!target &&
+        !!mainRef.current?.contains(target);
       if (
+        !scrollsScene &&
         isPlaybackToggleKey({
           key: event.key,
           altKey: event.altKey,
@@ -175,10 +185,13 @@ export function App({ data }: { data: PlayerData }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [navigate, playback]);
+  }, [navigate, playback, scenes, index]);
 
   useEffect(() => {
-    const onHash = () => setIndex(sceneIndexFromHash(window.location.hash, count));
+    const onHash = () => {
+      setIndex(sceneIndexFromHash(window.location.hash, count));
+      setOverlayDismissed(true);
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, [count]);
@@ -222,6 +235,7 @@ export function App({ data }: { data: PlayerData }) {
 
       <div className="relative flex min-h-0 flex-1">
         <main
+          ref={mainRef}
           className="relative min-h-0 min-w-0 flex-1"
           data-testid="scene"
           data-scene-index={index}

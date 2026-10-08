@@ -44,6 +44,10 @@ export function usePlayback(
         sendWidgetMessage: (type, payload) => widgets.send(type, payload),
       },
     });
+    videos.setUserHooks({
+      onUserPause: () => controller.pause(),
+      onUserPlay: () => controller.play(),
+    });
     return { controller, media, narration, videos, widgets };
   }, [scenes]);
 
@@ -66,12 +70,14 @@ export function usePlayback(
 
   const play = useCallback(() => {
     narration.prime();
+    videos.pauseManual();
     controller.play();
-  }, [controller, narration]);
+  }, [controller, narration, videos]);
   const toggle = useCallback(() => {
     narration.prime();
+    if (controller.getState().mode !== 'playing') videos.pauseManual();
     controller.toggle();
-  }, [controller, narration]);
+  }, [controller, narration, videos]);
   const pause = useCallback(() => controller.pause(), [controller]);
   const dismissDiscussion = useCallback(() => controller.dismissDiscussion(), [controller]);
 

@@ -103,8 +103,8 @@ describe('SceneSequencer', () => {
 
     fake.audio.get('audio/b.mp3')!.resolve(true);
     await expect(done).resolves.toBe('completed');
-    // The caption of the last line stays up until the scene changes.
-    expect(fake.view.caption).toBe('Second line.');
+    // A caption lasts as long as its line: nothing lingers over what follows.
+    expect(fake.view.caption).toBeNull();
   });
 
   it('clears effects 5 s after the most recent one fired', async () => {
@@ -355,6 +355,53 @@ describe('PlaybackController', () => {
     // The last scene ends playback.
     await vi.advanceTimersByTimeAsync(2000);
     expect(controller.getState().mode).toBe('idle');
+  });
+
+  it.each(['quiz', 'interactive', 'pbl'] as const)(
+    'holds after a %s scene, with no caption left over it',
+    async (type) => {
+      const { controller, navigations } = controllerFor([
+        scene(type, [speech('Over to you.')]),
+        scene('slide', [speech('Next.')]),
+      ]);
+      controller.play();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(controller.getState().mode).toBe('holding');
+      expect(controller.getState().view.caption).toBeNull();
+      expect(navigations).toEqual([]);
+    },
+  );
+
+  it('Play after the last scene finished starts over from the first scene', async () => {
+    const { controller, navigations } = controllerFor([
+      scene('slide', [speech('One.')]),
+      scene('slide', [speech('Two.')]),
+    ]);
+    controller.play();
+    await vi.advanceTimersByTimeAsync(2000 + SCENE_ADVANCE_DELAY_MS + 2000);
+    expect(navigations).toEqual([1]);
+    expect(controller.getState().mode).toBe('idle');
+    controller.play();
+    expect(navigations).toEqual([1, 0]);
+    expect(controller.getState().mode).toBe('playing');
+    await flush();
+    expect(controller.getState().view.caption).toBe('One.');
+  });
+
+  it('Play on a scene the learner navigated to after the end plays that scene', async () => {
+    const { controller, navigations } = controllerFor([
+      scene('slide', [speech('One.')]),
+      scene('slide', [speech('Two.')]),
+      scene('slide', [speech('Three.')]),
+    ]);
+    controller.sceneShown(2);
+    controller.play();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(controller.getState().mode).toBe('idle');
+    controller.sceneShown(1);
+    controller.play();
+    expect(navigations).toEqual([]);
+    expect(controller.getState().mode).toBe('playing');
   });
 
   it('holds after a quiz scene; Play continues with the next scene', async () => {

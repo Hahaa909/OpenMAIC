@@ -17,6 +17,9 @@ body,
 
 body {
   margin: 0;
+  /* As the classroom page (Tailwind's antialiased on <body>). */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-family:
     ui-sans-serif,
     system-ui,

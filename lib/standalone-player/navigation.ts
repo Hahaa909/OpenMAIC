@@ -59,12 +59,23 @@ export function navigationActionForKey(event: {
   }
 }
 
-const ACTIVATABLE_TAGS = new Set(['BUTTON', 'A', 'SUMMARY', 'INPUT', 'TEXTAREA', 'SELECT']);
+const ACTIVATABLE_TAGS = new Set([
+  'BUTTON',
+  'A',
+  'SUMMARY',
+  'INPUT',
+  'TEXTAREA',
+  'SELECT',
+  'VIDEO',
+  'AUDIO',
+]);
 
 /**
  * Whether a key press toggles playback: Space, with no modifier, outside
  * anything Space already activates or types into (a focused button presses
- * itself, so handling it here too would toggle twice).
+ * itself, and a focused video toggles itself, so handling it here too would
+ * toggle twice). The host additionally leaves Space to scroll scenes that
+ * scroll (see `App.tsx`).
  */
 export function isPlaybackToggleKey(event: {
   key: string;

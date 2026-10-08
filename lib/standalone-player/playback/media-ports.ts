@@ -124,13 +124,52 @@ export class NarrationPlayer {
   }
 }
 
-/** Slide `<video>` elements by element id, registered as the slide renders them. */
+/** Callbacks through which a learner's own use of a video steers playback. */
+export interface VideoUserHooks {
+  /** The learner paused the video the sequencer is waiting on, or started another one. */
+  onUserPause(): void;
+  /** The learner resumed the video the sequencer is waiting on while playback was paused. */
+  onUserPlay(): void;
+}
+
+/**
+ * Slide `<video>` elements by element id, registered as the slide renders
+ * them, and the one `play_video` is currently waiting on.
+ *
+ * The learner keeps the native controls, kept in step with playback:
+ * - pausing the awaited video pauses playback, and playing it again resumes;
+ * - starting any other video pauses playback, so narration and the video
+ *   never sound together; resuming playback pauses such a video again.
+ */
 export class VideoRegistry {
   private readonly elements = new Map<string, HTMLVideoElement>();
+  private readonly watched = new WeakSet<HTMLVideoElement>();
+  /** Element events the registry itself caused, which are not the learner's. */
+  private readonly expected = new WeakMap<HTMLVideoElement, { play: number; pause: number }>();
+  private active: HTMLVideoElement | null = null;
+  private hooks: VideoUserHooks | null = null;
+
+  setUserHooks(hooks: VideoUserHooks | null): void {
+    this.hooks = hooks;
+  }
 
   register(elementId: string, video: HTMLVideoElement | null): void {
-    if (video) this.elements.set(elementId, video);
-    else this.elements.delete(elementId);
+    if (!video) {
+      this.elements.delete(elementId);
+      return;
+    }
+    this.elements.set(elementId, video);
+    if (this.watched.has(video)) return;
+    this.watched.add(video);
+    video.addEventListener('play', () => this.onElementEvent(video, 'play'));
+    video.addEventListener('pause', () => this.onElementEvent(video, 'pause'));
+  }
+
+  /** Pause every video the learner started by hand (playback is resuming). */
+  pauseManual(): void {
+    for (const video of this.elements.values()) {
+      if (video !== this.active && !video.paused) this.pauseOwn(video);
+    }
   }
 
   async play(elementId: string, control: StepControl): Promise<void> {
@@ -140,6 +179,11 @@ export class VideoRegistry {
       return;
     }
 
+    // Ends the wait timer and listeners as soon as the race settles, however
+    // it settles (the clip ended, the cap passed, or the run was cancelled).
+    const wait = new AbortController();
+    const abortWait = () => wait.abort();
+    control.signal.addEventListener('abort', abortWait, { once: true });
     let stopWaiting = () => {};
     const ended = new Promise<void>((resolve) => {
       stopWaiting = () => {
@@ -152,7 +196,7 @@ export class VideoRegistry {
     });
     const start = async (): Promise<boolean> => {
       try {
-        await video.play();
+        await this.playOwn(video);
         return true;
       } catch (error) {
         if (control.gate.paused || control.signal.aborted) return true;
@@ -165,20 +209,76 @@ export class VideoRegistry {
       }
     };
     const unsubscribe = control.gate.subscribe((paused) => {
-      if (paused) video.pause();
+      if (paused) this.pauseOwn(video);
       else void start();
     });
+    this.active = video;
     try {
       video.currentTime = 0;
       if (!(await start())) return;
       const capMs = Number.isFinite(video.duration)
         ? Math.min(video.duration * 1000 + VIDEO_END_GRACE_MS, MAX_VIDEO_WAIT_MS)
         : VIDEO_UNKNOWN_DURATION_CAP_MS;
-      await Promise.race([ended, pausableDelay(capMs, control)]);
+      await Promise.race([
+        ended,
+        pausableDelay(capMs, { signal: wait.signal, gate: control.gate }),
+      ]);
     } finally {
+      wait.abort();
+      control.signal.removeEventListener('abort', abortWait);
       unsubscribe();
       stopWaiting();
-      if (control.signal.aborted) video.pause();
+      if (this.active === video) this.active = null;
+      // Past the cap, or cancelled: the clip must not keep playing under
+      // the next narration.
+      if (!video.ended && !video.paused) this.pauseOwn(video);
+    }
+  }
+
+  private async playOwn(video: HTMLVideoElement): Promise<void> {
+    const counts = this.expect(video);
+    // Only a paused element reports a `play` event.
+    const wasPaused = video.paused;
+    if (wasPaused) counts.play++;
+    try {
+      await video.play();
+    } catch (error) {
+      // A refused play() never reported one.
+      if (wasPaused && video.paused && counts.play > 0) counts.play--;
+      throw error;
+    }
+  }
+
+  private pauseOwn(video: HTMLVideoElement): void {
+    if (video.paused) return;
+    this.expect(video).pause++;
+    video.pause();
+  }
+
+  private expect(video: HTMLVideoElement) {
+    let counts = this.expected.get(video);
+    if (!counts) {
+      counts = { play: 0, pause: 0 };
+      this.expected.set(video, counts);
+    }
+    return counts;
+  }
+
+  private onElementEvent(video: HTMLVideoElement, type: 'play' | 'pause'): void {
+    const counts = this.expect(video);
+    if (counts[type] > 0) {
+      counts[type]--;
+      return;
+    }
+    // A detached element pauses on its own when its slide unmounts; the end
+    // of a clip also reports a pause.
+    if (!video.isConnected || (type === 'pause' && video.ended)) return;
+    if (type === 'pause') {
+      if (video === this.active) this.hooks?.onUserPause();
+    } else if (video === this.active) {
+      this.hooks?.onUserPlay();
+    } else {
+      this.hooks?.onUserPause();
     }
   }
 }

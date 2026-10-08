@@ -4,8 +4,8 @@
  * its stores, IndexedDB audio player or AI features.
  *
  * - speech waits for its narration to end, or, without audio, for the same
- *   reading-time estimate the classroom uses; its text becomes the caption,
- *   which stays up until the scene changes (as the classroom's lecture line);
+ *   reading-time estimate the classroom uses; its text is the caption while
+ *   it plays;
  * - spotlight / laser fire and continue at once, so they overlap the speech
  *   that follows; any effect clears 5 s after the most recent one fired, and
  *   all effects clear when the scene changes;
@@ -44,7 +44,7 @@ const WIDGET_MESSAGE_TYPES: Record<string, string> = {
 };
 
 export interface SequencerView {
-  /** Text of the current (or most recent) speech in this scene. */
+  /** Text of the speech playing now. */
   caption: string | null;
   effects: SlideEffects;
   /** Topic of the discussion card on screen. */
@@ -141,13 +141,16 @@ export class SceneSequencer {
     switch (action.type) {
       case 'speech': {
         const text = typeof action.text === 'string' ? action.text : '';
-        this.setView({ ...this.view, caption: text.trim() ? text : this.view.caption });
+        this.setView({ ...this.view, caption: text.trim() ? text : null });
         const played = action.audioRef
           ? await this.ports.playAudio(action.audioRef, control).catch(() => false)
           : false;
         if (!played && !control.signal.aborted) {
           await pausableDelay(estimateSpeechDurationMs(text), control);
         }
+        // The line is over: its caption must not linger over what follows
+        // (a video, or a quiz the scene now holds on).
+        if (!control.signal.aborted) this.setView({ ...this.view, caption: null });
         return;
       }
       case 'spotlight':

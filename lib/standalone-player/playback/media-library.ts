@@ -3,7 +3,8 @@
  * manifest names (speech `audioRef`, video `mediaRef`) to its bytes.
  *
  * Embedded bytes are base64 data blocks, decoded into a Blob URL the first
- * time a key is played and cached for the session. Blob URLs (allowed by the
+ * time a key is resolved (a narration clip when it plays, a slide video when
+ * its slide renders) and cached for the session. Blob URLs (allowed by the
  * file's CSP as `media-src blob:`) are what both Chromium and WebKit play and
  * seek most reliably; long `data:` URIs are not. A `src` entry (an export that
  * ships its media next to the page) is used as is.
