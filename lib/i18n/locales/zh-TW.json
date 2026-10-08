@@ -80,9 +80,10 @@
     "htmlSilentDesc": "檔案更小：依閱讀時間顯示字幕，不含影片",
     "htmlLarge": "匯出的檔案大小為 {{size}} MB，開啟可能較慢。如需較小的檔案，請選擇不含旁白匯出。",
     "htmlTooLarge": "此課堂匯出後約為 {{size}} MB，即使封裝為 ZIP 也過大，無法儲存。請改用不含旁白匯出。",
-    "htmlZipFallback": "此課堂過大（約 {{size}} MB），無法儲存為單一 HTML 檔案，已改為 ZIP 匯出：包含 classroom.html 及其媒體資料夾。",
+    "htmlPageTooLarge": "即使圖片和媒體已另存為單獨檔案，此課堂的頁面仍約為 {{size}} MB，過大而無法可靠開啟。互動場景中的媒體會保留在頁面內；請改用不含旁白匯出以移除這些媒體。",
+    "htmlZipFallback": "此課堂過大（約 {{size}} MB），無法儲存為單一 HTML 檔案，已改為 ZIP 匯出：classroom.html 及其旁邊資料夾中的圖片和媒體檔案。",
     "htmlZipFallbackDesc": "請先完整解壓縮 ZIP，再開啟 classroom.html。",
-    "htmlZipReadme": "請先完整解壓縮此 ZIP 檔案，再用網頁瀏覽器開啟 classroom.html。audio 和 media 資料夾必須與 classroom.html 放在一起：頁面從中播放旁白和影片。若未解壓縮而直接在 ZIP 內開啟，頁面將找不到這些檔案，播放時沒有聲音和影片。",
+    "htmlZipReadme": "請先完整解壓縮此 ZIP 檔案，再用網頁瀏覽器開啟 classroom.html。images、audio、media 等資料夾必須與 classroom.html 放在一起：頁面從中顯示圖片並播放旁白和影片。若未解壓縮而直接在 ZIP 內開啟，頁面將找不到這些檔案。",
     "htmlPlayer": {
       "previous": "上一頁",
       "next": "下一頁",

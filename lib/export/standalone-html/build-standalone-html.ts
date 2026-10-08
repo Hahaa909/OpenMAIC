@@ -47,13 +47,15 @@ export const STANDALONE_ZIP_EXTENSION = '.zip';
 /** The page inside the ZIP variant; its media sits next to it under the payload keys. */
 export const STANDALONE_ZIP_PAGE_NAME = 'classroom.html';
 export const STANDALONE_ZIP_README_NAME = 'README.txt';
+/** Folder of the slide images and video posters the ZIP variant ships as files. */
+export const STANDALONE_ZIP_IMAGE_DIR = 'images';
 
 /**
  * English instructions shipped in every ZIP's README (after the UI locale's
  * own, when that is not English). Mirrors `export.htmlZipReadme` in en-US.
  */
 export const STANDALONE_ZIP_README_EN =
-  'Extract this whole ZIP file first, then open classroom.html in a web browser. Keep the audio and media folders next to classroom.html: the page plays its narration and video from them. Opened from inside the ZIP without extracting, the page cannot find them and plays without sound or video.';
+  'Extract this whole ZIP file first, then open classroom.html in a web browser. Keep the folders (images, audio, media) next to classroom.html: the page shows its images and plays its narration and video from them. Opened from inside the ZIP without extracting, the page cannot find them.';
 
 const IMAGE_EXTENSION_MIME: Record<string, string> = {
   avif: 'image/avif',
@@ -164,16 +166,37 @@ export interface StandaloneMediaOptions {
 }
 
 /**
- * Resolve every displayed media reference of the snapshot to a `data:` URI:
+ * The bytes of every displayed image-like reference (images, backgrounds,
+ * shape patterns, chart point images) and captured video poster, typed, and
+ * the playback media when asked for. How images reach the player is decided
+ * later: inlined as `data:` URIs ({@link encodeStandaloneImages}) or shipped
+ * as files next to the page ({@link linkStandaloneImages}).
+ */
+export interface StandaloneMediaBytes {
+  /** Image-like ref → its bytes. */
+  readonly images: ReadonlyMap<string, Blob>;
+  /** Video ref (`src` or `mediaRef`) → the poster frame captured for it. */
+  readonly videoPosters: ReadonlyMap<string, Blob>;
+  readonly playback?: StandaloneMediaResolution['playback'];
+}
+
+/** `blob`, carrying `fallbackMimeType` when it has no type of its own (no copy). */
+function typedBlob(blob: Blob, fallbackMimeType?: string): Blob {
+  if (blob.type) return blob;
+  return new Blob([blob], { type: fallbackMimeType || 'application/octet-stream' });
+}
+
+/**
+ * Collect the bytes behind every displayed media reference of the snapshot:
  * archive payloads first (matched through the media index's `sourceRef`), then
  * concrete URLs fetched now. Whatever resolves nowhere is dropped by
  * {@link prepareStandaloneManifest} and reported back.
  */
-export async function resolveStandaloneMedia(
+export async function collectStandaloneMediaBytes(
   snapshot: Pick<ClassroomExportSnapshot, 'manifest' | 'files' | 'videoPosters'>,
   deps: StandaloneMediaDeps = {},
   options: StandaloneMediaOptions = {},
-): Promise<StandaloneMediaResolution> {
+): Promise<StandaloneMediaBytes> {
   const fetchImage = deps.fetchImage ?? fetchImageBytes;
   const fetchVideo = deps.fetchVideo ?? fetchVideoBytes;
   const pathByRef = new Map<string, string>();
@@ -185,37 +208,37 @@ export async function resolveStandaloneMedia(
 
   // One resolution per ref, shared by every slot that names it, so a ref used
   // as both an image and a background is fetched once.
-  const pending = new Map<string, Promise<string | undefined>>();
-  const resolveRef = (ref: string): Promise<string | undefined> => {
+  const pending = new Map<string, Promise<Blob | undefined>>();
+  const resolveRef = (ref: string): Promise<Blob | undefined> => {
     let resolution = pending.get(ref);
     if (!resolution) {
       resolution = (async () => {
         const path = pathByRef.get(ref);
         const archived = path ? snapshot.files.get(path) : undefined;
         if (archived && archived.size > 0) {
-          return blobToDataUri(
+          return typedBlob(
             archived,
             path ? snapshot.manifest.mediaIndex[path]?.mimeType : undefined,
           );
         }
         if (!isConcreteMediaAddress(ref)) return undefined;
         const fetched = await fetchImage(ref);
-        return fetched ? blobToDataUri(fetched) : undefined;
+        return fetched ? typedBlob(fetched) : undefined;
       })();
       pending.set(ref, resolution);
     }
     return resolution;
   };
 
-  const dataUris = new Map<string, string>();
-  const videoPosters = new Map<string, string>();
+  const images = new Map<string, Blob>();
+  const videoPosters = new Map<string, Blob>();
   const videos = new Map<string, string>();
   const fetchedVideos = new Map<string, Blob>();
   const references = collectStandaloneMediaReferences(snapshot.manifest);
   await mapWithConcurrency(references, 4, async ({ ref, role }) => {
     if (role === 'video') {
       const poster = snapshot.videoPosters.get(ref);
-      if (poster) videoPosters.set(ref, await blobToDataUri(poster, 'image/jpeg'));
+      if (poster) videoPosters.set(ref, typedBlob(poster, 'image/jpeg'));
       if (!options.playbackMedia) return;
       // Generated and stored videos come with the snapshot; a direct video
       // URL no stored row backs is fetched now, like images.
@@ -233,18 +256,102 @@ export async function resolveStandaloneMedia(
       }
       return;
     }
-    const dataUri = await resolveRef(ref);
-    if (dataUri) dataUris.set(ref, dataUri);
+    const blob = await resolveRef(ref);
+    if (blob) images.set(ref, blob);
   });
 
-  if (!options.playbackMedia) return { dataUris, videoPosters };
+  if (!options.playbackMedia) return { images, videoPosters };
   const audio = new Set<string>();
   for (const [path, entry] of Object.entries(snapshot.manifest.mediaIndex)) {
     if (entry.type === 'audio' && !entry.missing && isPlayableArchivePath(snapshot, path)) {
       audio.add(path);
     }
   }
-  return { dataUris, videoPosters, playback: { audio, videos, files: fetchedVideos } };
+  return { images, videoPosters, playback: { audio, videos, files: fetchedVideos } };
+}
+
+/** Images inlined as `data:` URIs: the single file's resolution. */
+export async function encodeStandaloneImages(
+  bytes: StandaloneMediaBytes,
+): Promise<StandaloneMediaResolution> {
+  const encoded = new Map<Blob, Promise<string>>();
+  const encode = (blob: Blob) => {
+    let uri = encoded.get(blob);
+    if (!uri) {
+      uri = blobToDataUri(blob);
+      encoded.set(blob, uri);
+    }
+    return uri;
+  };
+  const toUris = async (map: ReadonlyMap<string, Blob>) =>
+    new Map(
+      await Promise.all([...map].map(async ([ref, blob]) => [ref, await encode(blob)] as const)),
+    );
+  return {
+    dataUris: await toUris(bytes.images),
+    videoPosters: await toUris(bytes.videoPosters),
+    ...(bytes.playback ? { playback: bytes.playback } : {}),
+  };
+}
+
+/** A file the ZIP variant ships next to `classroom.html`, named by its relative path. */
+export interface StandaloneLinkedFile {
+  path: string;
+  blob: Blob;
+}
+
+const IMAGE_MIME_EXTENSION: Record<string, string> = {
+  'image/avif': 'avif',
+  'image/gif': 'gif',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/svg+xml': 'svg',
+  'image/webp': 'webp',
+};
+
+/**
+ * Images shipped as files next to the page (the ZIP variant): each distinct
+ * image becomes `images/image-N.<ext>`, and the resolution names it by that
+ * relative path, which the player hands to the browser as is.
+ */
+export function linkStandaloneImages(bytes: StandaloneMediaBytes): {
+  resolution: StandaloneMediaResolution;
+  files: StandaloneLinkedFile[];
+} {
+  const files: StandaloneLinkedFile[] = [];
+  const pathOf = new Map<Blob, string>();
+  const link = (blob: Blob) => {
+    let path = pathOf.get(blob);
+    if (!path) {
+      const extension = IMAGE_MIME_EXTENSION[blob.type.split(';')[0].trim().toLowerCase()] ?? 'bin';
+      path = `${STANDALONE_ZIP_IMAGE_DIR}/image-${files.length + 1}.${extension}`;
+      pathOf.set(blob, path);
+      files.push({ path, blob });
+    }
+    return path;
+  };
+  const toPaths = (map: ReadonlyMap<string, Blob>) =>
+    new Map([...map].map(([ref, blob]) => [ref, link(blob)] as const));
+  return {
+    resolution: {
+      dataUris: toPaths(bytes.images),
+      videoPosters: toPaths(bytes.videoPosters),
+      ...(bytes.playback ? { playback: bytes.playback } : {}),
+    },
+    files,
+  };
+}
+
+/**
+ * Resolve every displayed media reference of the snapshot to a `data:` URI
+ * (see {@link collectStandaloneMediaBytes}).
+ */
+export async function resolveStandaloneMedia(
+  snapshot: Pick<ClassroomExportSnapshot, 'manifest' | 'files' | 'videoPosters'>,
+  deps: StandaloneMediaDeps = {},
+  options: StandaloneMediaOptions = {},
+): Promise<StandaloneMediaResolution> {
+  return encodeStandaloneImages(await collectStandaloneMediaBytes(snapshot, deps, options));
 }
 
 /** Whether the snapshot carries non-empty bytes at `path` (of the given MIME family). */
@@ -404,15 +511,33 @@ export interface StandaloneHtmlExport {
  * base64 grows the media by 4/3; the manifest (with the images already
  * inlined) counts as its escaped UTF-8 bytes, plus the player assets' typical
  * size. The assembled file is checked again, exactly, before it is returned.
+ *
+ * With `linkedImages`, `manifest` names those images by relative path (as the
+ * ZIP variant does): each occurrence then counts as the `data:` URI the
+ * single file would carry in its place, so the estimate needs no encoding.
  */
 export function estimateStandaloneHtmlBytes(
   manifest: ClassroomManifest,
   payloads: readonly { blob: Blob }[],
+  linkedImages: readonly StandaloneLinkedFile[] = [],
 ): number {
   const media = payloads.reduce((sum, payload) => sum + Math.ceil(payload.blob.size / 3) * 4, 0);
   // The manifest as the document will carry it: escaped for its script
   // element and encoded as UTF-8.
-  const manifestBytes = new Blob([serializeJsonForHtmlScript(manifest)]).size;
+  const serialized = serializeJsonForHtmlScript(manifest);
+  let manifestBytes = new Blob([serialized]).size;
+  if (linkedImages.length > 0) {
+    const byPath = new Map(linkedImages.map((file) => [file.path, file.blob]));
+    const pattern = new RegExp(`"(${STANDALONE_ZIP_IMAGE_DIR}/image-\\d+\\.[a-z0-9]+)"`, 'g');
+    for (const [, path] of serialized.matchAll(pattern)) {
+      const blob = byPath.get(path);
+      if (!blob) continue;
+      const dataUriBytes =
+        `data:${blob.type || 'application/octet-stream'};base64,`.length +
+        Math.ceil(blob.size / 3) * 4;
+      manifestBytes += dataUriBytes - path.length;
+    }
+  }
   return media + manifestBytes + PLAYER_ASSETS_ESTIMATE_BYTES;
 }
 
@@ -437,22 +562,30 @@ export async function buildStandaloneHtmlExport(
     audioElements: false,
     interactiveMedia: includeNarration,
   });
-  const media = await resolveStandaloneMedia(snapshot, options, {
+  const bytes = await collectStandaloneMediaBytes(snapshot, options, {
     playbackMedia: includeNarration,
   });
-  const { manifest, unresolved, playbackMedia } = prepareStandaloneManifest(
-    snapshot.manifest,
-    media,
-  );
-  const payloads = collectStandalonePlaybackPayloads(snapshot, playbackMedia, media);
+  // Prepared first with images named by path (the ZIP variant's form): the
+  // single file's size can be estimated from it without encoding anything.
+  const linked = linkStandaloneImages(bytes);
+  const linkedPrepared = prepareStandaloneManifest(snapshot.manifest, linked.resolution);
+  const payloads = collectStandalonePlaybackPayloads(snapshot, linkedPrepared.playbackMedia, bytes);
   const maxBytes = options.maxBytes ?? STANDALONE_HTML_MAX_BYTES;
   const requested = options.format ?? 'html';
-  const estimatedBytes = estimateStandaloneHtmlBytes(manifest, payloads);
+  const estimatedBytes = estimateStandaloneHtmlBytes(
+    linkedPrepared.manifest,
+    payloads,
+    linked.files,
+  );
   let singleFileBytes: number | undefined;
   if (requested !== 'zip' && estimatedBytes > maxBytes) {
     if (requested === 'html') throw new StandaloneHtmlTooLargeError(estimatedBytes);
     singleFileBytes = estimatedBytes;
   }
+  const { manifest, unresolved } =
+    requested !== 'zip' && singleFileBytes === undefined
+      ? prepareStandaloneManifest(snapshot.manifest, await encodeStandaloneImages(bytes))
+      : linkedPrepared;
 
   const [playerScript, playerStyle, mathFonts, chartsScript] = await Promise.all([
     fetchAsset(STANDALONE_PLAYER_ASSETS.script),
@@ -464,7 +597,7 @@ export async function buildStandaloneHtmlExport(
     strings: options.strings,
     ...(options.classroomUrl ? { classroomUrl: options.classroomUrl } : {}),
   };
-  const page: Omit<StandaloneHtmlInput, 'embeddedMedia' | 'linkedMedia'> = {
+  const page: StandalonePage = {
     manifest,
     config,
     playerScript,
@@ -503,7 +636,12 @@ export async function buildStandaloneHtmlExport(
     singleFileBytes = blob.size;
   }
 
-  const blob = await buildStandaloneZip(page, payloads, options);
+  const blob = await buildStandaloneZip(
+    // Images named by path, also when the single file was assembled first.
+    { ...page, manifest: linkedPrepared.manifest },
+    { payloads, files: linked.files },
+    { ...options, maxPageBytes: maxBytes },
+  );
   return {
     format: 'zip',
     blob,
@@ -529,26 +667,53 @@ export function standaloneZipReadme(localized?: string): string {
   return `\uFEFF${texts.join('\r\n\r\n')}\r\n`;
 }
 
+/** The document of an export, before its playback media is attached. */
+export type StandalonePage = Omit<
+  StandaloneHtmlInput,
+  'embeddedMedia' | 'linkedMedia' | 'linkedFiles'
+>;
+
+export interface StandaloneZipContent {
+  /** Playback media: listed in the page's media table and stored at its key. */
+  payloads: readonly StandalonePlaybackPayload[];
+  /** Other files the manifest names by relative path (slide images, posters). */
+  files?: readonly StandaloneLinkedFile[];
+}
+
 /**
- * The ZIP variant: `classroom.html` (the player and manifest, media
- * referenced by relative path), each payload at its key, and a README. The
- * media is stored as is, and the archive Blob references the payload Blobs,
- * so building it copies no media.
+ * The ZIP variant: `classroom.html` (the player and manifest; images, posters
+ * and playback media referenced by relative path), each file at its path, and
+ * a README. Files are stored as is, and the archive Blob references their
+ * Blobs, so building it copies no media.
+ *
+ * Interactive pages keep their own media inline: they run in sandboxed
+ * opaque-origin frames, which Chromium and Firefox do not let load files from
+ * disk. So the page itself can still be large; above `maxPageBytes` it is
+ * refused ({@link StandaloneHtmlTooLargeError} of kind `page`).
  */
 export async function buildStandaloneZip(
-  page: Omit<StandaloneHtmlInput, 'embeddedMedia' | 'linkedMedia'>,
-  payloads: readonly StandalonePlaybackPayload[],
-  options: Pick<StandaloneHtmlExportOptions, 'zipReadme' | 'zipDate'>,
+  page: StandalonePage,
+  content: StandaloneZipContent,
+  options: Pick<StandaloneHtmlExportOptions, 'zipReadme' | 'zipDate'> & {
+    maxPageBytes?: number;
+  } = {},
 ): Promise<Blob> {
-  const reserved = new Set([STANDALONE_ZIP_PAGE_NAME, STANDALONE_ZIP_README_NAME]);
-  for (const { key } of payloads) {
-    if (!isSafeArchivePath(key) || reserved.has(key)) {
-      throw new Error(`Standalone ZIP: unusable media path ${JSON.stringify(key)}`);
+  const { payloads, files = [] } = content;
+  const entries = [
+    ...files.map(({ path, blob }) => ({ path, blob })),
+    ...payloads.map(({ key, blob }) => ({ path: key, blob })),
+  ];
+  const taken = new Set([STANDALONE_ZIP_PAGE_NAME, STANDALONE_ZIP_README_NAME]);
+  for (const { path } of entries) {
+    if (!isSafeArchivePath(path) || taken.has(path)) {
+      throw new Error(`Standalone ZIP: unusable file path ${JSON.stringify(path)}`);
     }
+    taken.add(path);
   }
   const html = new Blob(
     assembleStandaloneHtmlParts({
       ...page,
+      linkedFiles: true,
       linkedMedia: payloads.map(({ key, mimeType }) => ({
         key,
         mimeType,
@@ -557,19 +722,24 @@ export async function buildStandaloneZip(
     }),
     { type: 'text/html;charset=utf-8' },
   );
+  if (options.maxPageBytes !== undefined && html.size > options.maxPageBytes) {
+    throw new StandaloneHtmlTooLargeError(html.size, 'page');
+  }
   const readme = standaloneZipReadme(options.zipReadme);
   // Checked before any CRC is computed. Headers add well under 1 KB per entry.
   const contentBytes =
     html.size +
     new Blob([readme]).size +
-    payloads.reduce((sum, { blob }) => sum + blob.size, 0) +
-    (payloads.length + 2) * 1024;
-  if (contentBytes > STORED_ZIP_MAX_BYTES) throw new StandaloneHtmlTooLargeError(contentBytes);
+    entries.reduce((sum, { blob }) => sum + blob.size, 0) +
+    (entries.length + 2) * 1024;
+  if (contentBytes > STORED_ZIP_MAX_BYTES) {
+    throw new StandaloneHtmlTooLargeError(contentBytes, 'archive');
+  }
   return buildStoredZip(
     [
       { path: STANDALONE_ZIP_PAGE_NAME, data: html },
       { path: STANDALONE_ZIP_README_NAME, data: readme },
-      ...payloads.map(({ key, blob }) => ({ path: key, data: blob })),
+      ...entries.map(({ path, blob }) => ({ path, data: blob })),
     ],
     { date: options.zipDate },
   );

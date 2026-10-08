@@ -80,9 +80,10 @@
     "htmlSilentDesc": "Fichier plus léger : sous-titres au rythme de lecture ; vidéos non incluses",
     "htmlLarge": "Le fichier exporté fait {{size}} Mo et peut s'ouvrir lentement. Exportez sans narration pour un fichier plus léger.",
     "htmlTooLarge": "Ce cours produirait un export de {{size}} Mo, trop volumineux pour être enregistré, même en ZIP. Exportez plutôt sans narration.",
-    "htmlZipFallback": "Ce cours est trop volumineux pour un seul fichier HTML (environ {{size}} Mo) ; il a donc été enregistré en ZIP : classroom.html et ses dossiers de médias.",
+    "htmlPageTooLarge": "Même avec ses images et médias enregistrés à part, la page de ce cours ferait environ {{size}} Mo, trop pour s'ouvrir de façon fiable. Les médias des scènes interactives restent dans la page ; exportez sans narration pour les exclure.",
+    "htmlZipFallback": "Ce cours est trop volumineux pour un seul fichier HTML (environ {{size}} Mo) ; il a donc été enregistré en ZIP : classroom.html avec ses images et médias dans des dossiers à côté.",
     "htmlZipFallbackDesc": "Extrayez tout le ZIP, puis ouvrez classroom.html.",
-    "htmlZipReadme": "Extrayez d'abord tout ce fichier ZIP, puis ouvrez classroom.html dans un navigateur web. Laissez les dossiers audio et media à côté de classroom.html : la page y lit la narration et les vidéos. Ouverte depuis le ZIP sans extraction, la page ne les trouve pas et se lit sans son ni vidéo.",
+    "htmlZipReadme": "Extrayez d'abord tout ce fichier ZIP, puis ouvrez classroom.html dans un navigateur web. Laissez les dossiers (images, audio, media) à côté de classroom.html : la page y affiche ses images et y lit la narration et les vidéos. Ouverte depuis le ZIP sans extraction, la page ne les trouve pas.",
     "htmlPlayer": {
       "previous": "Précédent",
       "next": "Suivant",

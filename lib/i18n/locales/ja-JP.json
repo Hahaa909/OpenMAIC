@@ -80,9 +80,10 @@
     "htmlSilentDesc": "ファイルが小さくなります：字幕は読み上げ時間の目安で進み、動画は含まれません",
     "htmlLarge": "エクスポートしたファイルは {{size}} MB あり、開くのに時間がかかる場合があります。小さいファイルが必要な場合はナレーションなしでエクスポートしてください。",
     "htmlTooLarge": "この授業は約 {{size}} MB になり、ZIP でも大きすぎて保存できません。ナレーションなしでエクスポートしてください。",
-    "htmlZipFallback": "この授業は単一の HTML ファイルには大きすぎる（約 {{size}} MB）ため、ZIP として保存しました：classroom.html とメディアフォルダーを含みます。",
+    "htmlPageTooLarge": "画像とメディアを別ファイルにしても、この授業のページは約 {{size}} MB になり、確実に開くには大きすぎます。インタラクティブシーン内のメディアはページ内に残ります。ナレーションなしでエクスポートすると除外されます。",
+    "htmlZipFallback": "この授業は単一の HTML ファイルには大きすぎる（約 {{size}} MB）ため、ZIP として保存しました：classroom.html と、隣のフォルダーに画像とメディアが入っています。",
     "htmlZipFallbackDesc": "ZIP をすべて展開してから classroom.html を開いてください。",
-    "htmlZipReadme": "まずこの ZIP ファイルをすべて展開し、classroom.html をウェブブラウザーで開いてください。audio フォルダーと media フォルダーは classroom.html と同じ場所に置いたままにしてください。ページはそこからナレーションと動画を再生します。展開せずに ZIP 内から開くと、これらのファイルが見つからず、音声と動画なしで再生されます。",
+    "htmlZipReadme": "まずこの ZIP ファイルをすべて展開し、classroom.html をウェブブラウザーで開いてください。フォルダー（images、audio、media）は classroom.html と同じ場所に置いたままにしてください。ページはそこから画像を表示し、ナレーションと動画を再生します。展開せずに ZIP 内から開くと、これらのファイルが見つかりません。",
     "htmlPlayer": {
       "previous": "前へ",
       "next": "次へ",

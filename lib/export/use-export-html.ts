@@ -121,11 +121,21 @@ export function useExportHtml() {
         }
       } catch (error) {
         if (error instanceof StandaloneHtmlTooLargeError) {
-          // Too large even for the ZIP (4 GiB).
-          log.warn('Standalone HTML export refused as too large:', error.estimatedBytes);
-          toast.error(t('export.htmlTooLarge', { size: formatMegabytes(error.estimatedBytes) }), {
-            id: toastId,
-          });
+          // Too large even for the ZIP: its page alone passes the ceiling
+          // (media inside interactive scenes stays in the page), or the
+          // archive passes 4 GiB.
+          log.warn(
+            'Standalone HTML export refused as too large:',
+            error.kind,
+            error.estimatedBytes,
+          );
+          const size = formatMegabytes(error.estimatedBytes);
+          toast.error(
+            error.kind === 'page'
+              ? t('export.htmlPageTooLarge', { size })
+              : t('export.htmlTooLarge', { size }),
+            { id: toastId },
+          );
           return;
         }
         log.error('Standalone HTML export failed:', error);

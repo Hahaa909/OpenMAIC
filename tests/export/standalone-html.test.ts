@@ -42,6 +42,7 @@ vi.mock('@/lib/export/classroom-zip-utils', async (importOriginal) => {
 import JSZip from 'jszip';
 import {
   buildStandaloneHtmlExport,
+  buildStandaloneZip,
   classroomUrlFor,
   estimateStandaloneHtmlBytes,
   linkedMediaSrc,
@@ -51,7 +52,7 @@ import {
 } from '@/lib/export/standalone-html/build-standalone-html';
 import {
   STANDALONE_HTML_CSP,
-  STANDALONE_HTML_LINKED_MEDIA_CSP,
+  STANDALONE_HTML_LINKED_FILES_CSP,
   assembleStandaloneHtml,
   serializeJsonForHtmlScript,
 } from '@/lib/export/standalone-html/assemble';
@@ -1393,33 +1394,45 @@ describe('assembleStandaloneHtml', () => {
     ).toThrow(/not base64/);
   });
 
-  it('references linked media by src and lets only media elements load it', () => {
+  it('references linked media by src in a document with linked files', () => {
     const html = assembleStandaloneHtml({
       ...base,
       playerScript: '',
+      linkedFiles: true,
       linkedMedia: [{ key: 'media/asset-1.mp4', mimeType: 'video/mp4', src: 'media/asset-1.mp4' }],
     });
     expect(embeddedJson<StandaloneMediaTable>(html, STANDALONE_MEDIA_TABLE_ELEMENT_ID)).toEqual({
       'media/asset-1.mp4': { mimeType: 'video/mp4', src: 'media/asset-1.mp4' },
     });
     expect(html).not.toContain('application/octet-stream');
-    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_MEDIA_CSP}"`);
+    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_FILES_CSP}"`);
     expect(html).not.toContain(`content="${STANDALONE_HTML_CSP}"`);
-    // Without linked media, the single file's policy is used.
+    // Without linked files, the single file's policy is used.
     expect(assembleStandaloneHtml({ ...base, playerScript: '' })).toContain(
       `content="${STANDALONE_HTML_CSP}"`,
     );
+    // Linked media in a document whose policy would block it is refused.
+    expect(() =>
+      assembleStandaloneHtml({
+        ...base,
+        playerScript: '',
+        linkedMedia: [{ key: 'k', mimeType: 'audio/mpeg', src: 'audio/k.mp3' }],
+      }),
+    ).toThrow(/linked files/);
   });
 
-  it('pins both policies: only media-src differs, and nothing may be fetched', () => {
+  it('pins both policies: only img-src and media-src differ, and nothing may be fetched', () => {
     expect(STANDALONE_HTML_CSP).toBe(
       "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' data: blob:; " +
         "style-src 'unsafe-inline' data:; img-src data: blob:; media-src data: blob:; " +
         'font-src data:; frame-src data: blob:; worker-src data: blob:; ' +
         "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
     );
-    expect(STANDALONE_HTML_LINKED_MEDIA_CSP).toBe(
-      STANDALONE_HTML_CSP.replace('media-src data: blob:', "media-src 'self' data: blob:"),
+    expect(STANDALONE_HTML_LINKED_FILES_CSP).toBe(
+      STANDALONE_HTML_CSP.replace('img-src data: blob:', "img-src 'self' data: blob:").replace(
+        'media-src data: blob:',
+        "media-src 'self' data: blob:",
+      ),
     );
   });
 
@@ -1473,7 +1486,13 @@ describe('standalone HTML ZIP variant', () => {
     return { zip, files, bytes, text };
   }
 
-  it('ships classroom.html, a README and each clip at its key, stored uncompressed', async () => {
+  /** Size of the ZIP's classroom.html for the narrated classroom (no ceiling). */
+  async function zipPageBytes(options: Partial<StandaloneHtmlExportOptions> = {}) {
+    const { result } = await narratedExport({ ...options, format: 'zip' });
+    return (await readZip(result.blob)).bytes('classroom.html').then((page) => page.length);
+  }
+
+  it('ships classroom.html, a README, the images and each clip as files, stored uncompressed', async () => {
     const { result, AUDIO_BYTES, LEGACY_BYTES, VIDEO_BYTES } = await narratedExport({
       format: 'zip',
       zipReadme: 'Localized readme',
@@ -1491,6 +1510,9 @@ describe('standalone HTML ZIP variant', () => {
       'audio/audio-1.mp3',
       'audio/legacy-1.mp3',
       'classroom.html',
+      'images/image-1.png',
+      'images/image-2.png',
+      'images/image-3.png',
       'media/asset-2.mp4',
     ]);
     // Stored entries, in the order a reader extracts them: the page first.
@@ -1504,6 +1526,9 @@ describe('standalone HTML ZIP variant', () => {
     expect(await bytes('audio/audio-1.mp3')).toEqual(AUDIO_BYTES);
     expect(await bytes('audio/legacy-1.mp3')).toEqual(LEGACY_BYTES);
     expect(await bytes('media/asset-2.mp4')).toEqual(VIDEO_BYTES);
+    for (const image of ['images/image-1.png', 'images/image-2.png', 'images/image-3.png']) {
+      expect(await bytes(image)).toEqual(PNG_BYTES);
+    }
 
     const readme = await text('README.txt');
     expect(readme.startsWith('﻿Localized readme\r\n\r\n')).toBe(true);
@@ -1516,19 +1541,58 @@ describe('standalone HTML ZIP variant', () => {
       'media/asset-2.mp4': { mimeType: 'video/mp4', src: 'media/asset-2.mp4' },
     });
     expect(html).not.toContain('application/octet-stream');
-    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_MEDIA_CSP}"`);
+    expect(html).not.toContain('data:image/png');
+    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_FILES_CSP}"`);
     expect(html).toContain("connect-src 'none'");
-    // The manifest is the one the single file carries.
+    // Every image slot and the poster name a shipped file by relative path.
+    const manifest = embeddedJson<ClassroomManifest>(html, STANDALONE_MANIFEST_ELEMENT_ID);
+    const sources = [...imageSources(manifest)];
+    const clip = slideOf(manifest).elements.find((e) => e.id === 'clip') as { poster?: string };
+    expect(sources.length).toBeGreaterThan(0);
+    for (const src of [...sources, clip.poster!]) expect(files).toContain(src);
+
+    // Apart from the image sources, the manifest is the one the single file carries.
     const single = await narratedExport({ format: 'html' });
     const singleHtml = await single.result.blob.text();
-    expect(withoutExportTime(html)).toContain(
-      withoutExportTime(
-        `<script type="application/json" id="${STANDALONE_MANIFEST_ELEMENT_ID}">${serializeJsonForHtmlScript(
-          embeddedJson(singleHtml, STANDALONE_MANIFEST_ELEMENT_ID),
-        )}</script>`,
+    const singleManifest = embeddedJson<ClassroomManifest>(
+      singleHtml,
+      STANDALONE_MANIFEST_ELEMENT_ID,
+    );
+    const pathToUri = new Map<string, string>();
+    imageSources(manifest).forEach((src, index) =>
+      pathToUri.set(src, imageSources(singleManifest)[index]),
+    );
+    const inlined = JSON.parse(
+      JSON.stringify(manifest).replace(/"images\/image-\d+\.png"/g, (match) =>
+        JSON.stringify(
+          pathToUri.get(JSON.parse(match)) ?? `data:image/png;base64,${FIXTURE_PNG_BASE64}`,
+        ),
       ),
     );
+    expect({ ...inlined, exportedAt: '' }).toEqual({ ...singleManifest, exportedAt: '' });
     expect(html).not.toContain('cdn.example');
+  });
+
+  it('estimates the single file from the linked manifest exactly as from the inlined one', async () => {
+    const zip = await readZip((await narratedExport({ format: 'zip' })).result.blob);
+    const linkedManifest = embeddedJson<ClassroomManifest>(
+      await zip.text('classroom.html'),
+      STANDALONE_MANIFEST_ELEMENT_ID,
+    );
+    const single = await (await narratedExport({ format: 'html' })).result.blob.text();
+    const inlinedManifest = embeddedJson<ClassroomManifest>(single, STANDALONE_MANIFEST_ELEMENT_ID);
+    const files = await Promise.all(
+      zip.files
+        .filter((path) => path.startsWith('images/'))
+        .map(async (path) => ({
+          path,
+          blob: new Blob([await zip.bytes(path)], { type: 'image/png' }),
+        })),
+    );
+    const payloads = [{ blob: new Blob([new Uint8Array(10)]) }];
+    expect(estimateStandaloneHtmlBytes(linkedManifest, payloads, files)).toBe(
+      estimateStandaloneHtmlBytes(inlinedManifest, payloads),
+    );
   });
 
   it('auto keeps the single file, byte for byte, while it fits the ceiling', async () => {
@@ -1543,23 +1607,28 @@ describe('standalone HTML ZIP variant', () => {
   });
 
   it('auto builds the ZIP, without encoding any media, when the estimate passes the ceiling', async () => {
+    // The estimate allows 1 MB for the player assets (here a few bytes), so a
+    // ceiling just above the page puts the estimate over it.
+    const maxBytes = (await zipPageBytes()) + 1000;
     const read = vi.spyOn(Blob.prototype, 'arrayBuffer');
-    // Media payloads are typed; the CRC pass reads untyped slices of them.
-    const payloadReads = () =>
-      read.mock.contexts.filter((blob) => /^(audio|video)\//.test((blob as Blob).type)).length;
+    // Media payloads and images are typed; the CRC pass reads untyped slices.
+    const typedReads = () =>
+      read.mock.contexts.filter((blob) => /^(audio|video|image)\//.test((blob as Blob).type))
+        .length;
     try {
       await narratedExport({ format: 'html' });
-      expect(payloadReads()).toBe(3); // base64-encoded for the single file
+      expect(typedReads()).toBe(6); // 3 clips and 3 images base64-encoded for the single file
       read.mockClear();
 
-      await expect(narratedExport({ format: 'html', maxBytes: 64 })).rejects.toBeInstanceOf(
-        StandaloneHtmlTooLargeError,
-      );
+      await expect(narratedExport({ format: 'html', maxBytes })).rejects.toMatchObject({
+        name: 'StandaloneHtmlTooLargeError',
+        kind: 'single-file',
+      });
       read.mockClear();
-      const { result } = await narratedExport({ format: 'auto', maxBytes: 64 });
+      const { result } = await narratedExport({ format: 'auto', maxBytes });
       expect(result.format).toBe('zip');
-      expect(result.singleFileBytes).toBeGreaterThan(64);
-      expect(payloadReads()).toBe(0);
+      expect(result.singleFileBytes).toBeGreaterThan(maxBytes);
+      expect(typedReads()).toBe(0);
       const { files } = await readZip(result.blob);
       expect(files).toContain('classroom.html');
     } finally {
@@ -1568,36 +1637,111 @@ describe('standalone HTML ZIP variant', () => {
   });
 
   it('auto builds the ZIP when only the assembled document passes the ceiling', async () => {
-    const oversizedPlayer = 'x'.repeat(2 * 1024 * 1024);
-    const { result } = await narratedExport({
-      format: 'auto',
-      maxBytes: 1.5 * 1024 * 1024,
+    // A player larger than the estimate allows for: the estimate passes, the
+    // assembled single file does not, and the ZIP's page (no inlined media) fits.
+    const oversizedPlayer = 'x'.repeat(1.5 * 1024 * 1024);
+    const withPlayer: Partial<StandaloneHtmlExportOptions> = {
       fetchAsset: async (assetPath: string) =>
         assetPath === STANDALONE_PLAYER_ASSETS.script ? oversizedPlayer : fetchAsset(assetPath),
-    });
+    };
+    const page = await zipPageBytes(withPlayer);
+    const single = (await narratedExport({ ...withPlayer, format: 'html' })).result.byteSize;
+    expect(single).toBeGreaterThan(page);
+    const maxBytes = Math.floor((page + single) / 2);
+    const { result } = await narratedExport({ ...withPlayer, format: 'auto', maxBytes });
     expect(result.format).toBe('zip');
-    expect(result.singleFileBytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(result.singleFileBytes).toBe(single);
   });
 
-  it('builds a ZIP with no media table for a classroom without playback media', async () => {
-    const { result } = await (async () => {
-      const scenes = standaloneFixtureScenes(STAGE_ID);
-      const stage = setupSnapshot(scenes);
-      return {
-        result: await buildStandaloneHtmlExport(stage, scenes, {
-          strings,
-          lang: 'en-US',
-          fetchAsset,
-          fetchImage,
-          format: 'zip',
-        }),
-      };
-    })();
+  it('refuses, as a page too large, a ZIP whose classroom.html alone passes the ceiling', async () => {
+    const page = await zipPageBytes();
+    const attempt = narratedExport({ format: 'auto', maxBytes: page - 1 });
+    await expect(attempt).rejects.toBeInstanceOf(StandaloneHtmlTooLargeError);
+    await expect(attempt).rejects.toMatchObject({ kind: 'page', estimatedBytes: page });
+    await expect(narratedExport({ format: 'auto', maxBytes: page })).resolves.toMatchObject({
+      result: { format: 'zip' },
+    });
+  });
+
+  it('ships the images of a classroom without playback media, with no media table', async () => {
+    const scenes = standaloneFixtureScenes(STAGE_ID);
+    const stage = setupSnapshot(scenes);
+    const result = await buildStandaloneHtmlExport(stage, scenes, {
+      strings,
+      lang: 'en-US',
+      fetchAsset,
+      fetchImage,
+      format: 'zip',
+    });
     const { files, text } = await readZip(result.blob);
-    expect(files).toEqual(['README.txt', 'classroom.html']);
+    expect(files).toEqual([
+      'README.txt',
+      'classroom.html',
+      'images/image-1.png',
+      'images/image-2.png',
+    ]);
     const html = await text('classroom.html');
     expect(html).not.toContain(STANDALONE_MEDIA_TABLE_ELEMENT_ID);
-    expect(html).toContain(`content="${STANDALONE_HTML_CSP}"`);
+    expect(html).toContain(`content="${STANDALONE_HTML_LINKED_FILES_CSP}"`);
+  });
+
+  it('never lets a file overwrite classroom.html or README.txt, or leave the folder', async () => {
+    const page = {
+      manifest: {
+        formatVersion: 1,
+        exportedAt: '',
+        appVersion: '',
+        stage: { name: 'x', createdAt: 0, updatedAt: 0 },
+        agents: [],
+        scenes: [],
+        mediaIndex: {},
+      } as ClassroomManifest,
+      config: { strings },
+      playerScript: '',
+      playerStyle: '',
+      lang: 'en-US',
+    };
+    const blob = new Blob(['x'], { type: 'audio/mpeg' });
+    for (const key of ['classroom.html', 'README.txt', '../evil.mp3', '/abs.mp3']) {
+      await expect(
+        buildStandaloneZip(page, { payloads: [{ key, mimeType: 'audio/mpeg', blob }] }),
+      ).rejects.toThrow(/unusable file path/);
+    }
+    await expect(
+      buildStandaloneZip(page, {
+        payloads: [{ key: 'images/a.png', mimeType: 'image/png', blob }],
+        files: [{ path: 'images/a.png', blob }],
+      }),
+    ).rejects.toThrow(/unusable file path/);
+  });
+
+  it('refuses, before computing any CRC, an archive above 4 GiB', async () => {
+    const huge = new Blob(['x'], { type: 'video/mp4' });
+    Object.defineProperty(huge, 'size', { value: 0xffffffff });
+    const slice = vi.spyOn(huge, 'slice');
+    const attempt = buildStandaloneZip(
+      {
+        manifest: {
+          formatVersion: 1,
+          exportedAt: '',
+          appVersion: '',
+          stage: { name: 'x', createdAt: 0, updatedAt: 0 },
+          agents: [],
+          scenes: [],
+          mediaIndex: {},
+        } as ClassroomManifest,
+        config: { strings },
+        playerScript: '',
+        playerStyle: '',
+        lang: 'en-US',
+      },
+      { payloads: [{ key: 'media/huge.mp4', mimeType: 'video/mp4', blob: huge }] },
+    );
+    await expect(attempt).rejects.toMatchObject({
+      name: 'StandaloneHtmlTooLargeError',
+      kind: 'archive',
+    });
+    expect(slice).not.toHaveBeenCalled();
   });
 
   it('encodes each path segment of a linked source', () => {

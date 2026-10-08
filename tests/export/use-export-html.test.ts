@@ -199,6 +199,20 @@ describe('useExportHtml', () => {
     expect(latest!.exporting).toBe(false);
   });
 
+  it('explains a ZIP whose page alone would be too large', async () => {
+    mocks.buildStandaloneHtmlExport.mockRejectedValueOnce(
+      new StandaloneHtmlTooLargeError(420 * 1024 * 1024, 'page'),
+    );
+    await act(async () => {
+      await latest!.exportStandaloneHtml({ includeNarration: true });
+    });
+    expect(mocks.saveAs).not.toHaveBeenCalled();
+    expect(mocks.toast.error).toHaveBeenCalledWith(
+      'export.htmlPageTooLarge {"size":"420"}',
+      expect.objectContaining({ id: 'toast' }),
+    );
+  });
+
   it('counts narration that could not be embedded as a partial export', async () => {
     mocks.buildStandaloneHtmlExport.mockResolvedValueOnce({
       format: 'html',

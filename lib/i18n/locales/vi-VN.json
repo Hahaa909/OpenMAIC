@@ -80,9 +80,10 @@
     "htmlSilentDesc": "Tệp nhỏ hơn: phụ đề theo tốc độ đọc; không kèm video",
     "htmlLarge": "Tệp đã xuất có dung lượng {{size}} MB và có thể mở chậm. Hãy xuất không có lời dẫn để có tệp nhỏ hơn.",
     "htmlTooLarge": "Lớp học này sẽ tạo bản xuất khoảng {{size}} MB, quá lớn để lưu ngay cả dưới dạng ZIP. Hãy xuất không có lời dẫn.",
-    "htmlZipFallback": "Lớp học này quá lớn cho một tệp HTML (khoảng {{size}} MB) nên đã được lưu dưới dạng ZIP: classroom.html cùng các thư mục phương tiện.",
+    "htmlPageTooLarge": "Ngay cả khi hình ảnh và phương tiện được lưu thành tệp riêng, trang của lớp học này vẫn khoảng {{size}} MB, quá lớn để mở ổn định. Phương tiện trong các cảnh tương tác vẫn nằm trong trang; hãy xuất không có lời dẫn để loại bỏ chúng.",
+    "htmlZipFallback": "Lớp học này quá lớn cho một tệp HTML (khoảng {{size}} MB) nên đã được lưu dưới dạng ZIP: classroom.html cùng hình ảnh và phương tiện trong các thư mục bên cạnh.",
     "htmlZipFallbackDesc": "Hãy giải nén toàn bộ tệp ZIP rồi mở classroom.html.",
-    "htmlZipReadme": "Trước tiên hãy giải nén toàn bộ tệp ZIP này, sau đó mở classroom.html trong trình duyệt web. Giữ các thư mục audio và media cạnh classroom.html: trang phát lời dẫn và video từ các thư mục đó. Nếu mở trực tiếp trong ZIP mà không giải nén, trang sẽ không tìm thấy chúng và phát không có âm thanh hay video.",
+    "htmlZipReadme": "Trước tiên hãy giải nén toàn bộ tệp ZIP này, sau đó mở classroom.html trong trình duyệt web. Giữ các thư mục (images, audio, media) cạnh classroom.html: trang hiển thị hình ảnh và phát lời dẫn, video từ các thư mục đó. Nếu mở trực tiếp trong ZIP mà không giải nén, trang sẽ không tìm thấy chúng.",
     "htmlPlayer": {
       "previous": "Trước",
       "next": "Tiếp",

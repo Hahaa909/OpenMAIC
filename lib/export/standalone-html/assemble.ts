@@ -32,24 +32,31 @@ import {
 export const STANDALONE_HTML_CSP = standaloneHtmlCsp('data: blob:');
 
 /**
- * Content Security Policy of a page that plays media shipped next to it (the
- * ZIP variant: `classroom.html` plus `media/` and `audio/` folders). Only
- * `media-src` differs: `'self'` lets `<audio>`/`<video>` elements load the
- * sibling files by relative path. Opened from disk, Chromium and WebKit match
- * `'self'` against `file:` URLs (without it they block the files); served
- * over HTTP, it is the page's own origin. Nothing else may load from the
- * folder: `connect-src 'none'` still blocks fetch/XHR, so the player never
- * reads media bytes itself, it only hands element sources to the browser.
+ * Content Security Policy of a page that ships its files next to it (the ZIP
+ * variant: `classroom.html` plus `images/`, `audio/` and `media/` folders).
+ * Only `img-src` and `media-src` differ from the single file's: `'self'` lets
+ * `<img>` (and CSS/SVG images, video posters) and `<audio>`/`<video>` load
+ * the sibling files by relative path. Opened from disk, Chromium and WebKit
+ * match `'self'` against `file:` URLs (without it they block the files);
+ * served over HTTP, it is the page's own origin.
+ *
+ * What `'self'` opens up: served over HTTP, an image or media element (also
+ * one in an interactive scene's frame, which inherits this policy) may make
+ * a GET, with cookies, to any path on the page's own host. That is the reach
+ * of a same-host link and reads nothing back: `connect-src 'none'` still
+ * blocks fetch/XHR/WebSocket, so neither the player nor authored content can
+ * read a response's bytes, and no request leaves the host. The player itself
+ * never reads media bytes: it only hands relative paths to the browser.
  */
-export const STANDALONE_HTML_LINKED_MEDIA_CSP = standaloneHtmlCsp("'self' data: blob:");
+export const STANDALONE_HTML_LINKED_FILES_CSP = standaloneHtmlCsp("'self' data: blob:");
 
-function standaloneHtmlCsp(mediaSources: string): string {
+function standaloneHtmlCsp(linkedSources: string): string {
   return [
     "default-src 'none'",
     "script-src 'unsafe-inline' 'unsafe-eval' data: blob:",
     "style-src 'unsafe-inline' data:",
-    'img-src data: blob:',
-    `media-src ${mediaSources}`,
+    `img-src ${linkedSources}`,
+    `media-src ${linkedSources}`,
     'font-src data:',
     'frame-src data: blob:',
     'worker-src data: blob:',
@@ -124,10 +131,15 @@ export interface StandaloneHtmlInput {
   embeddedMedia?: readonly StandaloneEmbeddedMedia[];
   /**
    * Playback media shipped next to the document and referenced by relative
-   * path. When present, the document's CSP lets media elements load them
-   * (see {@link STANDALONE_HTML_LINKED_MEDIA_CSP}).
+   * path (requires `linkedFiles`).
    */
   linkedMedia?: readonly StandaloneLinkedMedia[];
+  /**
+   * The document ships files next to it (images, media) that the manifest
+   * names by relative path; its CSP then lets image and media elements load
+   * them (see {@link STANDALONE_HTML_LINKED_FILES_CSP}).
+   */
+  linkedFiles?: boolean;
   /** BCP 47 language tag of the player UI. */
   lang: string;
 }
@@ -196,7 +208,10 @@ export function assembleStandaloneHtmlParts(input: StandaloneHtmlInput): string[
     .join('\n');
   const line = (text: string) => `${text}\n`;
   const linkedMedia = input.linkedMedia ?? [];
-  const csp = linkedMedia.length > 0 ? STANDALONE_HTML_LINKED_MEDIA_CSP : STANDALONE_HTML_CSP;
+  if (linkedMedia.length > 0 && !input.linkedFiles) {
+    throw new Error('Standalone HTML: linked media needs a document with linked files');
+  }
+  const csp = input.linkedFiles ? STANDALONE_HTML_LINKED_FILES_CSP : STANDALONE_HTML_CSP;
   return [
     '<!doctype html>',
     `<html lang="${escapeHtmlText(input.lang)}">`,

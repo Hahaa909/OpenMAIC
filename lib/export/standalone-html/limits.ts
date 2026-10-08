@@ -33,15 +33,25 @@ export const STANDALONE_HTML_SIZE_WARNING_BYTES = 100 * 1024 * 1024;
  */
 export const STANDALONE_HTML_MAX_BYTES = 400 * 1024 * 1024;
 
+/** Which limit an export would pass (see {@link StandaloneHtmlTooLargeError}). */
+export type StandaloneTooLargeKind = 'single-file' | 'page' | 'archive';
+
 /**
- * The export would exceed what its format can hold: the single file above
- * {@link STANDALONE_HTML_MAX_BYTES} (thrown before any media is encoded, so a
- * caller can build the ZIP variant instead), or the ZIP above 4 GiB.
+ * The export would exceed what its format can hold:
+ * - `single-file`: the single file above {@link STANDALONE_HTML_MAX_BYTES}
+ *   (thrown before any media is encoded, so a caller can build the ZIP
+ *   variant instead);
+ * - `page`: the ZIP variant's `classroom.html` alone above that ceiling
+ *   (interactive scenes keep their media inline, see `buildStandaloneZip`);
+ * - `archive`: the ZIP above 4 GiB.
  */
 export class StandaloneHtmlTooLargeError extends Error {
   readonly name = 'StandaloneHtmlTooLargeError';
 
-  constructor(readonly estimatedBytes: number) {
-    super(`Standalone export would be about ${Math.round(estimatedBytes / 1048576)} MB`);
+  constructor(
+    readonly estimatedBytes: number,
+    readonly kind: StandaloneTooLargeKind = 'single-file',
+  ) {
+    super(`Standalone export (${kind}) would be about ${Math.round(estimatedBytes / 1048576)} MB`);
   }
 }
