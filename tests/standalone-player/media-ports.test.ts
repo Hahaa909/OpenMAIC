@@ -275,6 +275,29 @@ describe('VideoRegistry', () => {
     expect(hooks.onUserPause).toHaveBeenCalledTimes(2);
   });
 
+  it('resuming the awaited video by its controls pauses a video started by hand', async () => {
+    const registry = new VideoRegistry();
+    const hooks = { onUserPause: vi.fn(), onUserPlay: vi.fn() };
+    registry.setUserHooks(hooks);
+    const awaited = mountedVideo(registry, 'a');
+    const manual = mountedVideo(registry, 'b');
+    const ctl = control();
+    void registry.play('a', ctl);
+    awaited.scripted.started();
+    await flush();
+    // B started by hand: playback (and A) pause.
+    manual.scripted.userPlay();
+    expect(hooks.onUserPause).toHaveBeenCalledTimes(1);
+    ctl.gate.set(true);
+    expect(awaited.video.paused).toBe(true);
+    // A resumed through its own controls: B must stop, playback resumes.
+    awaited.scripted.userPlay();
+    expect(manual.video.paused).toBe(true);
+    expect(hooks.onUserPlay).toHaveBeenCalledTimes(1);
+    // The registry's pause of B is not reported as the learner's.
+    expect(hooks.onUserPause).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores the pause of a video whose slide unmounted', async () => {
     const registry = new VideoRegistry();
     const hooks = { onUserPause: vi.fn(), onUserPlay: vi.fn() };

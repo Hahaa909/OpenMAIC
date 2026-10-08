@@ -50,6 +50,7 @@ import { patchHtmlForIframe } from '@/lib/utils/iframe';
 import {
   analyzeHtmlAssetInventory,
   applySourcePatches,
+  replaceAttributePatch,
   type SourcePatch,
 } from '../html-asset-inventory';
 import { sanitizeSlideRichText } from './rich-text';
@@ -368,23 +369,44 @@ export function prepareStandaloneActions(
   return prepared as unknown as ManifestAction[];
 }
 
-const MEDIA_PAYLOAD_URL = /^\s*(?:https?:|blob:|data:(?:audio|video)\/)/i;
+/** A media source that carries or fetches bytes: any `data:` URI, a web or blob URL. */
+const MEDIA_PAYLOAD_URL = /^\s*(?:https?:|blob:|data:)/i;
+
+/** How deep nested `srcdoc` documents are searched for media. */
+const MAX_SRCDOC_DEPTH = 4;
 
 /**
- * Remove the audio and video sources of an interactive page (`<video src>`,
- * `<audio src>` and their `<source src>` children) that carry or fetch media
- * bytes. The elements stay, so the page still lays out.
+ * Remove the audio and video sources of an interactive page that carry or
+ * fetch media bytes: the `src` of `<video>`, `<audio>` and the `<source>`
+ * elements inside them, whatever MIME type a `data:` URI declares, also in
+ * documents nested through `<iframe srcdoc>` (to a bounded depth). The
+ * elements stay, so the page still lays out.
  */
-export function stripMediaPayloads(html: string): string {
+export function stripMediaPayloads(html: string, depth = 0): string {
   const patches: SourcePatch[] = [];
   for (const asset of analyzeHtmlAssetInventory(html).attributeAssets) {
-    const isMedia =
+    if (!asset.attributeRange) continue;
+    if (asset.kind === 'iframe-srcdoc') {
+      if (depth >= MAX_SRCDOC_DEPTH) {
+        // Too deep to inspect: drop the nested document rather than ship it unchecked.
+        patches.push({ range: asset.attributeRange, replacement: '' });
+        continue;
+      }
+      const nested = stripMediaPayloads(asset.url, depth + 1);
+      if (nested !== asset.url) {
+        const patch = replaceAttributePatch(asset, nested);
+        if (patch) patches.push(patch);
+      }
+      continue;
+    }
+    const isMediaSource =
       asset.kind === 'video' ||
       asset.kind === 'audio' ||
       (asset.kind === 'source' &&
         (asset.parentTagName === 'video' || asset.parentTagName === 'audio'));
-    if (!isMedia || !asset.attributeRange || !MEDIA_PAYLOAD_URL.test(asset.url)) continue;
-    patches.push({ range: asset.attributeRange, replacement: '' });
+    if (isMediaSource && MEDIA_PAYLOAD_URL.test(asset.url)) {
+      patches.push({ range: asset.attributeRange, replacement: '' });
+    }
   }
   return patches.length > 0 ? applySourcePatches(html, patches) : html;
 }

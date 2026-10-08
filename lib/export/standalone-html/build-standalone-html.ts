@@ -20,7 +20,11 @@ import {
 } from '../use-export-classroom';
 import type { InlineReport } from '../inline-assets';
 import type { ClassroomManifest } from '../classroom-zip-types';
-import { assembleStandaloneHtmlParts, type StandaloneEmbeddedMedia } from './assemble';
+import {
+  assembleStandaloneHtmlParts,
+  serializeJsonForHtmlScript,
+  type StandaloneEmbeddedMedia,
+} from './assemble';
 import { STANDALONE_HTML_MAX_BYTES, StandaloneHtmlTooLargeError } from './limits';
 import {
   STANDALONE_PLAYER_ASSETS,
@@ -339,6 +343,8 @@ export interface StandaloneHtmlExportOptions extends StandaloneMediaDeps {
   documentDeps?: DocumentMigrationDeps;
   /** Loads a precompiled player asset by its public path. */
   fetchAsset?: (path: string) => Promise<string>;
+  /** Size ceiling of the file; defaults to {@link STANDALONE_HTML_MAX_BYTES}. */
+  maxBytes?: number;
 }
 
 export interface StandaloneHtmlExport {
@@ -356,15 +362,19 @@ export interface StandaloneHtmlExport {
 
 /**
  * Size the single file will have, estimated before any media is encoded:
- * base64 grows the media by 4/3; the rest (manifest, images already inlined,
- * player) is counted by its JSON length plus the player assets' typical size.
+ * base64 grows the media by 4/3; the manifest (with the images already
+ * inlined) counts as its escaped UTF-8 bytes, plus the player assets' typical
+ * size. The assembled file is checked again, exactly, before it is returned.
  */
 export function estimateStandaloneHtmlBytes(
   manifest: ClassroomManifest,
   payloads: readonly { blob: Blob }[],
 ): number {
   const media = payloads.reduce((sum, payload) => sum + Math.ceil(payload.blob.size / 3) * 4, 0);
-  return media + JSON.stringify(manifest).length + PLAYER_ASSETS_ESTIMATE_BYTES;
+  // The manifest as the document will carry it: escaped for its script
+  // element and encoded as UTF-8.
+  const manifestBytes = new Blob([serializeJsonForHtmlScript(manifest)]).size;
+  return media + manifestBytes + PLAYER_ASSETS_ESTIMATE_BYTES;
 }
 
 /** Rough size of the inlined player script and styles. */
@@ -397,7 +407,8 @@ export async function buildStandaloneHtmlExport(
   );
   const payloads = collectStandalonePlaybackPayloads(snapshot, playbackMedia, media);
   const estimatedBytes = estimateStandaloneHtmlBytes(manifest, payloads);
-  if (estimatedBytes > STANDALONE_HTML_MAX_BYTES) {
+  const maxBytes = options.maxBytes ?? STANDALONE_HTML_MAX_BYTES;
+  if (estimatedBytes > maxBytes) {
     throw new StandaloneHtmlTooLargeError(estimatedBytes);
   }
   // One clip at a time, so only one clip's base64 is being produced at once.
@@ -430,6 +441,9 @@ export async function buildStandaloneHtmlExport(
     }),
     { type: 'text/html;charset=utf-8' },
   );
+
+  // The estimate is a guard, not a measurement: the ceiling holds exactly.
+  if (blob.size > maxBytes) throw new StandaloneHtmlTooLargeError(blob.size);
 
   return {
     blob,

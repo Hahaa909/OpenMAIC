@@ -42,6 +42,7 @@ vi.mock('@/lib/export/classroom-zip-utils', async (importOriginal) => {
 import {
   buildStandaloneHtmlExport,
   classroomUrlFor,
+  estimateStandaloneHtmlBytes,
   type StandaloneHtmlExportOptions,
 } from '@/lib/export/standalone-html/build-standalone-html';
 import {
@@ -913,6 +914,39 @@ describe('standalone HTML export media policy', () => {
     );
   });
 
+  it('stripMediaPayloads strips data: sources whatever MIME they declare', () => {
+    const html =
+      '<audio src="data:application/octet-stream;base64,SUQzBAAA"></audio>' +
+      '<video><source src="data:;base64,AAAA"></video><img src="data:image/png;base64,iVBO">';
+    const stripped = stripMediaPayloads(html);
+    expect(stripped).not.toContain('SUQzBAAA');
+    expect(stripped).not.toContain('AAAA');
+    expect(stripped).toContain('<img src="data:image/png;base64,iVBO">');
+  });
+
+  it('stripMediaPayloads recurses into nested srcdoc documents', () => {
+    const inner = '<p>Inner &amp; more</p><video src="data:video/mp4;base64,AAAAGGZ0"></video>';
+    const innermost = '<audio src="https://media.example/a.mp3"></audio>';
+    const middle = `<iframe srcdoc="${innermost.replace(/"/g, '&quot;')}"></iframe>${inner}`;
+    const html = `<iframe srcdoc="${middle.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></iframe>`;
+    const stripped = stripMediaPayloads(html);
+    expect(stripped).not.toContain('AAAAGGZ0');
+    expect(stripped).not.toContain('media.example');
+    // The nested documents survive (re-escaped) apart from their media.
+    const outer = new DOMParser().parseFromString(stripped, 'text/html');
+    const middleDoc = outer.querySelector('iframe')!.getAttribute('srcdoc')!;
+    expect(middleDoc).toContain('<p>Inner &amp; more</p>');
+    expect(middleDoc).toContain('<video');
+  });
+
+  it('stripMediaPayloads drops srcdoc documents nested too deep to inspect', () => {
+    let html = '<video src="data:video/mp4;base64,DEEP"></video>';
+    for (let level = 0; level < 6; level++) {
+      html = `<iframe srcdoc="${html.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></iframe>`;
+    }
+    expect(stripMediaPayloads(html)).not.toContain('DEEP');
+  });
+
   function withDirectVideo(src: string): Scene[] {
     return standaloneFixtureScenes(STAGE_ID).map((scene) =>
       withSlideElements(
@@ -1022,6 +1056,41 @@ describe('standalone HTML export media policy', () => {
     ]);
     // Only the narration is missing (the mock collects nothing).
     expect(result.missingAudioCount).toBe(1);
+  });
+
+  it('estimates the manifest as the escaped UTF-8 bytes the document carries', () => {
+    const manifest = {
+      formatVersion: 1,
+      exportedAt: '',
+      appVersion: '',
+      stage: { name: '<中文>', createdAt: 0, updatedAt: 0 },
+      agents: [],
+      scenes: [],
+      mediaIndex: {},
+    } as ClassroomManifest;
+    const escapedBytes = Buffer.byteLength(serializeJsonForHtmlScript(manifest), 'utf8');
+    expect(escapedBytes).toBeGreaterThan(JSON.stringify(manifest).length);
+    const payload = { blob: new Blob([new Uint8Array(3000)]) };
+    expect(estimateStandaloneHtmlBytes(manifest, [payload])).toBe(
+      4000 + escapedBytes + 1024 * 1024,
+    );
+  });
+
+  it('refuses a file whose assembled size passes the ceiling though the estimate did not', async () => {
+    // A player asset far larger than the estimate allows for: only the exact
+    // check after assembly can catch it.
+    const oversizedPlayer = 'x'.repeat(2 * 1024 * 1024);
+    const attempt = exportFixture({
+      maxBytes: 1.5 * 1024 * 1024,
+      fetchAsset: async (assetPath: string) =>
+        assetPath === STANDALONE_PLAYER_ASSETS.script ? oversizedPlayer : fetchAsset(assetPath),
+    });
+    await expect(attempt).rejects.toBeInstanceOf(StandaloneHtmlTooLargeError);
+    await expect(attempt).rejects.toMatchObject({
+      estimatedBytes: expect.any(Number),
+    });
+    // The same export within the ceiling succeeds.
+    await expect(exportFixture({ maxBytes: 3 * 1024 * 1024 })).resolves.toBeTruthy();
   });
 
   it('refuses, before encoding any media, a file above the size ceiling', async () => {

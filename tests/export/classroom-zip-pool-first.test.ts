@@ -106,6 +106,22 @@ describe('classroom ZIP media collection', () => {
     expect(collected[0]?.record.format).toBe('wav');
   });
 
+  it('labels AAC ADTS behind an ID3 tag as aac, not mp3', async () => {
+    const ref = 'ast_tagged_aac';
+    const tag = [0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 20];
+    const bytes = Uint8Array.from([...tag, ...new Array(20).fill(0), 0xff, 0xf1, 0x50, 0x80, 0, 0]);
+    mocks.audioRows.set(ref, {
+      id: ref,
+      stageId: 'stage-1',
+      blob: new Blob([bytes], { type: 'audio/mpeg' }),
+      format: 'mp3',
+      createdAt: 0,
+    });
+    mocks.poolResolve.mockResolvedValue(null);
+    const collected = await collectAudioFiles([{ ref, kind: 'audio' }]);
+    expect(collected[0]).toMatchObject({ zipPath: 'audio/audio-1.aac', mimeType: 'audio/aac' });
+  });
+
   it('keeps the stored format for bytes it does not recognize', async () => {
     const ref = 'ast_opaque_audio';
     mocks.audioRows.set(ref, {

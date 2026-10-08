@@ -276,6 +276,8 @@ export class VideoRegistry {
     if (type === 'pause') {
       if (video === this.active) this.hooks?.onUserPause();
     } else if (video === this.active) {
+      // Resuming playback by any path pauses the videos started by hand.
+      this.pauseManual();
       this.hooks?.onUserPlay();
     } else {
       this.hooks?.onUserPause();
