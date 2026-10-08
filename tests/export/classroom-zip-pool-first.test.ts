@@ -46,6 +46,8 @@ import {
   mediaPosterArchivePath,
 } from '@/lib/export/classroom-zip-utils';
 
+import { streamingWavBytes } from '../fixtures/streaming-wav';
+
 const entry = (ref: string): AssetManifestEntry => ({ ref, kind: 'image' });
 
 function seedRow(ref: string, blob: Blob, stageId = 'stage-1') {
@@ -83,6 +85,39 @@ describe('classroom ZIP media collection', () => {
     expect(collected).toHaveLength(1);
     expect(collected[0]?.zipPath).toBe('audio/audio-1.mp3');
     expect(await collected[0]?.record.blob.text()).toBe('remote-audio');
+  });
+
+  it('labels narration by the container its bytes are, not the stored format', async () => {
+    const ref = 'ast_wav_labelled_mp3';
+    // A provider answered WAV (with a streaming placeholder length) without a
+    // usable Content-Type, so the row was recorded as mp3.
+    mocks.audioRows.set(ref, {
+      id: ref,
+      stageId: 'stage-1',
+      blob: new Blob([streamingWavBytes()], { type: 'audio/mpeg' }),
+      format: 'mp3',
+      createdAt: 0,
+    });
+    mocks.poolResolve.mockResolvedValue(null);
+
+    const collected = await collectAudioFiles([{ ref, kind: 'audio' }]);
+
+    expect(collected[0]).toMatchObject({ zipPath: 'audio/audio-1.wav', mimeType: 'audio/wav' });
+    expect(collected[0]?.record.format).toBe('wav');
+  });
+
+  it('keeps the stored format for bytes it does not recognize', async () => {
+    const ref = 'ast_opaque_audio';
+    mocks.audioRows.set(ref, {
+      id: ref,
+      stageId: 'stage-1',
+      blob: new Blob(['opaque'], { type: 'audio/ogg' }),
+      format: 'ogg',
+      createdAt: 0,
+    });
+    mocks.poolResolve.mockResolvedValue(null);
+    const collected = await collectAudioFiles([{ ref, kind: 'audio' }]);
+    expect(collected[0]).toMatchObject({ zipPath: 'audio/audio-1.ogg', mimeType: 'audio/ogg' });
   });
 
   /**
