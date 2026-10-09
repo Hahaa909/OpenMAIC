@@ -1498,6 +1498,92 @@ describe('public extraction failure explanations', () => {
 });
 
 describe('R6 manual parsing', () => {
+  it.each([
+    { initial: 'idle', fails: 'listing', recovered: 'done', terminal: 'done' },
+    { initial: 'failed', fails: 'folders', recovered: 'pending', terminal: 'failed' },
+  ])(
+    'recovers after Parse succeeds but the first $fails refresh fails ($initial)',
+    async ({ initial, fails, recovered, terminal }) => {
+      let state = initial;
+      let failRead = false;
+      library = () =>
+        failRead && fails === 'listing'
+          ? json({}, 503)
+          : json({
+              materials: [source('recover', { extraction: { status: state } })],
+              limits: LIMITS,
+            });
+      folders = () => (failRead && fails === 'folders' ? json({}, 503) : json({ folders: [] }));
+      writeMaterial = () => {
+        state = 'pending';
+        failRead = true;
+        return json({ status: 'pending', queued: true });
+      };
+      const page = await openPage();
+      await openMenu('kb-material-menu-recover');
+      await choose('kb-material-menu-recover-parse');
+      await settle();
+      expect(page.query('kb-status-recover')!.dataset.status).toBe(initial);
+      expect(page.query('kb-stale')).not.toBeNull();
+      const failedReads = libraryCalls.length;
+      // A second failed read must not consume the need to observe the accepted write.
+      await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+      expect(libraryCalls.length).toBeGreaterThan(failedReads);
+      failRead = false;
+      state = recovered;
+      await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+      expect(page.query('kb-status-recover')!.dataset.status).toBe(recovered);
+      expect(page.query('kb-stale')).toBeNull();
+      if (recovered === 'pending') {
+        state = terminal;
+        await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+        expect(page.query('kb-status-recover')!.dataset.status).toBe(terminal);
+      }
+      const settledReads = libraryCalls.length;
+      await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+      expect(libraryCalls.length).toBe(settledReads);
+      expect(writeCalls).toHaveLength(1); // Retrying the read must never enqueue again.
+      await page.dispose();
+    },
+    20000,
+  );
+
+  it('pauses post-Parse recovery while hidden and cancels it on unmount', async () => {
+    let failRead = false;
+    library = () =>
+      failRead
+        ? json({}, 503)
+        : json({
+            materials: [source('pause', { extraction: { status: 'idle' } })],
+            limits: LIMITS,
+          });
+    writeMaterial = () => {
+      failRead = true;
+      return json({ status: 'pending', queued: true });
+    };
+    const page = await openPage();
+    await openMenu('kb-material-menu-pause');
+    await choose('kb-material-menu-pause-parse');
+    await settle();
+    const reads = libraryCalls.length;
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+      expect(libraryCalls.length).toBe(reads);
+      visibility.mockReturnValue('visible');
+      await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+      await settle();
+      expect(libraryCalls.length).toBeGreaterThan(reads);
+      await page.dispose();
+      const unmountedReads = libraryCalls.length;
+      await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+      expect(libraryCalls.length).toBe(unmountedReads);
+    } finally {
+      visibility.mockRestore();
+    }
+  }, 12000);
+
   it('offers parse/reparse only for idle/failed and rereads after a successful click', async () => {
     let state = 'idle';
     library = () =>
@@ -1548,6 +1634,10 @@ describe('R6 manual parsing', () => {
     await choose('kb-material-menu-bad-parse');
     await settle();
     expect(parseToast.error).toHaveBeenCalledWith('workspace.knowledgeBase.error.busy');
+    const refusedReads = libraryCalls.length;
+    await settle(MATERIAL_LIBRARY_TREE_POLL_MS + 100);
+    expect(libraryCalls.length).toBe(refusedReads);
+    expect(writeCalls).toHaveLength(1);
     expect(page.query('kb-status-bad')!.dataset.status).toBe('failed');
     expect(document.activeElement).toBe(page.query('kb-material-menu-bad'));
     await page.dispose();

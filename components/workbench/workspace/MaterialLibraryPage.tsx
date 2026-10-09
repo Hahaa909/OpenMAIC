@@ -66,6 +66,7 @@ import {
   useMaterialLibraryTree,
   type LibraryNodeKey,
   type LibraryNodeView,
+  type MaterialLibraryTree,
 } from '@/lib/workbench/use-material-library-tree';
 import { validateFolderName } from '@/lib/utils/folder-name-validation';
 import {
@@ -398,7 +399,7 @@ export function MaterialLibraryPage({
   // The page's own changes read the list again (§7) -- but only while the
   // page is still there: an upload or a write can answer after the teacher
   // left, and then there is nothing to refresh.
-  const reloadIfMounted = useRef<() => void>(() => {});
+  const reloadIfMounted = useRef<MaterialLibraryTree['reload']>(() => {});
   const uploads = useLibraryUploads(() => reloadIfMounted.current());
   const tree = useMaterialLibraryTree({ query, uploading: uploads.pending });
   useEffect(() => {
@@ -630,14 +631,19 @@ export function MaterialLibraryPage({
   const [deleting, setDeleting] = useState<DeleteRequest | null>(null);
 
   /** One write; the list is read again whatever it answered (§7). */
-  const write = async (action: () => Promise<void>): Promise<string | null> => {
+  const write = async (
+    action: () => Promise<void>,
+    options?: { readonly retryRefreshOnSuccess?: boolean },
+  ): Promise<string | null> => {
+    let succeeded = false;
     try {
       await action();
+      succeeded = true;
       return null;
     } catch (error) {
       return materialLibraryWriteErrorKey(error);
     } finally {
-      reloadIfMounted.current();
+      reloadIfMounted.current({ retryOnError: succeeded && options?.retryRefreshOnSuccess });
     }
   };
   const checkMaterialName = (name: string) => {
@@ -670,7 +676,9 @@ export function MaterialLibraryPage({
                 // The menu itself restores its trigger; keep the existing refresh fallback.
                 returnedTo.current = opener.current;
                 opener.current = null;
-                void write(() => parseLibraryMaterial(material.materialId)).then((error) => {
+                void write(() => parseLibraryMaterial(material.materialId), {
+                  retryRefreshOnSuccess: true,
+                }).then((error) => {
                   if (error) toast.error(t(error));
                 });
               }),
@@ -870,7 +878,7 @@ export function MaterialLibraryPage({
             ) : node.status === 'error' ? (
               <li className="flex items-center gap-2 py-2 pl-11 text-[12px]" role="alert">
                 <span>{t(materialLibraryErrorKey(node.error))}</span>
-                <button type="button" onClick={tree.reload} className="ws-quiet underline">
+                <button type="button" onClick={() => tree.reload()} className="ws-quiet underline">
                   {t('workspace.knowledgeBase.retry')}
                 </button>
               </li>
@@ -1018,7 +1026,7 @@ export function MaterialLibraryPage({
         <button
           type="button"
           data-testid="kb-retry"
-          onClick={tree.reload}
+          onClick={() => tree.reload()}
           className="ws-quiet text-[13px] underline"
         >
           {t('workspace.knowledgeBase.retry')}
@@ -1201,7 +1209,7 @@ export function MaterialLibraryPage({
                 {' · '}
                 {t('workspace.knowledgeBase.error.stale')}
               </span>
-              <button type="button" onClick={tree.reload} className="ws-quiet underline">
+              <button type="button" onClick={() => tree.reload()} className="ws-quiet underline">
                 {t('workspace.knowledgeBase.retry')}
               </button>
             </div>

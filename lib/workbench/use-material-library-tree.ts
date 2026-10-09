@@ -84,8 +84,8 @@ export interface MaterialLibraryTree {
   readonly expand: (folderId: string) => void;
   readonly collapse: (folderId: string) => void;
   readonly loadMore: (node: LibraryNodeKey) => void;
-  /** Read what is shown again (after the page's own writes). */
-  readonly reload: () => void;
+  /** Read what is shown again; retryOnError keeps an accepted write awaiting a successful read. */
+  readonly reload: (options?: { readonly retryOnError?: boolean }) => void;
 }
 
 interface Node {
@@ -209,6 +209,9 @@ export function useMaterialLibraryTree(input: {
     readonly awayAtStart: number;
   } | null>(null);
   const roundSeq = useRef(0);
+  // An accepted parse may still look idle/failed until its first refresh succeeds.
+  // Keep that invalidation through read failures; do not invent a parsing status.
+  const refreshRequired = useRef(false);
 
   const refresh = useCallback(
     (cause: 'wake' | 'other') => {
@@ -296,6 +299,7 @@ export function useMaterialLibraryTree(input: {
         .then(([folders, ...reads]) => {
           if (round.current?.id !== id) return;
           round.current = null;
+          refreshRequired.current = false;
           const live = new Set(folders.map((folder) => folder.id));
           const read = new Map(reads.map((entry) => [entry.target.key, entry]));
           const fresh = (key: string, node: Node): Node => {
@@ -498,7 +502,13 @@ export function useMaterialLibraryTree(input: {
     [commit, readNodePage],
   );
 
-  const reload = useCallback(() => refresh('other'), [refresh]);
+  const reload = useCallback(
+    (options?: { readonly retryOnError?: boolean }) => {
+      if (options?.retryOnError) refreshRequired.current = true;
+      refresh('other');
+    },
+    [refresh],
+  );
 
   // Mounted: reads may commit. Leaving cancels what can be cancelled and
   // ignores the rest.
@@ -508,6 +518,7 @@ export function useMaterialLibraryTree(input: {
     const held = tickets.current;
     return () => {
       alive.current = false;
+      refreshRequired.current = false;
       round.current?.abort.abort();
       round.current = null;
       for (const abort of reads.values()) abort.abort();
@@ -598,7 +609,13 @@ export function useMaterialLibraryTree(input: {
   // polls never overlap. A failed refresh schedules the next one too: a
   // failure does not mean the parsing finished.
   useEffect(() => {
-    if (!shownPending || !visible || state.refreshing || shownLoadingMore) return;
+    if (
+      (!shownPending && !refreshRequired.current) ||
+      !visible ||
+      state.refreshing ||
+      shownLoadingMore
+    )
+      return;
     const timer = setTimeout(() => refresh('other'), MATERIAL_LIBRARY_TREE_POLL_MS);
     return () => clearTimeout(timer);
   }, [shownPending, visible, state, shownLoadingMore, refresh]);
