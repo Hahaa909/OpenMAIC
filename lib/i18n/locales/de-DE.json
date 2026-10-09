@@ -125,7 +125,7 @@
       "discussionContinueOnline": "Im Online-Klassenzimmer diskutieren",
       "discussionDismiss": "Schließen",
       "linkedFilesUnavailable": "Einige Bilder, Sprecherton- oder Videodateien konnten nicht geladen werden. Wenn Sie classroom.html direkt aus dem ZIP geöffnet haben, entpacken Sie zuerst das gesamte ZIP.",
-      "scriptRequired": "Dieser Kurs benötigt JavaScript. Öffne ihn in einem Webbrowser mit aktiviertem JavaScript, z. B. Safari oder Chrome. Auf iPhone oder iPad kannst du ihn über die Teilen-Taste in einer Browser-App öffnen.",
+      "scriptRequired": "Dieser Kurs benötigt JavaScript. Öffne diese Datei in einem Webbrowser mit aktiviertem JavaScript, z. B. Safari oder Chrome.",
       "startFailed": "Dieser Kurs konnte nicht gestartet werden. Versuche, die Datei in einem anderen Webbrowser wie Safari oder Chrome zu öffnen."
     },
     "scriptMd": "Skript herunterladen (.md)",

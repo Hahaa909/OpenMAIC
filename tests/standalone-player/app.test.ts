@@ -175,12 +175,12 @@ describe('standalone player linked media', () => {
 });
 
 describe('standalone player static fallback', () => {
-  const fallbackHost = (withData: boolean) => {
+  const fallbackHost = (withData: boolean, manifest: unknown = data.manifest) => {
     host = document.createElement('div');
     host.innerHTML =
       '<div id="openmaic-player"></div>' +
       (withData
-        ? `<script type="application/json" id="openmaic-classroom">${JSON.stringify(data.manifest)}</script><script type="application/json" id="openmaic-player-config">${JSON.stringify(data.config)}</script>`
+        ? `<script type="application/json" id="openmaic-classroom">${JSON.stringify(manifest)}</script><script type="application/json" id="openmaic-player-config">${JSON.stringify(data.config)}</script>`
         : '') +
       '<p class="openmaic-fallback" data-failed-text="could not start">needs JavaScript</p>';
     document.body.append(host);
@@ -192,6 +192,24 @@ describe('standalone player static fallback', () => {
     act(() => mountPlayer(document));
     expect(host.querySelector('.openmaic-fallback')).toBeNull();
     expect(host.querySelector('[data-testid=scene]')).not.toBeNull();
+    root = createRoot(document.createElement('div'));
+  });
+
+  it('keeps the message, switched to "could not start", when the first render fails', async () => {
+    const env = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    // Outside act(), as in a browser: the render happens after mountPlayer returns.
+    env.IS_REACT_ACT_ENVIRONMENT = false;
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A stage name that is not text makes the first render throw (after render() returned).
+    fallbackHost(true, { ...data.manifest, stage: { name: { not: 'text' } } });
+    mountPlayer(document);
+    expect(host.querySelector('.openmaic-fallback')?.textContent).toBe('needs JavaScript');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    env.IS_REACT_ACT_ENVIRONMENT = true;
+    const el = host.querySelector('.openmaic-fallback');
+    expect(el).not.toBeNull();
+    expect(el!.textContent).toBe('could not start');
+    spy.mockRestore();
     root = createRoot(document.createElement('div'));
   });
 

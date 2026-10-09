@@ -125,7 +125,7 @@
       "discussionContinueOnline": "En discuter dans la classe en ligne",
       "discussionDismiss": "Fermer",
       "linkedFilesUnavailable": "Certaines images, narrations ou vidéos n'ont pas pu être chargées. Si vous avez ouvert classroom.html depuis le ZIP, extrayez d'abord tout le ZIP.",
-      "scriptRequired": "Cette classe nécessite JavaScript. Ouvrez-la dans un navigateur web avec JavaScript activé, comme Safari ou Chrome. Sur iPhone ou iPad, utilisez le bouton Partager pour l'ouvrir dans une application de navigation.",
+      "scriptRequired": "Cette classe nécessite JavaScript. Ouvrez ce fichier dans un navigateur web avec JavaScript activé, comme Safari ou Chrome.",
       "startFailed": "Cette classe n'a pas pu démarrer. Essayez d'ouvrir ce fichier dans un autre navigateur web, comme Safari ou Chrome."
     },
     "scriptMd": "Télécharger le script (.md)",

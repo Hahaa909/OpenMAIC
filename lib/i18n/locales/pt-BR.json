@@ -125,7 +125,7 @@
       "discussionContinueOnline": "Discutir na sala de aula online",
       "discussionDismiss": "Fechar",
       "linkedFilesUnavailable": "Não foi possível carregar algumas imagens, narrações ou vídeos. Se você abriu classroom.html de dentro do ZIP, extraia o ZIP inteiro primeiro.",
-      "scriptRequired": "Esta aula precisa de JavaScript. Abra-a em um navegador da web com JavaScript ativado, como Safari ou Chrome. No iPhone ou iPad, use o botão Compartilhar para abri-la em um app de navegador.",
+      "scriptRequired": "Esta aula precisa de JavaScript. Abra este arquivo em um navegador da web com JavaScript ativado, como Safari ou Chrome.",
       "startFailed": "Não foi possível iniciar esta aula. Tente abrir este arquivo em outro navegador da web, como Safari ou Chrome."
     },
     "scriptMd": "Baixar roteiro (.md)",

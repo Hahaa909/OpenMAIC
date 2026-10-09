@@ -122,7 +122,7 @@
       "discussionContinueOnline": "ناقش ذلك في الفصل عبر الإنترنت",
       "discussionDismiss": "إغلاق",
       "linkedFilesUnavailable": "تعذّر تحميل بعض الصور أو التعليق الصوتي أو الفيديو. إذا فتحت classroom.html من داخل ملف ZIP، ففك ضغط ملف ZIP بالكامل أولًا.",
-      "scriptRequired": "يحتاج هذا الفصل إلى JavaScript. افتحه في متصفح ويب مفعّل فيه JavaScript، مثل Safari أو Chrome. على iPhone أو iPad، استخدم زر المشاركة لفتحه في تطبيق متصفح.",
+      "scriptRequired": "يحتاج هذا الفصل إلى JavaScript. افتح هذا الملف في متصفح ويب مفعّل فيه JavaScript، مثل Safari أو Chrome.",
       "startFailed": "تعذّر بدء هذا الفصل. جرّب فتح هذا الملف في متصفح ويب آخر مثل Safari أو Chrome."
     },
     "scriptMd": "تنزيل النص (.md)",

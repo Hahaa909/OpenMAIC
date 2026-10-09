@@ -125,7 +125,7 @@
       "discussionContinueOnline": "在在线课堂中参与讨论",
       "discussionDismiss": "关闭",
       "linkedFilesUnavailable": "部分图片、旁白或视频无法加载。如果你是在 ZIP 内直接打开 classroom.html 的，请先完整解压 ZIP。",
-      "scriptRequired": "此课堂需要 JavaScript。请在已启用 JavaScript 的网页浏览器（如 Safari 或 Chrome）中打开。在 iPhone 或 iPad 上，可使用“分享”按钮在浏览器 App 中打开。",
+      "scriptRequired": "此课堂需要 JavaScript。请在已启用 JavaScript 的网页浏览器（如 Safari 或 Chrome）中打开此文件。",
       "startFailed": "此课堂无法启动。请尝试用其他网页浏览器（如 Safari 或 Chrome）打开此文件。"
     },
     "scriptMd": "下载演讲稿 (.md)",

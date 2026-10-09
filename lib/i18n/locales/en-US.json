@@ -125,7 +125,7 @@
       "discussionContinueOnline": "Discuss this in the online classroom",
       "discussionDismiss": "Close",
       "linkedFilesUnavailable": "Some images, narration or video couldn't be loaded. If you opened classroom.html from inside the ZIP, extract the whole ZIP first.",
-      "scriptRequired": "This classroom needs JavaScript. Open it in a web browser with JavaScript enabled, such as Safari or Chrome. On iPhone or iPad, use the Share button to open it in a browser app.",
+      "scriptRequired": "This classroom needs JavaScript. Open this file in a web browser with JavaScript enabled, such as Safari or Chrome.",
       "startFailed": "This classroom couldn't start. Try opening this file in another web browser, such as Safari or Chrome."
     },
     "scriptMd": "Download Script (.md)",

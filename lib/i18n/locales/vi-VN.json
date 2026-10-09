@@ -125,7 +125,7 @@
       "discussionContinueOnline": "Thảo luận trong lớp học trực tuyến",
       "discussionDismiss": "Đóng",
       "linkedFilesUnavailable": "Không thể tải một số hình ảnh, lời dẫn hoặc video. Nếu bạn mở classroom.html ngay trong tệp ZIP, hãy giải nén toàn bộ ZIP trước.",
-      "scriptRequired": "Lớp học này cần JavaScript. Hãy mở bằng trình duyệt web đã bật JavaScript, như Safari hoặc Chrome. Trên iPhone hoặc iPad, dùng nút Chia sẻ để mở trong ứng dụng trình duyệt.",
+      "scriptRequired": "Lớp học này cần JavaScript. Hãy mở tệp này bằng trình duyệt web đã bật JavaScript, như Safari hoặc Chrome.",
       "startFailed": "Không thể khởi động lớp học này. Hãy thử mở tệp bằng một trình duyệt web khác, như Safari hoặc Chrome."
     },
     "scriptMd": "Tải kịch bản (.md)",

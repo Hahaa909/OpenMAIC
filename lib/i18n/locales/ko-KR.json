@@ -125,7 +125,7 @@
       "discussionContinueOnline": "온라인 강의실에서 토론하기",
       "discussionDismiss": "닫기",
       "linkedFilesUnavailable": "일부 이미지, 내레이션 또는 동영상을 불러올 수 없습니다. ZIP 안에서 classroom.html을 열었다면 먼저 ZIP 전체를 압축 해제하세요.",
-      "scriptRequired": "이 수업에는 JavaScript가 필요합니다. JavaScript를 켠 Safari나 Chrome 같은 웹 브라우저에서 여세요. iPhone이나 iPad에서는 공유 버튼으로 브라우저 앱에서 열 수 있습니다.",
+      "scriptRequired": "이 수업에는 JavaScript가 필요합니다. JavaScript를 켠 Safari나 Chrome 같은 웹 브라우저에서 이 파일을 여세요.",
       "startFailed": "이 수업을 시작할 수 없습니다. Safari나 Chrome 같은 다른 웹 브라우저에서 이 파일을 열어 보세요."
     },
     "scriptMd": "대본 다운로드 (.md)",

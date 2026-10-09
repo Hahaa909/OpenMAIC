@@ -114,6 +114,9 @@ function assertRawText(payload: string, element: 'script' | 'style', label: stri
 }
 
 const FALLBACK_STYLE = [
+  // The root keeps the viewport's height (player CSS) even while empty; hide
+  // it until the player mounts so the fallback message is on the first screen.
+  `#${STANDALONE_ROOT_ELEMENT_ID}:empty{display:none}`,
   '.openmaic-message{box-sizing:border-box;max-width:32rem;margin:2rem auto;padding:1rem 1.25rem;',
   'font:16px/1.5 system-ui,-apple-system,sans-serif;color:#334155;text-align:center}',
   // Backstop for a slow parse: even when the message is reached before the

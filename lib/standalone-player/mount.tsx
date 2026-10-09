@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   STANDALONE_FALLBACK_CLASS,
@@ -9,7 +10,8 @@ import { readPlayerData } from './read-data';
 /**
  * The static message the file ships for viewers that do not run scripts. It
  * sits just before the player script, so it is only ever seen when the player
- * did not start; once it does, the message is removed. If the player fails
+ * did not start; it is removed after the player's first commit (rendering is
+ * asynchronous, so a render error must still find it). If the player fails
  * to start, the message switches to a generic "couldn't start" wording (JavaScript
  * is evidently running).
  */
@@ -25,6 +27,12 @@ function showStartFailure(doc: Document): void {
   });
 }
 
+/** Removes the fallback once the player has rendered (committed) for the first time. */
+function Mounted({ doc, children }: { doc: Document; children: React.ReactNode }) {
+  useEffect(() => removeFallback(doc), [doc]);
+  return children;
+}
+
 /** Mount the player into the document's root element, if present. */
 export function mountPlayer(doc: Document): void {
   const root = doc.getElementById(STANDALONE_ROOT_ELEMENT_ID);
@@ -36,8 +44,11 @@ export function mountPlayer(doc: Document): void {
         console.error(error);
         showStartFailure(doc);
       },
-    }).render(<App data={data} />);
-    removeFallback(doc);
+    }).render(
+      <Mounted doc={doc}>
+        <App data={data} />
+      </Mounted>,
+    );
   } catch (error) {
     console.error(error);
     showStartFailure(doc);

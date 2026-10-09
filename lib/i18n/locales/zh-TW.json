@@ -125,7 +125,7 @@
       "discussionContinueOnline": "在線上課堂中參與討論",
       "discussionDismiss": "關閉",
       "linkedFilesUnavailable": "部分圖片、旁白或影片無法載入。如果你是在 ZIP 內直接開啟 classroom.html，請先完整解壓縮 ZIP。",
-      "scriptRequired": "此課堂需要 JavaScript。請在已啟用 JavaScript 的網頁瀏覽器（如 Safari 或 Chrome）中開啟。在 iPhone 或 iPad 上，可使用「分享」按鈕在瀏覽器 App 中開啟。",
+      "scriptRequired": "此課堂需要 JavaScript。請在已啟用 JavaScript 的網頁瀏覽器（如 Safari 或 Chrome）中開啟此檔案。",
       "startFailed": "此課堂無法啟動。請嘗試用其他網頁瀏覽器（如 Safari 或 Chrome）開啟此檔案。"
     },
     "scriptMd": "下載演講稿 (.md)",

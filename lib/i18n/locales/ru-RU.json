@@ -125,7 +125,7 @@
       "discussionContinueOnline": "Обсудить в онлайн-классе",
       "discussionDismiss": "Закрыть",
       "linkedFilesUnavailable": "Не удалось загрузить некоторые изображения, озвучку или видео. Если вы открыли classroom.html прямо из ZIP, сначала распакуйте весь ZIP.",
-      "scriptRequired": "Для этого занятия нужен JavaScript. Откройте файл в веб-браузере с включённым JavaScript, например в Safari или Chrome. На iPhone и iPad используйте кнопку «Поделиться», чтобы открыть его в приложении-браузере.",
+      "scriptRequired": "Для этого занятия нужен JavaScript. Откройте этот файл в веб-браузере с включённым JavaScript, например в Safari или Chrome.",
       "startFailed": "Не удалось запустить занятие. Попробуйте открыть файл в другом веб-браузере, например в Safari или Chrome."
     },
     "scriptMd": "Скачать сценарий (.md)",
