@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { MaterialExtractionReasonCode } from '@/lib/types/material-extraction-failure';
+import { toast } from 'sonner';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils/cn';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -52,6 +53,7 @@ import {
   materialLibraryErrorKey,
   materialLibraryWriteErrorKey,
   moveLibraryMaterials,
+  parseLibraryMaterial,
   renameLibraryFolder,
   renameLibraryMaterial,
   stagedMaterialOfView,
@@ -654,6 +656,27 @@ export function MaterialLibraryPage({
 
   const materialMenu = (material: LibraryMaterial) => {
     const items: LibraryMenuItem[] = [
+      ...(material.extraction.status === 'idle' || material.extraction.status === 'failed'
+        ? [
+            {
+              id: 'parse',
+              label: t(
+                material.extraction.status === 'failed'
+                  ? 'workspace.knowledgeBase.actions.reparse'
+                  : 'workspace.knowledgeBase.actions.parse',
+              ),
+              icon: menuIcons.parse,
+              onSelect: openFrom(() => {
+                // The menu itself restores its trigger; keep the existing refresh fallback.
+                returnedTo.current = opener.current;
+                opener.current = null;
+                void write(() => parseLibraryMaterial(material.materialId)).then((error) => {
+                  if (error) toast.error(t(error));
+                });
+              }),
+            },
+          ]
+        : []),
       {
         // Inline types open in the tab; everything else downloads (the
         // route's headers decide, RFC #1716: "opens in a new tab or downloads").

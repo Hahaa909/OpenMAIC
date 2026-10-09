@@ -292,3 +292,15 @@ it('defines all six knowledge-base failure explanations in all twelve locale fil
     }
   }
 });
+
+it('R6 defines parse and parse-again actions explicitly in all twelve locales', () => {
+  for (const { code } of supportedLocales) {
+    const resource = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), 'lib/i18n/locales', `${code}.json`), 'utf8'),
+    );
+    for (const action of ['parse', 'reparse']) {
+      expect(resource.workspace.knowledgeBase.actions[action]).toBeTypeOf('string');
+      expect(resource.workspace.knowledgeBase.actions[action].trim()).not.toBe('');
+    }
+  }
+});

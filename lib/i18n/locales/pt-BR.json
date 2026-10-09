@@ -2078,6 +2078,8 @@
         "notEmpty": "Esta pasta ainda tem materiais. Mova-os primeiro"
       },
       "actions": {
+        "parse": "Analisar",
+        "reparse": "Analisar novamente",
         "more": "Mais ações para {{name}}",
         "rename": "Renomear",
         "move": "Mover para…",

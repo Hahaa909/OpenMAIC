@@ -321,6 +321,11 @@ async function libraryWrite(url: string, method: string, body: unknown): Promise
   return response.json().catch(() => ({}));
 }
 
+/** Queue a source idempotently; the page re-reads the authoritative state. */
+export async function parseLibraryMaterial(materialId: string): Promise<void> {
+  await libraryWrite(`/api/materials/${encodeURIComponent(materialId)}/extraction`, 'POST', {});
+}
+
 /** Rename a source's display name; its uploaded file name stays. */
 export async function renameLibraryMaterial(materialId: string, name: string): Promise<void> {
   await libraryWrite(`/api/materials/${encodeURIComponent(materialId)}`, 'PATCH', { name });

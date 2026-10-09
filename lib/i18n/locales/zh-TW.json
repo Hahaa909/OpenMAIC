@@ -2063,6 +2063,8 @@
         "notEmpty": "資料夾裡還有資料，請先移走"
       },
       "actions": {
+        "parse": "解析",
+        "reparse": "重新解析",
         "more": "{{name}} 的更多操作",
         "rename": "重新命名",
         "move": "移動到…",

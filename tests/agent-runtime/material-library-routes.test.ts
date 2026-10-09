@@ -13,21 +13,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   runtimeConfigured: true,
   ownerId: 'user:alice',
+  invalidCredential: false,
 }));
 
 vi.mock('@/lib/config/feature-flags', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/config/feature-flags')>()),
   isAgentRuntimeConfigured: () => mocks.runtimeConfigured,
 }));
-vi.mock('@/lib/server/identity/resolve', async () =>
-  (await import('../helpers/owner-resolution-mock')).ownerResolveModule(() => mocks.ownerId),
-);
+vi.mock('@/lib/server/identity/resolve', async () => {
+  const actual = (await import('../helpers/owner-resolution-mock')).ownerResolveModule(
+    () => mocks.ownerId,
+  );
+  return {
+    resolveRequestOwner: (req: NextRequest) =>
+      mocks.invalidCredential ? Promise.resolve({ ok: false }) : actual.resolveRequestOwner(req),
+  };
+});
 
 import {
   DELETE as deleteMaterialRoute,
   GET as sessionMaterialRoute,
   PATCH as renameMaterialRoute,
 } from '@/app/api/materials/[id]/route';
+import { POST as extractionRoute } from '@/app/api/materials/[id]/extraction/route';
 import { GET as originalRoute } from '@/app/api/materials/[id]/original/route';
 import { GET as sessionMaterialsRoute } from '@/app/api/materials/route';
 import {
@@ -114,6 +122,7 @@ describe('material library routes and tools (PGlite)', () => {
     vi.unstubAllEnvs();
     mocks.runtimeConfigured = true;
     mocks.ownerId = ACCOUNT;
+    mocks.invalidCredential = false;
     await db?.close();
     db = undefined;
   });
@@ -1038,6 +1047,165 @@ describe('material library routes and tools (PGlite)', () => {
       warn.mockRestore();
     }
   });
+
+  it('R6 queues idle/failed sources and leaves pending/running/done rows byte-for-byte unchanged', async () => {
+    const h = await boot();
+    for (const status of ['idle', 'failed', 'pending', 'running', 'done']) {
+      await seedSource(h, `r6-${status}`);
+      await h.pool.query(
+        `UPDATE owner_material SET extraction = $2::jsonb, extraction_error = 'private', extraction_claims = 2 WHERE id = $1`,
+        [`r6-${status}`, JSON.stringify({ status, reasonCode: 'storage_full' })],
+      );
+      const before = (
+        await h.pool.query('SELECT * FROM owner_material WHERE id = $1', [`r6-${status}`])
+      ).rows[0];
+      const result = await extractionRoute(
+        request('POST', `/api/materials/r6-${status}/extraction`),
+        params(`r6-${status}`),
+      );
+      expect(result.status).toBe(200);
+      const queued = status === 'idle' || status === 'failed';
+      expect(await result.json()).toEqual({ status: queued ? 'pending' : status, queued });
+      const after = (
+        await h.pool.query('SELECT * FROM owner_material WHERE id = $1', [`r6-${status}`])
+      ).rows[0];
+      if (queued) {
+        expect(after).toMatchObject({
+          extraction: { status: 'pending' },
+          extraction_error: null,
+          extraction_claims: 0,
+        });
+        expect((after as { extraction: unknown }).extraction).toEqual({ status: 'pending' });
+      } else expect(after).toEqual(before);
+      const again = await extractionRoute(
+        request('POST', `/api/materials/r6-${status}/extraction`),
+        params(`r6-${status}`),
+      );
+      expect(await again.json()).toEqual({ status: queued ? 'pending' : status, queued: false });
+    }
+  });
+
+  it('R6 isolates owners and refuses absent, derivative, uploading and deleted sources uniformly', async () => {
+    const h = await boot();
+    await seedSource(h, 'r6-owned');
+    await seedSource(h, 'r6-foreign', { owner: OTHER });
+    await seedSource(h, 'r6-deleted');
+    await h.pool.query("UPDATE owner_material SET deleted_at = 1 WHERE id = 'r6-deleted'");
+    await seedDerivative(h, 'r6-image', 'r6-owned');
+    await registerOwnerMaterial(
+      h.pool as never,
+      { id: 'r6-uploading', ownerId: ACCOUNT, kind: 'source', bytes: 1, ossKey: 'pending' },
+      { maxCount: 100, maxTotalBytes: 1000000 },
+    );
+    for (const id of ['missing', 'r6-foreign', 'r6-deleted', 'r6-image', 'r6-uploading']) {
+      const response = await extractionRoute(
+        request('POST', `/api/materials/${id}/extraction`),
+        params(id),
+      );
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe('Not found');
+    }
+    mocks.ownerId = OTHER;
+    expect(
+      (
+        await extractionRoute(
+          request('POST', '/api/materials/r6-owned/extraction'),
+          params('r6-owned'),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await extractionRoute(
+          request('POST', '/api/materials/r6-foreign/extraction'),
+          params('r6-foreign'),
+        )
+      ).status,
+    ).toBe(200);
+  });
+
+  it('R6 gates extraction like adjacent routes and fences retired request owners', async () => {
+    const h = await boot();
+    await seedSource(h, 'r6-gated');
+    mocks.invalidCredential = true;
+    expect(
+      (
+        await extractionRoute(
+          request('POST', '/api/materials/r6-gated/extraction'),
+          params('r6-gated'),
+        )
+      ).status,
+    ).toBe(401);
+    mocks.invalidCredential = false;
+    mocks.runtimeConfigured = false;
+    const response = await extractionRoute(
+      request('POST', '/api/materials/r6-gated/extraction'),
+      params('r6-gated'),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe('Not found');
+    mocks.runtimeConfigured = true;
+    expect(
+      (
+        await extractionRoute(
+          request('POST', '/api/materials/r6-gated/extraction'),
+          params('r6-gated'),
+        )
+      ).status,
+    ).toBe(200);
+    await seedSource(h, 'r6-anon', { owner: ANON });
+    await claimOwner(ANON, ACCOUNT, { provider: h.provider });
+    mocks.ownerId = ANON;
+    expect(
+      (
+        await extractionRoute(
+          request('POST', '/api/materials/r6-anon/extraction'),
+          params('r6-anon'),
+        )
+      ).status,
+    ).toBe(403);
+  });
+
+  it.each([
+    ['upload.txt', 'Renamed.txt', 'Renamed.txt'],
+    ['upload.txt', 'Renamed', 'Renamed.txt'],
+    ['upload.PDF', 'Renamed.pdf', 'Renamed.pdf'],
+    ['upload.txt', '中文 讲义', '中文 讲义.txt'],
+    ['upload.txt', 'Lesson notes.txt', 'Lesson notes.txt'],
+    ['README', 'Updated notes', 'Updated notes'],
+  ])(
+    'R6 serves renamed original %s as %s, preserving its extension',
+    async (original, display, expected) => {
+      const h = await boot();
+      const bytes = Buffer.from('source contents');
+      await seedPoolSource(h, 'r6-file', bytes, 'text/plain');
+      await h.pool.query('UPDATE owner_material SET original_name = $1 WHERE id = $2', [
+        original,
+        'r6-file',
+      ]);
+      const renamed = await renameMaterialRoute(
+        request('PATCH', '/api/materials/r6-file', { name: display }),
+        params('r6-file'),
+      );
+      expect(renamed.status).toBe(200);
+      const response = await originalRoute(
+        request('GET', '/api/materials/r6-file/original'),
+        params('r6-file'),
+      );
+      expect(response.headers.get('content-disposition')).toBe(
+        contentDisposition('attachment', expected, 'r6-file'),
+      );
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+      expect(
+        (
+          await h.pool.query<{ original_name: string }>(
+            'SELECT original_name FROM owner_material WHERE id = $1',
+            ['r6-file'],
+          )
+        ).rows[0].original_name,
+      ).toBe(original);
+    },
+  );
 
   it('serves a source’s original to its owner, inline only for media the pool serves inline', async () => {
     const h = await boot();

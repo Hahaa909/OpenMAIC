@@ -2078,6 +2078,8 @@
         "notEmpty": "Ce dossier contient encore des documents. Déplacez-les d’abord"
       },
       "actions": {
+        "parse": "Analyser",
+        "reparse": "Analyser à nouveau",
         "more": "Autres actions pour {{name}}",
         "rename": "Renommer",
         "move": "Déplacer vers…",

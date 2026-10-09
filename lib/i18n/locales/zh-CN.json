@@ -2078,6 +2078,8 @@
         "notEmpty": "文件夹里还有资料，请先移走"
       },
       "actions": {
+        "parse": "解析",
+        "reparse": "重新解析",
         "more": "{{name}} 的更多操作",
         "rename": "改名",
         "move": "移动到…",

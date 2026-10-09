@@ -11,6 +11,9 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const parseToast = vi.hoisted(() => ({ error: vi.fn() }));
+vi.mock('sonner', () => ({ toast: parseToast }));
+
 vi.mock('@/lib/hooks/use-i18n', () => ({
   useI18n: () => ({
     locale: 'en-US',
@@ -89,6 +92,7 @@ function stubFetch() {
       if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
       const method = init?.method ?? 'GET';
       const organizing =
+        url.pathname.endsWith('/extraction') ||
         method === 'PATCH' ||
         method === 'DELETE' ||
         url.pathname === '/api/materials/move' ||
@@ -208,6 +212,7 @@ const expand = async (folderId: string) => {
 };
 
 beforeEach(() => {
+  parseToast.error.mockClear();
   libraryCalls.length = 0;
   uploadCalls.length = 0;
   writeCalls.length = 0;
@@ -1488,6 +1493,63 @@ describe('public extraction failure explanations', () => {
     expect(page.query('kb-status-known')!.querySelector('button')).toBeNull();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.innerHTML).not.toContain('PRIVATE_RAW_DETAIL');
+    await page.dispose();
+  });
+});
+
+describe('R6 manual parsing', () => {
+  it('offers parse/reparse only for idle/failed and rereads after a successful click', async () => {
+    let state = 'idle';
+    library = () =>
+      json({ materials: [source('parse-me', { extraction: { status: state } })], limits: LIMITS });
+    writeMaterial = () => {
+      state = 'pending';
+      return json({ status: 'pending', queued: true });
+    };
+    const page = await openPage();
+    await openMenu('kb-material-menu-parse-me');
+    expect(inDocument('kb-material-menu-parse-me-parse')).not.toBeNull();
+    expect(inDocument('kb-material-menu-parse-me-parse')!.textContent).toContain(
+      'workspace.knowledgeBase.actions.parse',
+    );
+    const reads = libraryCalls.length;
+    await choose('kb-material-menu-parse-me-parse');
+    await settle();
+    expect(writeCalls).toEqual([
+      { method: 'POST', path: '/api/materials/parse-me/extraction', body: {} },
+    ]);
+    expect(libraryCalls.length).toBeGreaterThan(reads);
+    expect(page.query('kb-status-parse-me')!.dataset.status).toBe('pending');
+    expect(document.activeElement).toBe(page.query('kb-material-menu-parse-me'));
+    for (const next of ['pending', 'running', 'done', 'failed']) {
+      state = next;
+      await search(next);
+      await openMenu('kb-material-menu-parse-me');
+      if (next === 'failed')
+        expect(inDocument('kb-material-menu-parse-me-parse')!.textContent).toContain(
+          'workspace.knowledgeBase.actions.reparse',
+        );
+      else expect(inDocument('kb-material-menu-parse-me-parse')).toBeNull();
+      await act(async () =>
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+      );
+      await settle();
+    }
+    await page.dispose();
+  });
+
+  it('reports a parse refusal with the existing write error and returns focus without claiming success', async () => {
+    library = () =>
+      json({ materials: [source('bad', { extraction: { status: 'failed' } })], limits: LIMITS });
+    writeMaterial = () => json({ reason: 'unavailable' }, 503);
+    const page = await openPage();
+    await openMenu('kb-material-menu-bad');
+    expect(inDocument('kb-material-menu-bad-parse')).not.toBeNull();
+    await choose('kb-material-menu-bad-parse');
+    await settle();
+    expect(parseToast.error).toHaveBeenCalledWith('workspace.knowledgeBase.error.busy');
+    expect(page.query('kb-status-bad')!.dataset.status).toBe('failed');
+    expect(document.activeElement).toBe(page.query('kb-material-menu-bad'));
     await page.dispose();
   });
 });

@@ -1389,6 +1389,31 @@ describe('the knowledge base page', () => {
       expect(mocks.routerPush).toHaveBeenCalledTimes(1);
     });
 
+    it('R6 Back closes the background course view but keeps the saved course reopenable by URL', async () => {
+      await render();
+      await openLibrary();
+      mocks.store.stageLinkStageIds = ['stage-1'];
+      await render();
+      expect(window.location.search).toBe('?session=session-1&course=stage-1&view=library');
+      await travel('back');
+      expect(window.location.search).toBe('?session=session-1');
+      expect(libraryShown()).toBe(false);
+      expect(mocks.railProps?.activeCourseId).toBeNull();
+      expect(
+        (mocks.railProps?.courses as { classrooms: { id: string }[] }).classrooms.map((c) => c.id),
+      ).toContain('stage-1');
+      expect(
+        (mocks.courses as { deleteCourse: ReturnType<typeof vi.fn> }).deleteCourse,
+      ).not.toHaveBeenCalled();
+      // A fresh navigation to the course URL can still open the saved course.
+      await act(async () => root?.unmount());
+      root = null;
+      mocks.searchParams = new URLSearchParams('course=stage-1');
+      History.prototype.replaceState.call(window.history, null, '', '/workspace?course=stage-1');
+      await render();
+      expect(mocks.classroomProps?.browser).toMatchObject({ activeCourseId: 'stage-1' });
+    });
+
     it('leaves the page by its way back to what it covered, and Back returns to the page', async () => {
       await render();
       await openLibrary();

@@ -10,6 +10,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import {
   ExternalLink,
+  FileText,
   FolderInput,
   Inbox,
   MessageSquarePlus,
@@ -130,6 +131,7 @@ export function LibraryItemMenu({
 }
 
 export const menuIcons = {
+  parse: <FileText className="size-3.5" aria-hidden="true" />,
   rename: <Pencil className="size-3.5" aria-hidden="true" />,
   move: <FolderInput className="size-3.5" aria-hidden="true" />,
   delete: <Trash2 className="size-3.5" aria-hidden="true" />,

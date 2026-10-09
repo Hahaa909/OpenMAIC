@@ -8,6 +8,8 @@
  * `application/octet-stream` and downloaded, as the pool's own byte responses
  * are. The response is private to the requesting owner and never sniffed.
  */
+import { extname } from 'node:path';
+
 import { DEFAULT_RENDERABLE_TYPES } from '@openmaic/storage';
 
 const INLINE_TYPES = new Set(DEFAULT_RENDERABLE_TYPES.map((type) => type.toLowerCase()));
@@ -38,6 +40,23 @@ export function contentDisposition(
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
   return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
+ * The name an original is served as: what the teacher calls it now, with
+ * the uploaded file's extension added when that name dropped it, so the
+ * file still opens as its type. Never renamed, it is the uploaded name.
+ */
+export function originalDownloadName(
+  displayName: string | null,
+  originalName: string | null,
+): string | null {
+  const name = displayName ?? originalName;
+  if (!name) return name;
+  const extension = extname(originalName ?? '');
+  return extension && !name.toLowerCase().endsWith(extension.toLowerCase())
+    ? `${name}${extension}`
+    : name;
 }
 
 export function originalResponseHeaders(input: {

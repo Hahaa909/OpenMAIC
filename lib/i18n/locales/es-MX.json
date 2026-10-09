@@ -2078,6 +2078,8 @@
         "notEmpty": "Esta carpeta aún tiene materiales. Muévelos primero"
       },
       "actions": {
+        "parse": "Analizar",
+        "reparse": "Volver a analizar",
         "more": "Más acciones para {{name}}",
         "rename": "Cambiar nombre",
         "move": "Mover a…",

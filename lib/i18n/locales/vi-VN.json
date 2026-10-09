@@ -2078,6 +2078,8 @@
         "notEmpty": "Thư mục vẫn còn tài liệu. Hãy chuyển chúng đi trước"
       },
       "actions": {
+        "parse": "Phân tích",
+        "reparse": "Phân tích lại",
         "more": "Thao tác khác cho {{name}}",
         "rename": "Đổi tên",
         "move": "Chuyển đến…",

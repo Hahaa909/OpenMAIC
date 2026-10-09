@@ -268,6 +268,8 @@ function WorkspaceShellController({ initialPanes }: { readonly initialPanes: Wor
    * runs, keeps the knowledge base page if the teacher has it open, and then
    * REPLACES the history entry rather than adding one -- otherwise Back from
    * the page would first step through background changes made under it.
+   * Back restores the prior view and may close tabs created under the page;
+   * the saved courses remain in the library and can be reopened by URL.
    */
   const navigateInBackground = useCallback(
     (change: (current: WorkspacePanes) => WorkspacePanes | null, mode: 'push' | 'replace') => {

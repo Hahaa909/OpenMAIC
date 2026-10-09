@@ -2078,6 +2078,8 @@
         "notEmpty": "In diesem Ordner liegen noch Materialien. Verschiebe sie zuerst"
       },
       "actions": {
+        "parse": "Analysieren",
+        "reparse": "Erneut analysieren",
         "more": "Weitere Aktionen für {{name}}",
         "rename": "Umbenennen",
         "move": "Verschieben nach…",

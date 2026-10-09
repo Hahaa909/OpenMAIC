@@ -2078,6 +2078,8 @@
         "notEmpty": "This folder still holds materials. Move them out first"
       },
       "actions": {
+        "parse": "Parse",
+        "reparse": "Parse again",
         "more": "More actions for {{name}}",
         "rename": "Rename",
         "move": "Move to…",
