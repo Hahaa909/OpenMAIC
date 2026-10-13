@@ -52,7 +52,7 @@ it('documents the ShapeElement rotation geometry contract in the generated promp
 
   await generateSceneContent(slideOutline(), capture);
 
-  expect(systemPrompt).toContain('"rotate": 30');
+  expect(systemPrompt).not.toContain('"rotate": 30');
   expect(systemPrompt).toContain(
     '`rotate`: finite angle in degrees; positive values rotate clockwise around the centre of the unrotated bounding box',
   );
