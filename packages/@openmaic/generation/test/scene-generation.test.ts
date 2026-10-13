@@ -103,8 +103,9 @@ describe('scene generation primitives', () => {
   });
 
   it('reports non-finite shape rotations by value', async () => {
-    const aiCall: AICallFn = vi.fn(async () =>
-      '{"elements":[{"type":"shape","left":320,"top":70,"width":300,"height":300,"path":"M 0 0 L 1 0 L 1 1 L 0 1 Z","viewBox":[1,1],"fill":"#5b9bd5","rotate":1e400}]}',
+    const aiCall: AICallFn = vi.fn(
+      async () =>
+        '{"elements":[{"type":"shape","left":320,"top":70,"width":300,"height":300,"path":"M 0 0 L 1 0 L 1 1 L 0 1 Z","viewBox":[1,1],"fill":"#5b9bd5","rotate":1e400}]}',
     );
     const failures: Array<{ code: string; message?: string }> = [];
 
