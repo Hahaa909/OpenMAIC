@@ -876,7 +876,8 @@ function findInvalidShapeRotation(elements: GeneratedSlideData['elements']): str
       continue;
     }
 
-    return `Invalid shape rotation at shape[${index}].rotate: expected a finite number in degrees or null, received ${JSON.stringify(rotate)}`;
+    const received = typeof rotate === 'number' ? String(rotate) : JSON.stringify(rotate);
+    return `Invalid shape rotation at shape[${index}].rotate: expected a finite number in degrees or null, received ${received}`;
   }
   return undefined;
 }
