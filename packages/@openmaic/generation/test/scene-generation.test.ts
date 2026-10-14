@@ -117,6 +117,16 @@ describe('scene generation primitives', () => {
     expect(failures[0]?.message).toContain('received Infinity');
   });
 
+  it('skips null elements before validating shape rotations', async () => {
+    const aiCall: AICallFn = vi.fn(async () => '{"elements":[null]}');
+
+    const content = await generateSceneContent(slideOutline(), aiCall);
+
+    expect(content).not.toBeNull();
+    if (!content || !('elements' in content)) throw new Error('expected slide content');
+    expect(content.elements).toEqual([]);
+  });
+
   it('treats a null shape rotation as the missing-angle default', async () => {
     const aiCall: AICallFn = vi.fn(async () =>
       JSON.stringify({

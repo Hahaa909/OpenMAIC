@@ -795,7 +795,9 @@ async function generateSlideContent(
   log.debug(`Got ${generatedData.elements.length} elements for: ${outline.title}`);
 
   // Debug: Log image elements before resolution
-  const imageElements = generatedData.elements.filter((el) => el.type === 'image');
+  const imageElements = generatedData.elements.filter(
+    (el) => el && typeof el === 'object' && el.type === 'image',
+  );
   if (imageElements.length > 0) {
     log.debug(
       `Image elements before resolution:`,
@@ -867,6 +869,9 @@ async function generateSlideContent(
 
 function findInvalidShapeRotation(elements: GeneratedSlideData['elements']): string | undefined {
   for (const [index, element] of elements.entries()) {
+    if (!element || typeof element !== 'object') {
+      continue;
+    }
     if (element.type !== 'shape' || !Object.prototype.hasOwnProperty.call(element, 'rotate')) {
       continue;
     }
